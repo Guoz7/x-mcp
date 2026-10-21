@@ -1,5 +1,5 @@
 {
-  "recorded_at": "2026-10-22 (v0.9 browser contract and Agent Help board)",
+  "recorded_at": "2026-10-22 (v0.9.1 Firefox-only controlled experiment)",
   "protocol_revision": "2025-11-25",
   "command": "npx -y @modelcontextprotocol/conformance server --url http://127.0.0.1:8765/mcp --suite active --verbose",
   "server_command": "$env:X_STARTER_CONFORMANCE='1'; python -I -X utf8 server.py --transport http --port 8765",
@@ -21,7 +21,7 @@
   },
   "unit_tests": {
     "command": "pwsh -NoProfile -File quality_gate.ps1",
-    "tests": 357,
+    "tests": 358,
     "failures": 0
   },
   "subscription_smoke": {
@@ -29,12 +29,12 @@
     "event": "notifications/resources/updated",
     "exit_code": 0
   },
-  "server_version": "0.9.0",
+  "server_version": "0.9.1",
   "http_load": {
     "command": "python -X utf8 loadtest.py --clients 16 --requests 50",
     "total_requests": 800,
     "errors": 0,
-    "throughput_rps": 1123.32,
+    "throughput_rps": 1069.81,
     "connections": 16,
     "tools_call_p95_ms": 3.9,
     "tools_list_p95_ms": 4.434,
@@ -46,7 +46,8 @@
     "scope": "Loopback, mock mode, single process. Not live X capacity.",
     "note_v06": "25 tools; tools/list grew to ~6452 approx tokens, which lowers loopback throughput versus v0.5 (1697.84).",
     "note_v08": "31 tools; tools/list ~8010 approx tokens. Loopback throughput fell from 1643 to 1319 req/s because each tools/list response is larger.",
-    "note_v09": "35 tools; loopback mock-mode throughput after browser metadata and Agent Help board additions."
+    "note_v09": "35 tools; loopback mock-mode throughput after browser metadata and Agent Help board additions.",
+    "note_v091": "35 tools; v0.9.1 Firefox-only browser-family gate and controlled contract E2E added."
   },
   "context_cost": {
     "tools": 35,
@@ -125,5 +126,13 @@
     ],
     "executor_metadata": true,
     "sensitive_context_rejected": true
+  },
+  "firefox_only_experiment": {
+    "checks": 5,
+    "failed": 0,
+    "browser_binary_found": false,
+    "real_ui_launched": false,
+    "scope": "MCP contract and executor gate only",
+    "error_gate": "BROWSER_FAMILY_NOT_ALLOWED"
   }
 }
