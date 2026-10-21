@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "x-starter": {
+      "command": "C:\\Users\\54736\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+      "args": [
+        "-I",
+        "-X",
+        "utf8",
+        "D:\\workspace\\agent-help\\x-starter\\server.py"
+      ],
+      "env": {
+        "X_STARTER_MODE": "mock"
+      }
+    }
+  }
+}

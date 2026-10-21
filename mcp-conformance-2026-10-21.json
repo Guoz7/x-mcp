@@ -1,0 +1,129 @@
+{
+  "recorded_at": "2026-10-22 (v0.9 browser contract and Agent Help board)",
+  "protocol_revision": "2025-11-25",
+  "command": "npx -y @modelcontextprotocol/conformance server --url http://127.0.0.1:8765/mcp --suite active --verbose",
+  "server_command": "$env:X_STARTER_CONFORMANCE='1'; python -I -X utf8 server.py --transport http --port 8765",
+  "conformance_package": "@modelcontextprotocol/conformance@0.1.16",
+  "scenarios_total": 30,
+  "scenarios_passed": 30,
+  "checks_passed": 227,
+  "checks_failed": 0,
+  "exit_code": 0,
+  "scope": "Isolated official fixture profile. This proves protocol and transport conformance, not live X behavior.",
+  "raw_summary": "Total: 39 passed, 0 failed (conformance); checkmcp 227/227, 0 advisory",
+  "server_suite": {
+    "command": "npx -y checkmcp@0.5.1 http://127.0.0.1:8765/mcp",
+    "checks_passed": 227,
+    "checks_failed": 0,
+    "advisories": 0,
+    "scope": "Production tool surface in mock mode; not the JSON-RPC conformance fixture profile.",
+    "tools": 35
+  },
+  "unit_tests": {
+    "command": "pwsh -NoProfile -File quality_gate.ps1",
+    "tests": 357,
+    "failures": 0
+  },
+  "subscription_smoke": {
+    "command": "python -I -X utf8 mcp_client.py --subscribe-and-call --tool x_account_get",
+    "event": "notifications/resources/updated",
+    "exit_code": 0
+  },
+  "server_version": "0.9.0",
+  "http_load": {
+    "command": "python -X utf8 loadtest.py --clients 16 --requests 50",
+    "total_requests": 800,
+    "errors": 0,
+    "throughput_rps": 1123.32,
+    "connections": 16,
+    "tools_call_p95_ms": 3.9,
+    "tools_list_p95_ms": 4.434,
+    "before_fix": {
+      "throughput_rps": 984.81,
+      "connections": 416,
+      "connect_p99_ms": 507.453
+    },
+    "scope": "Loopback, mock mode, single process. Not live X capacity.",
+    "note_v06": "25 tools; tools/list grew to ~6452 approx tokens, which lowers loopback throughput versus v0.5 (1697.84).",
+    "note_v08": "31 tools; tools/list ~8010 approx tokens. Loopback throughput fell from 1643 to 1319 req/s because each tools/list response is larger.",
+    "note_v09": "35 tools; loopback mock-mode throughput after browser metadata and Agent Help board additions."
+  },
+  "context_cost": {
+    "tools": 35,
+    "approx_tokens": 7156
+  },
+  "zero_setup_tools": {
+    "tools": [
+      "x_compose_workbench",
+      "x_compose_check",
+      "x_interaction_link"
+    ],
+    "mechanism": "X Web Intents (https://x.com/intent/...); user confirms in X; no developer app, OAuth, or API fee",
+    "ui": {
+      "uri": "ui://x-starter/composer-v1.html",
+      "mimeType": "text/html;profile=mcp-app",
+      "extension": "io.modelcontextprotocol/ui"
+    },
+    "verified": [
+      "unit + integration tests",
+      "standalone browser preview at 1280px and 360px",
+      "MCP HTTP smoke call"
+    ],
+    "unverified": [
+      "rendering inside ChatGPT/Claude host",
+      "real post via intent by a human"
+    ]
+  },
+  "connector_runtime": {
+    "documents": [
+      "public_skill.md",
+      "connector-manifest.json"
+    ],
+    "tools": [
+      "connector_list",
+      "connector_negotiate",
+      "connector_plan"
+    ],
+    "execution_modes": [
+      "mcp",
+      "api",
+      "web_intent",
+      "browser",
+      "draft_only"
+    ],
+    "connectors": {
+      "x-native": "available",
+      "web-intent": "available",
+      "computer-use": "degraded unless X_STARTER_MODE=browser",
+      "x-official-hosted": "optional/disabled; not connected"
+    },
+    "e2e": {
+      "command": ".agent-work/connector-e2e.py",
+      "exit_code": 0,
+      "tools": 28,
+      "read_plan": "mcp/x-native, no confirmation",
+      "write_plan": "confirmed, requires_confirmation=true",
+      "unsupported_intent": "draft_only"
+    },
+    "unverified": [
+      "real OAuth",
+      "official hosted X MCP connection",
+      "remote multi-tenant",
+      "live X writes"
+    ]
+  },
+  "agent_help_board": {
+    "provider": "local-json",
+    "e2e": "prepare -> exact confirmation -> publish -> list -> get",
+    "public_http_deployed": false
+  },
+  "browser_contract": {
+    "viewport_classes": [
+      "mobile",
+      "tablet",
+      "desktop"
+    ],
+    "executor_metadata": true,
+    "sensitive_context_rejected": true
+  }
+}

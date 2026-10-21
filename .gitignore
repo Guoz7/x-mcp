@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.x-starter-token-store/
+.x-starter-state/
+.agent-work/
+*.log
+.env
+.env.*

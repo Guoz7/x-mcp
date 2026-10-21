@@ -1,0 +1,710 @@
+{
+  "schema": "v1",
+  "schema_name": "ahan-connector-manifest",
+  "schema_version": 1,
+  "published": "2026-10-22",
+  "service": {
+    "name": "ahan",
+    "title": "AHAN connector gateway",
+    "role": "pluggable-connector-gateway",
+    "version": "0.9.0",
+    "version_source": "x-starter/server.py SERVER_VERSION",
+    "summary": "One MCP endpoint that hosts connectors. Clients discover connectors and tools at runtime; nothing is hard-coded per client.",
+    "entrypoint_doc": "public_skill.md",
+    "connector_model": {
+      "discovery": "tools/list and connector list, never a fixed tool name",
+      "selection": "capability negotiation, then connector status",
+      "degradation": [
+        "mcp",
+        "api",
+        "web_intent",
+        "browser",
+        "draft_only"
+      ]
+    }
+  },
+  "mcp": {
+    "url": "https://YOUR_AHAN_HOST/mcp",
+    "url_is_placeholder": true,
+    "transport": "streamable-http",
+    "protocol_version": "2025-11-25",
+    "server_name": "x-starter",
+    "server_version": "0.9.0",
+    "call_order": [
+      "initialize",
+      "tools/list",
+      "tools/call"
+    ],
+    "discovery_rule": "Call tools/list before any tools/call. Tool names and schemas can change between connectors and releases.",
+    "auth": {
+      "mode": "host",
+      "in_band_credentials": false,
+      "note": "Credentials stay in the host or the owner's browser. No tool argument, log, or prompt carries a token."
+    },
+    "capability_negotiation": {
+      "request_field": "client_capabilities",
+      "response_fields": [
+        "api",
+        "computer_use",
+        "web_intent",
+        "mcp_apps",
+        "execution_modes"
+      ],
+      "unknown_input": "ignored; documented defaults apply",
+      "defaults": {
+        "mcp_connectors": true,
+        "api": true,
+        "computer_use": false,
+        "web_intent": true,
+        "mcp_apps": false
+      }
+    },
+    "execution_modes_note": "A client that omits capabilities gets mcp, api, web_intent, and draft_only. Browser and MCP Apps need an explicit opt-in.",
+    "status_note": "The runtime ranks available, degraded, and disabled. The manifest also allows optional, which an adapter maps to degraded until a live check passes."
+  },
+  "operation_fields": {
+    "read_only": "True when the operation changes nothing on X. A local record inside this service still counts as read_only, because X is unchanged. The offline contract matrix reads this field as its write switch, so the two meanings must match.",
+    "side_effect": "none | local | external. local means a record in this service; external means a change on X. side_effect refines read_only.",
+    "requires_confirmation": "True for every external side effect, and for nothing else.",
+    "execution_mode": "Which mode serves the operation."
+  },
+  "planner_note": "connector_runtime.build_execution_plan classifies an operation by its first verb. An operation named post_* is a write to the planner even when side_effect is local, so the planner asks for confirmation that the manifest does not require. The planner is conservative on purpose. A caller that trusts the manifest may skip the extra prompt for a local step, but it must never skip a prompt for an external step.",
+  "connector_fields": {
+    "read_only_default": "True when every operation the connector offers leaves X unchanged. A connector that can publish or delete sets false, even when its gate is closed.",
+    "live_connection_verified": "True only after a live acceptance run with the owner present. False here for every connector.",
+    "verification_scope": "The strongest check that was actually run: mock-only, descriptor-only, offline-format-only, gated-local, or live-public-read.",
+    "requires_confirmation": "True when at least one operation in this connector changes X. A connector with only reads or links sets false."
+  },
+  "execution_modes": [
+    {
+      "mode": "mcp",
+      "rank": 1,
+      "requires": "remote MCP connector and host auth",
+      "write_requires_confirmation": true,
+      "fallback": "api"
+    },
+    {
+      "mode": "api",
+      "rank": 2,
+      "requires": "HTTP API access and a host-owned credential",
+      "write_requires_confirmation": true,
+      "fallback": "web_intent"
+    },
+    {
+      "mode": "web_intent",
+      "rank": 3,
+      "requires": "a human browser session; no developer app",
+      "write_requires_confirmation": true,
+      "fallback": "browser"
+    },
+    {
+      "mode": "browser",
+      "rank": 4,
+      "requires": "explicit computer_use capability plus a local browser bridge gate",
+      "write_requires_confirmation": true,
+      "fallback": "draft_only"
+    },
+    {
+      "mode": "draft_only",
+      "rank": 5,
+      "requires": "nothing; always available",
+      "write_requires_confirmation": false,
+      "fallback": null
+    }
+  ],
+  "connectors": [
+    {
+      "id": "x-native",
+      "connector_id": "x-native",
+      "title": "X Starter (local MCP server)",
+      "version": "0.9.0",
+      "kind": "mcp",
+      "transport": "streamable-http",
+      "endpoint": "https://YOUR_AHAN_HOST/mcp",
+      "endpoint_note": "Same placeholder as mcp.url. The local dev listener is http://127.0.0.1:8765/mcp; substitute it only on the machine that runs the server.",
+      "auth": "host",
+      "status": "available",
+      "read_only_default": false,
+      "live_connection_verified": false,
+      "verification_scope": "mock-only",
+      "requires_confirmation": true,
+      "operations": [
+        {
+          "name": "x_session_status",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp"
+        },
+        {
+          "name": "x_timeline_observe",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp"
+        },
+        {
+          "name": "x_compose_check",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp"
+        },
+        {
+          "name": "x_post_prepare",
+          "read_only": true,
+          "side_effect": "local",
+          "requires_confirmation": false,
+          "execution_mode": "mcp"
+        },
+        {
+          "name": "x_post_publish",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "mcp"
+        },
+        {
+          "name": "x_timeline_restore",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp"
+        },
+        {
+          "name": "read_account",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": null,
+          "alias_of": "intent-level name; maps to a tool in tools/list",
+          "kind": "mcp"
+        },
+        {
+          "name": "read_timeline",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": null,
+          "alias_of": "intent-level name; maps to a tool in tools/list",
+          "kind": "mcp"
+        },
+        {
+          "name": "read_post",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": null,
+          "alias_of": "intent-level name; maps to a tool in tools/list",
+          "kind": "mcp"
+        },
+        {
+          "name": "post",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": null,
+          "alias_of": "intent-level name; maps to a tool in tools/list",
+          "kind": "mcp"
+        },
+        {
+          "name": "reply",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": null,
+          "alias_of": "intent-level name; maps to a tool in tools/list",
+          "kind": "mcp"
+        },
+        {
+          "name": "like",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": null,
+          "alias_of": "intent-level name; maps to a tool in tools/list",
+          "kind": "mcp"
+        },
+        {
+          "name": "repost",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": null,
+          "alias_of": "intent-level name; maps to a tool in tools/list",
+          "kind": "mcp"
+        },
+        {
+          "name": "follow",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": null,
+          "alias_of": "intent-level name; maps to a tool in tools/list",
+          "kind": "mcp"
+        }
+      ],
+      "limitations": [
+        "Mock mode is the default. Live reads and writes need an explicit host-side gate.",
+        "The manifest lists publish, so this connector is not read-only by default. Every write still needs an exact confirmation phrase.",
+        "Prepare writes one local record and leaves X unchanged, so it is read_only with side_effect local. Publish needs the exact phrase.",
+        "The endpoint is a placeholder. Replace YOUR_AHAN_HOST before you connect.",
+        "The manifest lists the public subset only; call tools/list for the full catalog."
+      ],
+      "tool_mapping": {
+        "_note": "Verified against server.py. Call tools/list for the live catalog.",
+        "x_session_status": {
+          "tool": "x_session_status"
+        },
+        "x_timeline_observe": {
+          "tool": "x_timeline_observe"
+        },
+        "x_compose_check": {
+          "tool": "x_compose_check"
+        },
+        "x_post_prepare": {
+          "tool": "x_post_prepare"
+        },
+        "x_post_publish": {
+          "tool": "x_post_publish"
+        },
+        "x_timeline_restore": {
+          "tool": "x_timeline_restore"
+        }
+      }
+    },
+    {
+      "id": "x-official-hosted",
+      "connector_id": "x-official-hosted",
+      "title": "Official hosted X MCP",
+      "version": "unpinned",
+      "kind": "mcp",
+      "transport": "streamable-http",
+      "endpoint": "https://api.x.com/mcp",
+      "auth": "user",
+      "status": "optional",
+      "read_only_default": true,
+      "live_connection_verified": false,
+      "verification_scope": "descriptor-only",
+      "requires_confirmation": false,
+      "requires_owner_consent": true,
+      "operations": [
+        {
+          "name": "search_posts",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp"
+        },
+        {
+          "name": "read_user",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp"
+        },
+        {
+          "name": "read_bookmarks",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp"
+        }
+      ],
+      "limitations": [
+        "Not connected. This entry is a descriptor, not a live connection or an OAuth grant.",
+        "Authorisation happens in the owner's browser through the official OAuth flow. No token is stored or requested here.",
+        "The published capability list covers reads and Articles. It does not document ordinary post creation, so this manifest does not claim it.",
+        "The endpoint answers unauthenticated requests with an error by design; that is not proof of a working connection."
+      ]
+    },
+    {
+      "id": "web-intent",
+      "connector_id": "web-intent",
+      "title": "X Web Intent links",
+      "version": "0.6.0",
+      "kind": "web_intent",
+      "transport": "https",
+      "endpoint": "https://x.com/intent/post",
+      "auth": "user",
+      "status": "available",
+      "read_only_default": true,
+      "live_connection_verified": false,
+      "verification_scope": "offline-format-only",
+      "requires_confirmation": false,
+      "human_action_required": true,
+      "operations": [
+        {
+          "name": "get_post_link",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "human_action_required": true,
+          "execution_mode": "web_intent"
+        },
+        {
+          "name": "get_reply_link",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "human_action_required": true,
+          "execution_mode": "web_intent"
+        },
+        {
+          "name": "get_like_link",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "human_action_required": true,
+          "execution_mode": "web_intent"
+        },
+        {
+          "name": "get_repost_link",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "human_action_required": true,
+          "execution_mode": "web_intent"
+        }
+      ],
+      "tool_mapping": {
+        "_note": "One server tool serves these four operations; the action argument selects one.",
+        "get_post_link": {
+          "tool": "x_interaction_link",
+          "arguments": {
+            "action": "post"
+          }
+        },
+        "get_reply_link": {
+          "tool": "x_interaction_link",
+          "arguments": {
+            "action": "reply"
+          }
+        },
+        "get_like_link": {
+          "tool": "x_interaction_link",
+          "arguments": {
+            "action": "like"
+          }
+        },
+        "get_repost_link": {
+          "tool": "x_interaction_link",
+          "arguments": {
+            "action": "repost"
+          }
+        }
+      },
+      "limitations": [
+        "Every operation here only builds a link. The human presses the final button in X.",
+        "A built link is not evidence that the action happened. Verify separately.",
+        "The X intent request format can change outside this repository."
+      ]
+    },
+    {
+      "id": "computer-use",
+      "connector_id": "computer-use",
+      "title": "Local browser bridge (Computer Use)",
+      "version": "0.9.0",
+      "kind": "browser",
+      "transport": "local-queue",
+      "endpoint": null,
+      "auth": "host",
+      "status": "optional",
+      "read_only_default": false,
+      "live_connection_verified": false,
+      "verification_scope": "gated-local",
+      "requires_confirmation": true,
+      "operations": [
+        {
+          "name": "observe_account",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "browser"
+        },
+        {
+          "name": "observe_timeline",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "browser"
+        },
+        {
+          "name": "publish_post",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "browser"
+        },
+        {
+          "name": "delete_post",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "browser"
+        }
+      ],
+      "limitations": [
+        "Disabled unless the operator sets the explicit browser gate.",
+        "Needs a trusted agent that claims one action with a claim token.",
+        "The server receives typed results only. It never reads cookies, storage, or page source.",
+        "Each action exposes mobile, tablet, and desktop viewport classes plus a locator priority.",
+        "Completion accepts safe executor context, locator strategy, and pre/postcondition evidence; sensitive context is rejected.",
+        "A page that cannot be proven is reported as uncertain, never retried."
+      ],
+      "tool_mapping": {
+        "_note": "These are the queueing tools. A trusted agent performs the typed action.",
+        "observe_account": {
+          "tool": "x_account_get",
+          "arguments": {
+            "refresh": true
+          }
+        },
+        "observe_timeline": {
+          "tool": "x_timeline_observe",
+          "arguments": {
+            "refresh": true
+          }
+        },
+        "publish_post": {
+          "tool": "x_post_publish"
+        },
+        "delete_post": {
+          "tool": "x_post_delete",
+          "arguments": {
+            "confirm": true
+          }
+        }
+      }
+    },
+    {
+      "id": "x-public-web",
+      "connector_id": "x-public-web",
+      "title": "X public web read (no credential)",
+      "version": "0.8.0",
+      "kind": "api",
+      "transport": "https",
+      "endpoint": "https://x.com",
+      "auth": "none",
+      "status": "available",
+      "read_only_default": true,
+      "live_connection_verified": true,
+      "verification_scope": "live-public-read",
+      "requires_confirmation": false,
+      "operations": [
+        {
+          "name": "read_public_profile",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": "x_public_profile"
+        },
+        {
+          "name": "read_public_timeline",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": "x_public_timeline"
+        },
+        {
+          "name": "read_public_post",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": "x_public_post"
+        }
+      ],
+      "tool_mapping": {
+        "read_public_profile": {
+          "tool": "x_public_profile"
+        },
+        "read_public_timeline": {
+          "tool": "x_public_timeline"
+        },
+        "read_public_post": {
+          "tool": "x_public_post"
+        }
+      },
+      "limitations": [
+        "Reads only public surfaces: profile page, public embed timeline, public tweet-result endpoint.",
+        "Cannot see protected accounts, bookmarks, direct messages, or the viewer home timeline.",
+        "Public page layout can change; a parse failure returns an explicit error, never inferred data.",
+        "Verified live against @guoz7777 on 2026-10-22. It is not an OAuth grant and authorises no write."
+      ]
+    },
+    {
+      "id": "agent-help-board",
+      "connector_id": "agent-help-board",
+      "title": "Agent Help public request board",
+      "version": "0.9.0",
+      "kind": "api",
+      "transport": "local-json-or-http",
+      "endpoint": "https://YOUR_AHAN_HOST/agent-help",
+      "endpoint_note": "Optional public HTTP provider configured by X_STARTER_AGENT_HELP_BOARD_URL; local JSON provider is the default.",
+      "auth": "user",
+      "status": "available",
+      "read_only_default": false,
+      "live_connection_verified": false,
+      "verification_scope": "gated-local",
+      "requires_confirmation": true,
+      "operations": [
+        {
+          "name": "list_requests",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": "agent_help_request_list"
+        },
+        {
+          "name": "get_request",
+          "read_only": true,
+          "side_effect": "none",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": "agent_help_request_get"
+        },
+        {
+          "name": "publish_request",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "mcp",
+          "tool": "agent_help_request_publish"
+        }
+      ],
+      "tool_mapping": {
+        "list_requests": {
+          "tool": "agent_help_request_list"
+        },
+        "get_request": {
+          "tool": "agent_help_request_get"
+        },
+        "publish_request": {
+          "tool": "agent_help_request_publish_prepare"
+        }
+      },
+      "limitations": [
+        "The local provider is verified; no public HTTP board has been deployed.",
+        "The public board stores collaboration requests only; it does not grant X account access.",
+        "Publishing is a public side effect and requires an exact confirmation phrase.",
+        "HTTP provider failures are explicit and do not silently become local success."
+      ]
+    }
+  ],
+  "workflow": [
+    {
+      "step": "read_timeline",
+      "writes": false,
+      "requires_confirmation": false,
+      "tool_hint": "x_timeline_observe",
+      "output": "content-addressed snapshot and snapshot hash"
+    },
+    {
+      "step": "filter",
+      "writes": false,
+      "requires_confirmation": false,
+      "tool_hint": "local reasoning over the snapshot",
+      "output": "short list of candidate posts with reasons"
+    },
+    {
+      "step": "suggest",
+      "writes": false,
+      "requires_confirmation": false,
+      "tool_hint": "x_compose_workbench or x_compose_check",
+      "output": "draft text, weighted length, and checks"
+    },
+    {
+      "step": "confirm",
+      "writes": false,
+      "requires_confirmation": false,
+      "tool_hint": "x_post_prepare",
+      "output": "write id, exact text, and random confirmation phrase"
+    },
+    {
+      "step": "execute",
+      "writes": true,
+      "requires_confirmation": true,
+      "tool_hint": "x_post_publish, x_post_create_api, or a Web Intent link",
+      "output": "queued action or post id"
+    },
+    {
+      "step": "verify",
+      "writes": false,
+      "requires_confirmation": false,
+      "tool_hint": "x_timeline_restore, x_browser_action_get, or x_evidence_get",
+      "output": "verified, failed, or uncertain outcome"
+    }
+  ],
+  "extending": {
+    "rule": "Add a connector entry. Do not change the client contract.",
+    "required_fields": [
+      "id",
+      "connector_id",
+      "title",
+      "version",
+      "kind",
+      "transport",
+      "endpoint",
+      "auth",
+      "status",
+      "read_only_default",
+      "live_connection_verified",
+      "verification_scope",
+      "requires_confirmation",
+      "operations"
+    ],
+    "id_rule": "Unique, stable, lowercase, and never reused for a different service.",
+    "status_values": [
+      "available",
+      "degraded",
+      "disabled",
+      "optional"
+    ],
+    "kind_values": [
+      "mcp",
+      "api",
+      "browser",
+      "web_intent"
+    ],
+    "auth_values": [
+      "none",
+      "oauth",
+      "host",
+      "user"
+    ],
+    "operation_rule": "Each operation declares read_only, side_effect, requires_confirmation, and execution_mode.",
+    "write_rule": "Every external side effect sets requires_confirmation to true.",
+    "new_connector_rule": "An unverified connector starts as optional with live_connection_verified false.",
+    "verification_rule": "Set live_connection_verified to true only after a live run passes with the owner present."
+  },
+  "boundaries": {
+    "implemented": [
+      "Offline connector runtime: describe, rank, and plan without network access.",
+      "Offline contract matrix: descriptor checks with network_calls 0.",
+      "Local mock X server with prepare, publish queue, and restore checks.",
+      "Web Intent link builder.",
+      "Credential-free public reads of X profile, timeline, and single post.",
+      "Local Agent Help public request board provider and MCP request tools."
+    ],
+    "not_verified": [
+      "The official hosted X MCP connection and its OAuth grant.",
+      "Remote multi-tenant deployment of this gateway.",
+      "Browser automation on any real account.",
+      "Live X API reads or writes that need an OAuth user context.",
+      "A deployed public HTTP Agent Help board and multi-tenant availability."
+    ],
+    "no_credentials": "This file holds no token, secret, cookie, password, or private endpoint. Every endpoint is public or a placeholder."
+  }
+}

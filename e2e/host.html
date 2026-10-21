@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>x-starter E2E MCP Apps host</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: #f6f7f9; }
+  #frameWrap { width: 420px; border: 1px solid #ccd; background: #fff; }
+  iframe { width: 100%; border: 0; display: block; height: 600px; }
+  #log { font: 12px ui-monospace, monospace; white-space: pre-wrap; max-height: 260px; overflow: auto; background: #fff; border: 1px solid #ddd; padding: 8px; margin-top: 12px; }
+  #status { font-weight: 600; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div id="status">starting</div>
+<div id="frameWrap"><iframe id="view" sandbox="allow-scripts allow-forms allow-same-origin" title="tool UI"></iframe></div>
+<div id="log"></div>
+<script>
+/* Minimal MCP Apps host for end-to-end testing.
+   Real path: MCP initialize -> tools/list -> tools/call -> resources/read(ui://) ->
+   sandboxed iframe -> ui/initialize -> tool-input/tool-result -> proxied tools/call.
+   ui/open-link is recor<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>x-starter E2E MCP Apps host</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: #f6f7f9; }
+  #frameWrap { width: 420px; border: 1px solid #ccd; background: #fff; }
+  iframe { width: 100%; border: 0; display: block; height: 600px; }
+  #log { font: 12px ui-monospace, monospace; white-space: pre-wrap; max-height: 260px; overflow: auto; background: #fff; border: 1px solid #ddd; padding: 8px; margin-top: 12px; }
+  #status { font-weight: 600; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div id="status">starting</div>
+<div id="frameWrap"><iframe id="view" title="tool UI"></iframe></div>
+<div id="log"></div>
+<script>
+/* Minimal MCP Apps host for end-to-end testing.
+   Real path: MCP initialize -> tools/list -> tools/call -> resources/read(ui://) ->
+   sandboxed iframe -> ui/initialize -> tool-input/tool-result -> proxied tools/call.
+   ui/open-link is recorded, not followed, so the test never posts to X. */
+(function () {
+  "use strict";
+  var E2E = window.E2E = { events: [], openLinks: [], messages: [], proxiedCalls: [], sizes: [], errors: [], ready: false };
+  var logEl = document.getElementById("log");
+  var statusEl = document.getElementById("status");
+  function log(kind, detail) {
+    var entry = { t: Math.round(performance.now()), kind: kind, detail: detail };
+    E2E.events.push(entry);
+    logEl.textContent += entry.t + "ms " + kind + " " + (typeof detail === "string" ? detail : JSON.stringify(detail)).slice(0, 220) + "\n";
+  }
+  function setStatus(s) { statusEl.textContent = s; E2E.status = s; }
+
+  var sessionId = null, nextId = 1;
+  async function mcp(method, params, isNotification) {
+    var body = { jsonrpc: "2.0", method: method };
+    if (params !== undefined) body.params = params;
+    if (!isNotification) body.id = nextId++;
+    var headers = { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" };
+    if (sessionId) { headers["Mcp-Session-Id"] = sessionId; headers["MCP-Protocol-Version"] = "2025-11-25"; }
+    var t0 = performance.now();
+    var res = await fetch("/mcp", { method: "POST", headers: headers, body: JSON.stringify(body) });
+    var sid = res.headers.get("Mcp-Session-Id");
+    if (sid) sessionId = sid;
+    if (isNotification) { log("mcp<-", method + " " + res.status); return null; }
+    var text = await res.text();
+    var msg;
+    if ((res.headers.get("Content-Type") || "").indexOf("text/event-stream") >= 0) {
+      var lines = text.split("\n").filter(function (l) { return l.indexOf("data: ") === 0; });
+      var parsed = lines.map(function (l) { return JSON.parse(l.slice(6)); });
+      msg = parsed.filter(function (m) { return m.id === body.id; })[0] || parsed[parsed.length - 1];
+    } else {
+      msg = JSON.parse(text);
+    }
+    log("mcp<-", method + " " + res.status + " " + Math.round(performance.now() - t0) + "ms");
+    if (msg.error) throw new Error(method + ": " + JSON.stringify(msg.error));
+    return msg.result;
+  }
+
+  var view = document.getElementById("view");
+  function toView(msg) { view.contentWindow.postMessage(msg, "*"); }
+
+  var toolCall = null;
+  window.addEventListener("message", async function (event) {
+    if (event.source && event.source !== view.contentWindow) return;
+    var msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    log("view->", msg.method || ("response " + msg.id));
+    try {
+      if (msg.method === "ui/initialize") {
+        toView({ jsonrpc: "2.0", id: msg.id, result: {
+          protocolVersion: "2026-01-26",
+          hostInfo: { name: "x-starter-e2e-host", version: "1.0.0" },
+          hostCapabilities: { openLinks: {}, serverTools: {}, logging: {} },
+          hostContext: { theme: "light", locale: E2E.locale || "en-US", displayMode: "inline", containerDimensions: { width: 420, maxHeight: 900 } }
+        }});
+      } else if (msg.method === "ui/notifications/initialized") {
+        toView({ jsonrpc: "2.0", method: "ui/notifications/tool-input", params: { arguments: toolCall.arguments } });
+        toView({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: toolCall.result });
+        E2E.ready = true;
+        setStatus("view ready");
+      } else if (msg.method === "tools/call") {
+        E2E.proxiedCalls.push(msg.params);
+        var result = await mcp("tools/call", msg.params);
+        toView({ jsonrpc: "2.0", id: msg.id, result: result });
+      } else if (msg.method === "ui/open-link") {
+        E2E.openLinks.push(msg.params.url);
+        toView({ jsonrpc: "2.0", id: msg.id, result: {} });
+      } else if (msg.method === "ui/message") {
+        E2E.messages.push(msg.params);
+        toView({ jsonrpc: "2.0", id: msg.id, result: {} });
+      } else if (msg.method === "ui/notifications/size-changed") {
+        E2E.sizes.push(msg.params);
+        if (msg.params && msg.params.height) view.style.height = Math.min(1200, msg.params.height) + "px";
+      } else if (msg.id !== undefined && msg.method) {
+        toView({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "Not supported by e2e host: " + msg.method } });
+      }
+    } catch (err) {
+      E2E.errors.push(String(err));
+      log("error", String(err));
+      if (msg.id !== undefined && msg.method) toView({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: String(err) } });
+    }
+  });
+
+  async function run() {
+    try {
+      var params = new URLSearchParams(location.search);
+      E2E.locale = params.get("locale") || "en-US";
+      var init = await mcp("initialize", { protocolVersion: "2025-11-25", clientInfo: { name: "e2e-host", version: "1.0.0" },
+        capabilities: { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] } } } });
+      E2E.serverInfo = init.serverInfo;
+      E2E.serverCaps = init.capabilities;
+      await mcp("notifications/initialized", undefined, true);
+      var tools = (await mcp("tools/list", {})).tools;
+      var tool = tools.filter(function (t) { return t.name === "x_compose_workbench"; })[0];
+      if (!tool) throw new Error("x_compose_workbench missing");
+      var uri = tool._meta && tool._meta.ui && tool._meta.ui.resourceUri;
+      E2E.resourceUri = uri;
+      var args = { topic: params.get("topic") || "why I built a zero-setup X MCP", text: params.get("text") || undefined };
+      if (!args.text) delete args.text;
+      var result = await mcp("tools/call", { name: "x_compose_workbench", arguments: args });
+      toolCall = { arguments: args, result: result };
+      E2E.toolResult = result;
+      var res = await mcp("resources/read", { uri: uri });
+      var content = res.contents[0];
+      E2E.resourceMime = content.mimeType;
+      E2E.resourceBytes = content.text.length;
+      view.srcdoc = content.text;
+      setStatus("view loading");
+    } catch (err) {
+      E2E.errors.push(String(err));
+      log("error", String(err));
+      setStatus("failed: " + err);
+    }
+  }
+  run();
+})();
+</script>
+</body>
+</html>
