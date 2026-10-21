@@ -27,7 +27,7 @@ from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 SERVER_NAME = "x-starter"
-SERVER_VERSION = "0.9.0"
+SERVER_VERSION = "0.9.1"
 DEFAULT_PROTOCOL_VERSION = "2025-11-25"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-11-25",
@@ -260,7 +260,14 @@ class XStarter:
             self.environ.get("X_STARTER_STATE_DIR", "").strip()
             or str(Path(SCRIPT_DIR) / ".x-starter-state" / self.mode)
         )
-        self.bridge = BrowserBridge(state_dir) if self.mode == "browser" else None
+        self.bridge = (
+            BrowserBridge(
+                state_dir,
+                allowed_browser_family=self.environ.get("X_STARTER_BROWSER_FAMILY"),
+            )
+            if self.mode == "browser"
+            else None
+        )
         # Live writes survive restarts; an interrupted "executing" write is
         # reloaded as "uncertain" so it can never be published twice.
         self.api_writes = WriteStore(

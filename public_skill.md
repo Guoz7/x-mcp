@@ -290,6 +290,7 @@ An error result has `ok: false` and an `error` object with `code`, `message`,
 | `INVALID_EXECUTOR_CONTEXT` | Discard the metadata and send only safe browser fields |
 | `SENSITIVE_CONTEXT_REJECTED` | Remove cookies, tokens, passwords, and private storage |
 | `INVALID_EXECUTION_METADATA` | Use a declared locator strategy and short check lists |
+| `BROWSER_FAMILY_NOT_ALLOWED` | Stop; the experiment only permits its configured browser family |
 | `REQUEST_NOT_FOUND` | Re-list public requests; do not invent a request |
 | `BOARD_STATE_INVALID` | Stop and inspect the local provider state |
 | `BOARD_HTTP_UNAVAILABLE` | Use the local provider or report the public provider as unavailable |

@@ -107,6 +107,33 @@ class BrowserCompatibilityContractTests(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, "INVALID_EXECUTION_METADATA")
 
+    def test_browser_family_gate_accepts_firefox_and_rejects_chromium(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        bridge = BrowserBridge(temp.name, allowed_browser_family="firefox")
+        bridge.queue_observation(action_type="observe_account")
+        firefox = bridge.next_action()
+        self.assertEqual(firefox["context_contract"]["allowed_browser_families"], ["firefox"])
+        with self.assertRaises(BridgeError) as caught:
+            bridge.complete_action(
+                action_id=firefox["action_id"],
+                claim_token=firefox["claim_token"],
+                outcome="uncertain",
+                result=None,
+                error={"code": "CONTROLLED_EXPERIMENT"},
+                executor_context={"browser_family": "chromium"},
+            )
+        self.assertEqual(caught.exception.code, "BROWSER_FAMILY_NOT_ALLOWED")
+        completed = bridge.complete_action(
+            action_id=firefox["action_id"],
+            claim_token=firefox["claim_token"],
+            outcome="uncertain",
+            result=None,
+            error={"code": "CONTROLLED_EXPERIMENT"},
+            executor_context={"browser_family": "firefox"},
+        )
+        self.assertEqual(completed["status"], "uncertain")
+
     def test_mcp_schema_exposes_metadata_inputs(self) -> None:
         state = tempfile.TemporaryDirectory()
         self.addCleanup(state.cleanup)

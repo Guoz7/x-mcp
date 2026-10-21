@@ -194,7 +194,10 @@ def _normalize_execution_metadata(
     }
 
 
-def _compatibility_contract(action_type: str) -> dict[str, Any]:
+def _compatibility_contract(
+    action_type: str,
+    allowed_browser_family: str | None = None,
+) -> dict[str, Any]:
     page_kinds = {
         "observe_account": ["x_profile"],
         "observe_timeline": ["x_home", "x_profile"],
@@ -204,6 +207,11 @@ def _compatibility_contract(action_type: str) -> dict[str, Any]:
     return {
         "schema": "x-starter-browser-context/v1",
         "viewport_classes": list(VIEWPORT_CLASSES),
+        "allowed_browser_families": (
+            [allowed_browser_family]
+            if allowed_browser_family
+            else ["chromium", "firefox", "webkit", "edge", "safari", "unknown"]
+        ),
         "page_kinds": page_kinds.get(action_type, ["x_unknown"]),
         "locator_priority": list(LOCATOR_STRATEGIES),
         "allowed_hosts": ["x.com", "twitter.com"],
@@ -269,12 +277,18 @@ class BrowserBridge:
         root: str | Path,
         *,
         now: Callable[[], float] = time.time,
+        allowed_browser_family: str | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "state.json"
         self._lock = threading.RLock()
         self._now = now
+        self.allowed_browser_family = (
+            allowed_browser_family.strip().lower()
+            if isinstance(allowed_browser_family, str) and allowed_browser_family.strip()
+            else None
+        )
         if not self.path.exists():
             self._write(self._empty())
 
@@ -804,6 +818,17 @@ class BrowserBridge:
                 preconditions_checked=preconditions_checked,
                 postconditions_checked=postconditions_checked,
             )
+            if self.allowed_browser_family:
+                actual_family = (execution.get("executor_context") or {}).get("browser_family")
+                if actual_family != self.allowed_browser_family:
+                    raise BridgeError(
+                        "BROWSER_FAMILY_NOT_ALLOWED",
+                        "The executor browser family does not match the configured experiment gate.",
+                        details={
+                            "required": self.allowed_browser_family,
+                            "actual": actual_family,
+                        },
+                    )
             status = {
                 "succeeded": "completed",
                 "failed": "failed",
@@ -1071,7 +1096,7 @@ class BrowserBridge:
             "payload": payload,
             "instructions": instructions,
             "result_schema": schema,
-            "context_contract": _compatibility_contract(action_type),
+            "context_contract": _compatibility_contract(action_type, self.allowed_browser_family),
             "viewport_classes": list(VIEWPORT_CLASSES),
             "claim_token": None,
             "lease_expires_epoch": None,

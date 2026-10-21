@@ -125,7 +125,18 @@ appended to a hash-chained evidence log.
 Each claimed browser action also exposes a context contract for `mobile`,
 `tablet`, and `desktop` layouts. Completion can report safe executor metadata,
 the locator strategy, and checked preconditions and postconditions. Sensitive
-browser fields are rejected.
+browser fields are rejected. Set `X_STARTER_BROWSER_FAMILY=firefox` for a
+controlled Firefox-only executor experiment.
+
+Run the controlled contract E2E:
+
+```powershell
+python -I -X utf8 firefox_only_e2e.py
+```
+
+This verifies the MCP gate and does not launch a browser or read browser
+storage. Use `--require-real-firefox` only when a Firefox binary and a trusted
+UI executor are installed.
 
 ## Browser path
 
