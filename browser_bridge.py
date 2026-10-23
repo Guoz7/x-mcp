@@ -835,7 +835,28 @@ class BrowserBridge:
                 "uncertain": "uncertain",
             }[outcome]
             if status == "completed":
-                result = self._validate_action_result(data, action, result)
+                try:
+                    result = self._validate_action_result(data, action, result)
+                except BridgeError as exc:
+                    # A schema rejection must not leave the action "claimed"
+                    # until its lease expires: the caller would lose the handle
+                    # and the queue would look busy for no reason.
+                    action["status"] = "failed"
+                    action["completed_at"] = _now_iso(self._now())
+                    action["result"] = None
+                    action["error"] = {
+                        "code": exc.code,
+                        "message": exc.message,
+                        **exc.details,
+                    }
+                    self._append_evidence(
+                        data,
+                        "action_rejected",
+                        action_id,
+                        {"type": action["type"], "code": exc.code},
+                    )
+                    self._write(data)
+                    raise
             action["status"] = status
             action["completed_at"] = _now_iso(self._now())
             action["result"] = result if isinstance(result, dict) else None

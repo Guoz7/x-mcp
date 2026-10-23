@@ -16,7 +16,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from browser_executor import BROWSER, Browser, ExecutorError, TOOLS, _allowed, _user_agent  # noqa: E402
+from browser_executor import (  # noqa: E402
+    BROWSER,
+    Browser,
+    ExecutorError,
+    TOOLS,
+    _allowed,
+    _color_scheme,
+    _device_scale_factor,
+    _locale,
+    _user_agent,
+    _viewport,
+    _viewport_class,
+)
 from owner_login_check import classify  # noqa: E402
 import owner_login_open  # noqa: E402
 from server import SessionRegistry, XStarter, handle_message  # noqa: E402
@@ -51,6 +63,55 @@ class BrowserExecutorContractTests(unittest.TestCase):
         self.assertIn("Chrome/", agent)
         with patch.dict("os.environ", {"X_BROWSER_EXECUTOR_USER_AGENT": "test-agent"}):
             self.assertEqual(_user_agent(), "test-agent")
+
+    def test_viewport_class_bands_match_the_bridge_contract(self) -> None:
+        # These bands must agree with browser_bridge.VIEWPORT_CLASSES, so the
+        # executor never reports a class the bridge would not accept.
+        self.assertEqual(_viewport_class(390), "mobile")
+        self.assertEqual(_viewport_class(767), "mobile")
+        self.assertEqual(_viewport_class(768), "tablet")
+        self.assertEqual(_viewport_class(1023), "tablet")
+        self.assertEqual(_viewport_class(1024), "desktop")
+        self.assertEqual(_viewport_class(1920), "desktop")
+
+    def test_viewport_rejects_values_playwright_would_fail_on(self) -> None:
+        with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_WIDTH": "1280",
+                                     "X_BROWSER_EXECUTOR_HEIGHT": "720"}, clear=False):
+            self.assertEqual(_viewport(), {"width": 1280, "height": 720})
+        for bad in ("abc", "0", "10001", "-1"):
+            with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_WIDTH": bad}, clear=False):
+                with self.assertRaises(ExecutorError) as caught:
+                    _viewport()
+                self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+
+    def test_device_scale_factor_is_bounded(self) -> None:
+        with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_DEVICE_SCALE_FACTOR": "2.5"}):
+            self.assertEqual(_device_scale_factor(), 2.5)
+        for bad in ("0.4", "8.1", "dpr"):
+            with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_DEVICE_SCALE_FACTOR": bad}):
+                with self.assertRaises(ExecutorError) as caught:
+                    _device_scale_factor()
+                self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+
+    def test_locale_is_allowlisted_before_browser_start(self) -> None:
+        with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_LOCALE": "zh-CN"}):
+            self.assertEqual(_locale(), "zh-CN")
+        with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_LOCALE": ""}):
+            self.assertEqual(_locale(), "en-US")
+        with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_LOCALE": "xx-YY"}):
+            with self.assertRaises(ExecutorError) as caught:
+                _locale()
+            self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
+
+    def test_color_scheme_is_optional_and_validated(self) -> None:
+        with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_COLOR_SCHEME": ""}):
+            self.assertIsNone(_color_scheme())
+        with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_COLOR_SCHEME": "DARK"}):
+            self.assertEqual(_color_scheme(), "dark")
+        with patch.dict(os.environ, {"X_BROWSER_EXECUTOR_COLOR_SCHEME": "sepia"}):
+            with self.assertRaises(ExecutorError) as caught:
+                _color_scheme()
+            self.assertEqual(caught.exception.code, "INVALID_ARGUMENT")
 
     def test_login_opener_keeps_window_open_until_owner_is_done(self) -> None:
         """Playwright tears the window down when its driver exits early."""

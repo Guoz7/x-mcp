@@ -160,6 +160,53 @@ the locator strategy, and checked preconditions and postconditions. Sensitive
 browser fields are rejected. Set `X_STARTER_BROWSER_FAMILY=firefox` for a
 controlled Firefox-only executor experiment.
 
+## Owner read loop
+
+`x_owner_read` runs one read-only observation end to end: it queues the typed
+action, claims it, reads the signed-in page, validates the result against the
+bridge schema, and returns the verified snapshot.
+
+```json
+{"target": "account"}
+{"target": "timeline", "limit": 20}
+```
+
+Both targets fail closed. A login wall returns `OWNER_SIGNED_OUT`, not an empty
+list. A post without a canonical `x.com/<handle>/status/<id>` permalink is not
+reported. The account id comes from the profile media path that X embeds in
+the page; if it is missing, the tool returns `ACCOUNT_ID_NOT_VISIBLE` instead
+of guessing. `posts_count_source` says whether the count was parsed from the
+page, estimated from an abbreviated `1.5K posts` label, or counted from the
+articles that were actually visible.
+
+## Rendering controls and the compatibility matrix
+
+Playwright fixes these per browser context, so set them before the first tool
+call:
+
+| Variable | Range | Default |
+| --- | --- | --- |
+| `X_BROWSER_EXECUTOR_WIDTH` / `_HEIGHT` | 160-10000 | 1280x720 |
+| `X_BROWSER_EXECUTOR_DEVICE_SCALE_FACTOR` | 0.5-8 | 1 |
+| `X_BROWSER_EXECUTOR_LOCALE` | 12-tag allowlist | `en-US` |
+| `X_BROWSER_EXECUTOR_COLOR_SCHEME` | light, dark, no-preference | unset |
+
+`browser_observe` reports `viewport_class`, `locale`, `color_scheme`,
+`visual_scale`, and the outer/screen dimensions. Locale and colour scheme are
+part of the observation fingerprint, so a cached observation cannot survive a
+change that alters what the page renders.
+
+Verify the geometry contract against real Chromium:
+
+```powershell
+python -X utf8 executor_matrix_e2e.py   # six viewports, 42 checks
+python -X utf8 executor_visual_e2e.py   # guard, click, scroll, staleness
+python -X utf8 owner_read_e2e.py        # read loop, 16 checks
+```
+
+The matrix proves how the executor renders and clicks at a given geometry. It
+does not prove X's own layout at those settings.
+
 Run the controlled contract E2E:
 
 ```powershell
@@ -336,6 +383,10 @@ x-starter/
 - Generic clicks on X are blocked pending confirmed-job integration. The
   standalone browser executor endpoint is a local prototype, not a production
   multi-tenant service.
+- The compatibility matrix proves executor geometry, not X's layout at those
+  settings. Only DPR 1 has been exercised against the real site.
+- `x_owner_read` is proven against a synthetic X-shaped fixture and a signed-out
+  profile. An authenticated timeline read has not been executed.
 - Real X API reads and OAuth callback are implemented but not verified with a real account in this run.
 - X API writes are implemented behind OAuth user context; server-side scheduling remains disabled.
 - Output schemas validate the shared envelope. Tool-specific `data` shapes are

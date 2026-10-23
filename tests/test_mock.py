@@ -82,6 +82,7 @@ class MockToolsTest(unittest.TestCase):
                 "x_browser_next_action",
                 "x_browser_complete_action",
                 "x_browser_action_get",
+                "x_owner_read",
                 "x_evidence_get",
                 "account_summary",
                 "draft_post",

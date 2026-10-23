@@ -51,6 +51,7 @@ if SCRIPT_DIR not in sys.path:
 
 from browser_bridge import BridgeError, BrowserBridge, _x_post_url_parts  # noqa: E402
 from browser_executor import Browser, ExecutorError, TOOLS as BROWSER_TOOLS  # noqa: E402
+import browser_read  # noqa: E402
 from oauth import OAuthError, OAuthManager, validate_account_ref  # noqa: E402
 from x_api import XApiClient, XApiError  # noqa: E402
 from x_public import PublicReadError, PublicXClient  # noqa: E402
@@ -1111,6 +1112,34 @@ class XStarter:
                 },
             },
             {
+                "name": "x_owner_read",
+                "title": "Read the signed-in owner account or timeline",
+                "description": (
+                    "Queue, claim, execute, and verify one read-only owner observation "
+                    "against the signed-in X page in this server's browser. Returns the "
+                    "verified snapshot. Never posts, likes, follows, or deletes."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "enum": ["account", "timeline"]},
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 20,
+                        },
+                    },
+                    "required": ["target"],
+                    "additionalProperties": False,
+                },
+                "annotations": {
+                    "readOnlyHint": True,
+                    "idempotentHint": False,
+                    "openWorldHint": True,
+                },
+            },
+            {
                 "name": "x_evidence_get",
                 "title": "Read the tamper-evident evidence chain",
                 "description": (
@@ -1329,6 +1358,8 @@ class XStarter:
                 data = self._x_browser_complete_action(scoped, trace)
             elif name == "x_browser_action_get":
                 data = self._x_browser_action_get(scoped, trace)
+            elif name == "x_owner_read":
+                data = self._x_owner_read(scoped, trace)
             elif name == "x_evidence_get":
                 data = self._x_evidence_get(arguments, trace)
             elif name == "account_summary":
@@ -1724,7 +1755,14 @@ class XStarter:
             result = self._browser_for(arguments).open(url)
         except ExecutorError as exc:
             raise StarterError(exc.code, exc.message) from None
-        trace.append(_event("browser_executor", "page_opened", host=urlparse(url).hostname))
+        trace.append(
+            _event(
+                "browser_executor",
+                "page_opened",
+                host=urlparse(url).hostname,
+                external_call=True,
+            )
+        )
         return result
 
     def _browser_observe(self, arguments: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1734,7 +1772,15 @@ class XStarter:
             result = self._browser_for(arguments).observe()
         except ExecutorError as exc:
             raise StarterError(exc.code, exc.message) from None
-        trace.append(_event("browser_executor", "page_observed", observation_id=result["observation_id"]))
+        trace.append(
+            _event(
+                "browser_executor",
+                "page_observed",
+                observation_id=result["observation_id"],
+                host=urlparse(result.get("url", "")).hostname,
+                external_call=True,
+            )
+        )
         return result
 
     def _browser_screenshot(
@@ -1931,6 +1977,150 @@ class XStarter:
             )
         )
         return action
+
+    def _x_owner_read(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Run one read-only owner observation end to end.
+
+        This is the closed loop the acceptance run needs: queue the typed
+        action, claim it, execute it in the session's browser, validate the
+        result through the bridge, and return the verified snapshot. The
+        write path never comes through here.
+        """
+
+        if self.mode != "browser":
+            raise StarterError(
+                "BROWSER_BRIDGE_REQUIRED",
+                "Owner reads require X_STARTER_MODE=browser with an executor.",
+            )
+        target = arguments.get("target")
+        if target not in {"account", "timeline"}:
+            raise StarterError("INVALID_ARGUMENT", "target must be account or timeline.")
+        limit = _bounded_int(arguments, "limit", default=20, minimum=1, maximum=50)
+        session_id = arguments.get("_mcp_session_id")
+        bridge = self._bridge()
+        action_type = "observe_account" if target == "account" else "observe_timeline"
+        bridge.queue_observation(
+            action_type=action_type,
+            payload={"limit": limit} if target == "timeline" else None,
+            session_id=session_id,
+        )
+        claimed = bridge.next_action(
+            lease_seconds=120,
+            session_id=session_id,
+        )
+        if claimed is None:
+            raise StarterError(
+                "OWNER_READ_NOT_CLAIMED",
+                "The queued observation was not claimable.",
+            )
+        browser = self._browser_for(arguments)
+        try:
+            if target == "account":
+                result = browser_read.read_account(
+                    browser, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                )
+            else:
+                result = browser_read.read_timeline(
+                    browser,
+                    limit=limit,
+                    base_url=self.environ.get("X_STARTER_READ_BASE_URL"),
+                )
+            context = browser_read.executor_context(browser)
+        except browser_read.ReadError as exc:
+            error = {"code": exc.code, "message": exc.message, **exc.details}
+            completed = bridge.complete_action(
+                action_id=claimed["action_id"],
+                claim_token=claimed["claim_token"],
+                outcome="failed",
+                result=None,
+                error=error,
+                session_id=session_id,
+            )
+            trace.append(
+                _event(
+                    "browser_bridge",
+                    "owner_read_failed",
+                    action_id=claimed["action_id"],
+                    code=exc.code,
+                    external_call=True,
+                )
+            )
+            raise StarterError(
+                exc.code,
+                exc.message,
+                details={**exc.details, "action_id": completed["action_id"]},
+            ) from None
+        except ExecutorError as exc:
+            bridge.complete_action(
+                action_id=claimed["action_id"],
+                claim_token=claimed["claim_token"],
+                outcome="uncertain",
+                result=None,
+                error={"code": exc.code, "message": exc.message},
+                session_id=session_id,
+            )
+            trace.append(
+                _event(
+                    "browser_executor",
+                    "owner_read_uncertain",
+                    action_id=claimed["action_id"],
+                    code=exc.code,
+                    external_call=True,
+                )
+            )
+            raise StarterError(exc.code, exc.message) from None
+        try:
+            completed = bridge.complete_action(
+                action_id=claimed["action_id"],
+                claim_token=claimed["claim_token"],
+                outcome="succeeded",
+                result=result,
+                error=None,
+                executor_context=context,
+                locator_strategy="dom",
+                preconditions_checked=["signed-in X page", "allowlisted host"],
+                postconditions_checked=[
+                    "canonical permalink present" if target == "timeline" else "numeric account id present",
+                ],
+                session_id=session_id,
+            )
+        except BridgeError as exc:
+            trace.append(
+                _event(
+                    "browser_bridge",
+                    "owner_read_rejected",
+                    action_id=claimed["action_id"],
+                    code=exc.code,
+                    external_call=True,
+                )
+            )
+            raise StarterError(
+                exc.code,
+                exc.message,
+                details={**exc.details, "action_id": claimed["action_id"]},
+            ) from None
+        trace.append(
+            _event(
+                "browser_bridge",
+                "owner_read_completed",
+                action_id=claimed["action_id"],
+                target=target,
+                external_call=True,
+            )
+        )
+        snapshot = completed.get("result") or {}
+        return {
+            "target": target,
+            "action_id": completed["action_id"],
+            "snapshot": snapshot,
+            "executor_context": context,
+            "disclosure": (
+                "Read from the visible signed-in X page by this server's browser. "
+                "No cookies, storage, or credentials were read."
+            ),
+        }
 
     def _x_evidence_get(
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]

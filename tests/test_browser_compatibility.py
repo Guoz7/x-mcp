@@ -35,6 +35,38 @@ class BrowserCompatibilityContractTests(unittest.TestCase):
             ["accessibility", "dom", "text", "screenshot", "coordinate", "manual"],
         )
 
+    def test_rejected_result_does_not_leave_a_dangling_claim(self) -> None:
+        """A schema rejection must fail the action, not keep it leased."""
+
+        bridge = BrowserBridge(tempfile.mkdtemp())
+        self.addCleanup(lambda: None)
+        bridge.queue_observation(action_type="observe_timeline")
+        action = bridge.next_action()
+        with self.assertRaises(BridgeError) as caught:
+            bridge.complete_action(
+                action_id=action["action_id"],
+                claim_token=action["claim_token"],
+                outcome="succeeded",
+                result={
+                    "posts": [
+                        {
+                            "url": "http://127.0.0.1:1234/alice/status/1",
+                            "author": "alice",
+                            "text": "not canonical",
+                        }
+                    ]
+                },
+                error=None,
+                executor_context={"browser_family": "chromium"},
+            )
+        self.assertEqual(caught.exception.code, "INVALID_ACTION_RESULT")
+        stored = bridge.get_action(action["action_id"])
+        self.assertEqual(stored["status"], "failed")
+        self.assertNotEqual(stored.get("claim_token"), action["claim_token"])
+        # The queue must stay usable after a rejection.
+        bridge.queue_observation(action_type="observe_account")
+        self.assertIsNotNone(bridge.next_action())
+
     def test_completion_persists_safe_executor_metadata(self) -> None:
         bridge, action = self._claimed_account_action()
         result = bridge.complete_action(

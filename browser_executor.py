@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import secrets
 import threading
 import time
@@ -42,6 +43,26 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
 )
 
+# Context knobs that change how X renders. They are read once per browser
+# start, because Playwright fixes them for the lifetime of a context.
+SUPPORTED_COLOR_SCHEMES = frozenset({"light", "dark", "no-preference"})
+SUPPORTED_LOCALES = frozenset(
+    {
+        "en-US", "en-GB", "zh-CN", "zh-TW", "ja-JP", "ko-KR",
+        "de-DE", "fr-FR", "es-ES", "pt-BR", "ru-RU", "ar-SA",
+    }
+)
+MAX_VISIBLE_LINKS = 60
+MAX_ARTICLES = 40
+MAX_ARTICLE_TEXT = 1500
+X_RESERVED_PATHS = frozenset(
+    {
+        "home", "explore", "notifications", "messages", "i", "search",
+        "settings", "compose", "login", "logout", "signup", "jobs",
+        "premium", "about", "tos", "privacy", "help", "download",
+    }
+)
+
 
 def _user_agent() -> str:
     """Headless Chromium advertises "HeadlessChrome", which X rejects with 403.
@@ -51,6 +72,166 @@ def _user_agent() -> str:
     """
 
     return os.environ.get("X_BROWSER_EXECUTOR_USER_AGENT", "").strip() or DEFAULT_USER_AGENT
+
+
+def _viewport() -> dict[str, int]:
+    try:
+        width = int(os.environ.get("X_BROWSER_EXECUTOR_WIDTH", "1280"))
+        height = int(os.environ.get("X_BROWSER_EXECUTOR_HEIGHT", "720"))
+    except ValueError as exc:
+        raise ExecutorError(
+            "INVALID_ARGUMENT", "Viewport width and height must be integers."
+        ) from exc
+    if not 160 <= width <= 10000 or not 160 <= height <= 10000:
+        raise ExecutorError(
+            "INVALID_ARGUMENT", "Viewport width and height must be from 160 to 10000."
+        )
+    return {"width": width, "height": height}
+
+
+def _device_scale_factor() -> float:
+    raw = os.environ.get("X_BROWSER_EXECUTOR_DEVICE_SCALE_FACTOR", "1").strip()
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ExecutorError(
+            "INVALID_ARGUMENT", "X_BROWSER_EXECUTOR_DEVICE_SCALE_FACTOR must be a number."
+        ) from exc
+    if not 0.5 <= value <= 8:
+        raise ExecutorError(
+            "INVALID_ARGUMENT", "Device scale factor must be from 0.5 to 8."
+        )
+    return value
+
+
+def _locale() -> str:
+    value = os.environ.get("X_BROWSER_EXECUTOR_LOCALE", "en-US").strip() or "en-US"
+    if value not in SUPPORTED_LOCALES:
+        raise ExecutorError(
+            "INVALID_ARGUMENT",
+            "Unsupported locale. Pick one of: " + ", ".join(sorted(SUPPORTED_LOCALES)),
+        )
+    return value
+
+
+def _color_scheme() -> str | None:
+    value = os.environ.get("X_BROWSER_EXECUTOR_COLOR_SCHEME", "").strip().lower()
+    if not value:
+        return None
+    if value not in SUPPORTED_COLOR_SCHEMES:
+        raise ExecutorError(
+            "INVALID_ARGUMENT", "Color scheme must be light, dark, or no-preference."
+        )
+    return value
+
+
+def _viewport_class(width: int) -> str:
+    """Classify the live viewport with the same bands the bridge advertises."""
+
+    if width < 768:
+        return "mobile"
+    if width < 1024:
+        return "tablet"
+    return "desktop"
+
+
+def _visible_links(raw: Any) -> list[str]:
+    """Keep the hrefs a human could see, without query strings or fragments.
+
+    A timeline read needs post permalinks, and innerText does not contain them.
+    Only same-allowlist http(s) anchors survive; duplicates collapse and the
+    list stays bounded so one page cannot flood the tool result.
+    """
+
+    if not isinstance(raw, list):
+        return []
+    seen: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value or len(value) > 300:
+            continue
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            continue
+        clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if not _allowed(clean):
+            continue
+        if clean not in seen:
+            seen.append(clean)
+        if len(seen) >= MAX_VISIBLE_LINKS:
+            break
+    return seen
+
+
+def _visible_articles(raw: Any) -> list[dict[str, Any]]:
+    """Keep bounded per-item text so a timeline can be read as items.
+
+    X renders each post in an <article>. Returning the whole body text alone
+    makes it impossible to attribute a permalink to a specific post, so the
+    observation carries one bounded record per article instead.
+    """
+
+    if not isinstance(raw, list):
+        return []
+    articles: list[dict[str, Any]] = []
+    for item in raw[:MAX_ARTICLES]:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            continue
+        text = text.strip()
+        if not text:
+            continue
+        links = _visible_links(item.get("links"))
+        articles.append({"text": text[:MAX_ARTICLE_TEXT], "links": links})
+    return articles
+
+
+def _profile_hosts() -> frozenset[str]:
+    raw = os.environ.get("X_BROWSER_EXECUTOR_PROFILE_HOSTS", "").strip()
+    if not raw:
+        return frozenset({"x.com", "www.x.com", "twitter.com", "www.twitter.com"})
+    return frozenset(item.strip().lower() for item in raw.split(",") if item.strip())
+
+
+def _profile_screen_name(url: str, hosts: frozenset[str] | None = None) -> str | None:
+    """Return the handle when the current URL is a profile page, else None."""
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    allowed = _profile_hosts() if hosts is None else hosts
+    if host not in allowed:
+        return None
+    segments = [part for part in parsed.path.split("/") if part]
+    if len(segments) != 1:
+        return None
+    handle = segments[0]
+    if handle.lower() in X_RESERVED_PATHS:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+        return None
+    return handle
+
+
+def _user_id_from_html(html: str, handle: str) -> str | None:
+    """Read the numeric account id that X embeds in profile media URLs.
+
+    X does not put the id in visible text, and scraping arbitrary JSON blobs
+    would be fragile. Profile banner and avatar URLs carry it as a path
+    segment, which is stable and unambiguous for the page it appears on.
+    """
+
+    for pattern in (
+        r"profile_banners/(\d{5,25})/",
+        r"profile_images/(\d{5,25})/",
+    ):
+        match = re.search(pattern, html)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _audit(event: dict[str, Any]) -> None:
@@ -168,25 +349,31 @@ class Browser:
                     browser_options = {
                         "executable_path": CHROME,
                         "headless": os.environ.get("X_BROWSER_EXECUTOR_HEADLESS") == "1",
-                        "viewport": {
-                            "width": int(os.environ.get("X_BROWSER_EXECUTOR_WIDTH", "1280")),
-                            "height": int(os.environ.get("X_BROWSER_EXECUTOR_HEIGHT", "720")),
-                        },
+                        "viewport": _viewport(),
                         "args": ["--disable-sync", "--no-first-run", "--no-default-browser-check"],
                         "user_agent": _user_agent(),
                     }
+                    context_options: dict[str, Any] = {
+                        "locale": _locale(),
+                        "device_scale_factor": _device_scale_factor(),
+                    }
+                    color_scheme = _color_scheme()
+                    if color_scheme is not None:
+                        context_options["color_scheme"] = color_scheme
                     if proxy:
                         browser_options["proxy"] = {"server": proxy}
                     if self.persistent:
                         self.context = self.playwright.chromium.launch_persistent_context(
-                            user_data_dir=str(self.profile), **browser_options
+                            user_data_dir=str(self.profile),
+                            **browser_options,
+                            **context_options,
                         )
                     else:
                         viewport = browser_options.pop("viewport")
                         user_agent = browser_options.pop("user_agent")
                         self.browser = self.playwright.chromium.launch(**browser_options)
                         self.context = self.browser.new_context(
-                            viewport=viewport, user_agent=user_agent
+                            viewport=viewport, user_agent=user_agent, **context_options
                         )
                     self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
                     self.page.goto(url, wait_until="commit", timeout=15000)
@@ -209,16 +396,71 @@ class Browser:
             """() => ({title: document.title, url: location.href,
             text: (document.body && document.body.innerText || '').slice(0, 12000),
             width: innerWidth, height: innerHeight, dpr: devicePixelRatio,
+            outer_width: outerWidth, outer_height: outerHeight,
+            screen_width: screen.width, screen_height: screen.height,
+            visual_scale: (window.visualViewport && visualViewport.scale) || 1,
+            locale: navigator.language,
+            color_scheme: (matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark' : 'light'),
+            links: Array.from(document.querySelectorAll('a[href]'))
+                .slice(0, 400)
+                .map(a => a.href)
+                .filter(href => typeof href === 'string' && href.length < 300),
+            articles: Array.from(document.querySelectorAll('article'))
+                .slice(0, 40)
+                .map(node => ({
+                    text: (node.innerText || '').slice(0, 1500),
+                    links: Array.from(node.querySelectorAll('a[href]'))
+                        .slice(0, 20)
+                        .map(a => a.href)
+                        .filter(href => typeof href === 'string' && href.length < 300),
+                })),
             scrollX, scrollY, ready: document.readyState})"""
         )
         if not _allowed(result["url"]):
             raise ExecutorError("HOST_NOT_ALLOWED", "The page navigated outside the executor allowlist.")
-        fingerprint_data = {key: result.get(key) for key in ("url", "width", "height", "dpr", "scrollX", "scrollY", "ready")}
+        result["links"] = _visible_links(result.get("links"))
+        result["articles"] = _visible_articles(result.get("articles"))
+        result["article_count"] = len(result["articles"])
+
+        handle = _profile_screen_name(result["url"])
+        if handle:
+            # Only profile pages pay for this read. The HTML stays inside the
+            # worker; the caller receives validated fields, never the source.
+            html = self.page.evaluate("document.documentElement.outerHTML")
+            status_ids: list[str] = []
+            for article in result["articles"]:
+                for link in article["links"]:
+                    parts = [p for p in urlparse(link).path.split("/") if p]
+                    if len(parts) == 3 and parts[0].lower() == handle.lower() and parts[1] == "status":
+                        if parts[2].isdigit() and parts[2] not in status_ids:
+                            status_ids.append(parts[2])
+            result["profile"] = {
+                "screen_name": handle,
+                "user_id": _user_id_from_html(html, handle),
+                "recent_post_ids": status_ids[:20],
+                "profile_url": f"https://x.com/{handle}",
+            }
+        # Locale and color scheme are part of the fingerprint: both change what
+        # the page renders, so a cached observation must not survive a flip.
+        fingerprint_data = {
+            key: result.get(key)
+            for key in (
+                "url", "width", "height", "dpr", "scrollX", "scrollY",
+                "ready", "locale", "color_scheme",
+            )
+        }
         fingerprint = hashlib.sha256(_json(fingerprint_data)).hexdigest()
         self.observation_id = "obs_" + secrets.token_hex(8)
         self.fingerprint = fingerprint
         self.observed_at = time.monotonic()
-        return {"observation_id": self.observation_id, "fingerprint_sha256": fingerprint, "browser_family": "chromium", **result}
+        return {
+            "observation_id": self.observation_id,
+            "fingerprint_sha256": fingerprint,
+            "browser_family": "chromium",
+            "viewport_class": _viewport_class(result["width"]),
+            **result,
+        }
 
     def screenshot(
         self, observation_id: str, fingerprint_sha256: str, include_data: bool = False
