@@ -280,6 +280,7 @@ class XStarter:
             BrowserBridge(
                 state_dir,
                 allowed_browser_family=self.environ.get("X_STARTER_BROWSER_FAMILY"),
+                account_binding=self._account_binding_key(),
             )
             if self.mode == "browser"
             else None
@@ -330,10 +331,31 @@ class XStarter:
         not a safe default for that. X_STARTER_STATE_DIR still overrides this.
         """
 
-        local = self.environ.get("LOCALAPPDATA", "").strip()
+        # Fall back to the real process environment, not only the injected
+        # mapping. A caller that injects a partial environ would otherwise
+        # inherit leftover state from a previous run, including a stale
+        # account snapshot that lets a write be prepared for the wrong person.
+        local = (
+            self.environ.get("LOCALAPPDATA", "").strip()
+            or os.environ.get("LOCALAPPDATA", "").strip()
+        )
         if local:
             return Path(local) / "x-starter" / "state"
         return Path(SCRIPT_DIR) / ".x-starter-state"
+
+    def _account_binding_key(self) -> str:
+        """Identify the signed-in profile that owns any stored account snapshot.
+
+        The binding is a hash of the resolved owner profile path, so a snapshot
+        observed through one profile cannot authorize a write through another,
+        and the raw path never reaches the state file.
+        """
+
+        owner = self.environ.get("X_STARTER_OWNER_PROFILE", "").strip()
+        if not owner:
+            return "no-owner-profile"
+        resolved = str(Path(owner).expanduser().resolve()).lower()
+        return "owner:" + hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:32]
 
     def _browser_for(self, arguments: dict[str, Any]) -> Browser:
         self._bridge()

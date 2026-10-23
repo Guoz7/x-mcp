@@ -278,6 +278,7 @@ class BrowserBridge:
         *,
         now: Callable[[], float] = time.time,
         allowed_browser_family: str | None = None,
+        account_binding: str | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -289,6 +290,10 @@ class BrowserBridge:
             if isinstance(allowed_browser_family, str) and allowed_browser_family.strip()
             else None
         )
+        # Which signed-in profile produced the stored account snapshot. A
+        # snapshot observed for one profile must never authorize a write for a
+        # different one; without this, leftover test state could act as owner.
+        self.account_binding = (account_binding or "").strip() or None
         if not self.path.exists():
             self._write(self._empty())
 
@@ -401,8 +406,17 @@ class BrowserBridge:
 
     def account_snapshot(self) -> dict[str, Any] | None:
         with self._lock:
-            value = self._read().get("account")
-        return value if isinstance(value, dict) else None
+            data = self._read()
+            value = data.get("account")
+            if not isinstance(value, dict):
+                return None
+            stored = data.get("account_binding")
+        # A snapshot without a binding predates this check or came from another
+        # profile. Treating it as valid is how a leftover account can authorize
+        # a write it never observed, so it must be re-observed.
+        if not self.account_binding or stored != self.account_binding:
+            return None
+        return value
 
     def record_account(
         self,
@@ -425,6 +439,7 @@ class BrowserBridge:
         with self._lock:
             data = self._read()
             data["account"] = snapshot
+            data["account_binding"] = self.account_binding
             self._append_evidence(
                 data,
                 "account_observed",
@@ -967,6 +982,7 @@ class BrowserBridge:
             }
             snapshot["snapshot_sha256"] = _digest(snapshot)
             data["account"] = snapshot
+            data["account_binding"] = self.account_binding
             return snapshot
         if action_type == "observe_timeline":
             posts = result.get("posts")
