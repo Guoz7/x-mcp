@@ -603,6 +603,38 @@ class BrowserBridge:
             )
         if expected_text is not None and not expected_text.strip():
             raise BridgeError("INVALID_ARGUMENT", "expected_text must not be empty.")
+        # Deleting is a write. It must be grounded in an account this profile
+        # actually observed, exactly like publishing, so a stale or foreign
+        # snapshot cannot authorize a delete on someone else's post.
+        account = self.account_snapshot()
+        if not account:
+            raise BridgeError(
+                "ACCOUNT_OBSERVATION_REQUIRED",
+                "Observe the X account before preparing a delete.",
+            )
+        if account["username"].lower() != expected_username.lstrip("@").lower():
+            raise BridgeError(
+                "ACCOUNT_MISMATCH",
+                "The expected account does not match the observed account.",
+                details={
+                    "expected": expected_username.lstrip("@"),
+                    "observed": account["username"],
+                },
+            )
+        observed_at = account.get("observed_at")
+        try:
+            from datetime import datetime
+
+            observed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+            age = self._now() - observed.timestamp()
+        except (TypeError, ValueError):
+            age = ttl_seconds + 1
+        if age > 15 * 60:
+            raise BridgeError(
+                "ACCOUNT_OBSERVATION_STALE",
+                "The account snapshot is older than 15 minutes. Observe it again.",
+                details={"age_seconds": round(age)},
+            )
         write_id = "wr_" + uuid_hex()
         code = secrets.token_hex(3).upper()
         now = self._now()
@@ -615,8 +647,9 @@ class BrowserBridge:
             "expires_epoch": now + ttl_seconds,
             "confirmation_phrase": f"DELETE {code}",
             "account": {
-                "username": expected_username.lstrip("@"),
-                "snapshot_sha256": None,
+                "username": account["username"],
+                "snapshot_sha256": account["snapshot_sha256"],
+                "posts_count": account["posts_count"],
             },
             "post_url": post_url,
             "status_id": status_id,

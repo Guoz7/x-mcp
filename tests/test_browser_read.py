@@ -305,6 +305,40 @@ class OwnerReadToolTests(unittest.TestCase):
         # The failed action is still recorded, so the caller can audit it.
         self.assertIn("action_id", result["error"]["details"])
 
+    def test_delete_requires_an_observed_account(self) -> None:
+        """Deleting is a write; it must not run on an unobserved profile."""
+
+        app = self._app()
+        result = app.call_tool(
+            "x_post_delete",
+            {
+                "post_url": "https://x.com/owner/status/123",
+                "expected_username": "owner",
+                "expected_text": "hello",
+            },
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "ACCOUNT_OBSERVATION_REQUIRED")
+        app.close()
+
+    def test_delete_rejects_a_different_observed_account(self) -> None:
+        app = self._app()
+        app._bridge().record_account(
+            username="owner", user_id="1", display_name="Owner",
+            posts_count=3, recent_post_ids=[],
+        )
+        result = app.call_tool(
+            "x_post_delete",
+            {
+                "post_url": "https://x.com/intruder/status/123",
+                "expected_username": "intruder",
+                "expected_text": "hello",
+            },
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "ACCOUNT_MISMATCH")
+        app.close()
+
     def test_owner_read_rejects_an_unknown_target(self) -> None:
         app = self._app()
         result = app.call_tool("x_owner_read", {"target": "followers"})

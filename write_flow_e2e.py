@@ -252,6 +252,106 @@ def main() -> int:
                 any("completed" in str(item) for item in kinds),
                 kinds,
             )
+
+            # 10. Delete restore path: prepare, confirm, claim, click, and prove
+            # the post is gone from the visible page.
+            delete_prepared = app.call_tool(
+                "x_post_delete",
+                {
+                    "post_url": "https://x.com/tester/status/901",
+                    "expected_username": "tester",
+                    "expected_text": text,
+                    "ttl_seconds": 300,
+                },
+            )
+            check("delete_prepared", delete_prepared["ok"] is True, delete_prepared.get("error"))
+            delete_record = delete_prepared.get("data") or {}
+            delete_phrase = delete_record.get("confirmation_phrase", "")
+            check("delete_phrase_issued", delete_phrase.startswith("DELETE "), delete_phrase)
+
+            delete_queued = app.call_tool(
+                "x_post_delete",
+                {
+                    "write_id": delete_record.get("write_id", ""),
+                    "confirmation": delete_phrase,
+                    "confirm": True,
+                },
+            )
+            check("delete_queued", delete_queued["ok"] is True, delete_queued.get("error"))
+            delete_action = ((delete_queued.get("data") or {}).get("action") or {})
+            check(
+                "queued_action_is_delete",
+                delete_action.get("type") == "delete_post",
+                delete_action.get("type"),
+            )
+
+            delete_claim = app.call_tool("x_browser_next_action", {})
+            delete_live = ((delete_claim.get("data") or {}).get("action") or {})
+            delete_grant = {
+                "action_id": delete_live.get("action_id", ""),
+                "claim_token": delete_live.get("claim_token", ""),
+            }
+            check("delete_claimed", bool(delete_grant["action_id"]))
+
+            # A delete claim may click but must not type.
+            reopened = app.call_tool("browser_open", {"url": f"{base}/home"})
+            delete_page = reopened["data"]
+            refused = app.call_tool(
+                "browser_type",
+                {
+                    "observation_id": delete_page["observation_id"],
+                    "fingerprint_sha256": delete_page["fingerprint_sha256"],
+                    "text": "should not type",
+                    "selector": "#box",
+                    **delete_grant,
+                },
+            )
+            check("delete_claim_cannot_type", refused["ok"] is False)
+            check(
+                "delete_typing_error",
+                refused.get("error", {}).get("code") == "X_ACTION_SCOPE_MISMATCH",
+                refused.get("error", {}).get("code"),
+            )
+
+            # The submit click is still available after the refused typing.
+            after_refusal = app.call_tool("browser_observe", {})
+            page_now = after_refusal["data"]
+            deleted = app.call_tool(
+                "browser_click",
+                {
+                    "observation_id": page_now["observation_id"],
+                    "fingerprint_sha256": page_now["fingerprint_sha256"],
+                    "selector": "#submit",
+                    **delete_grant,
+                },
+            )
+            check("delete_click_performed", deleted["ok"] is True, deleted.get("error"))
+            check(
+                "delete_postcondition_text_gone",
+                text not in (deleted.get("data") or {}).get("text", ""),
+                (deleted.get("data") or {}).get("text", "")[-60:],
+            )
+
+            delete_done = app.call_tool(
+                "x_browser_complete_action",
+                {
+                    "action_id": delete_grant["action_id"],
+                    "claim_token": delete_grant["claim_token"],
+                    "outcome": "succeeded",
+                    "result": {
+                        "post_url": "https://x.com/tester/status/901",
+                        "verified_absent": True,
+                        # The bridge refuses a delete whose observed text hash
+                        # does not match what was prepared, so the executor has
+                        # to report the text it saw before deleting.
+                        "observed_text_sha256": payload.get("text_sha256", ""),
+                    },
+                    "executor_context": {"browser_family": "chromium"},
+                    "locator_strategy": "dom",
+                    "postconditions_checked": ["post no longer visible"],
+                },
+            )
+            check("delete_completed", delete_done["ok"] is True, delete_done.get("error"))
         finally:
             app.close()
             server.shutdown()
