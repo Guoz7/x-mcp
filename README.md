@@ -122,6 +122,38 @@ The bridge stores account and timeline snapshots with SHA-256 hashes. Write
 preparation, admission, claims, results, failures, and uncertain outcomes are
 appended to a hash-chained evidence log.
 
+## DSH browser executor smoke test
+
+The repository also contains a local browser executor for agent integration
+tests. It uses a dedicated Chromium profile through the bundled Playwright
+environment. It returns visible page data and a state fingerprint. It does not
+expose browser storage.
+
+The verified DSH chain is:
+
+```text
+DSH -> xstarter MCP -> browser_open/browser_observe -> Chromium -> Google/X
+```
+
+The current smoke test proves Google read-only navigation and X signed-out
+login observation. Screenshot capture is fingerprint-guarded. Guarded click is
+available for read-only flows; signed-in X writes still require the X action
+queue and exact confirmation. The owner must log in to the dedicated profile
+before an account read can be tested.
+
+An X click is denied unless the caller passes `action_id` and `claim_token`
+from a live claimed action. The server verifies the claim and its session
+before arming the executor for exactly one click; the grant is cleared after
+use or when the lease expires. HEADLESS mode sends a normal Chrome user agent
+because X rejects the default `HeadlessChrome` identifier with HTTP 403.
+
+Set `X_STARTER_OWNER_PROFILE` to a dedicated persistent Chromium directory to
+use the owner's signed-in X session. That profile is granted to exactly one
+MCP session at a time; other sessions receive `BROWSER_OWNER_EXCLUSIVE`.
+Closing the owning session releases it. This is local single-owner mode, not
+remote multi-tenant authentication. The profile path is never returned in tool
+output, and the executor exposes no cookie, storage or password access.
+
 Each claimed browser action also exposes a context contract for `mobile`,
 `tablet`, and `desktop` layouts. Completion can report safe executor metadata,
 the locator strategy, and checked preconditions and postconditions. Sensitive
@@ -297,7 +329,13 @@ x-starter/
 ## Limits
 
 - Browser extraction depends on the signed-in X layout and locale.
-- The MCP server does not own a browser. A trusted agent executes queued actions.
+- Confirmed X jobs still require a trusted executor. The integrated browser
+  prototype owns a separate browser/profile per MCP session, with eight slots.
+  MCP DELETE, idle session expiry, and server shutdown all close these
+  browsers. New sessions do not inherit an existing owner's login.
+- Generic clicks on X are blocked pending confirmed-job integration. The
+  standalone browser executor endpoint is a local prototype, not a production
+  multi-tenant service.
 - Real X API reads and OAuth callback are implemented but not verified with a real account in this run.
 - X API writes are implemented behind OAuth user context; server-side scheduling remains disabled.
 - Output schemas validate the shared envelope. Tool-specific `data` shapes are

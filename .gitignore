@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .x-starter-token-store/
 .x-starter-state/
+.browser-executor-profile/
+.browser-executor-audit.jsonl
 .agent-work/
 *.log
 .env

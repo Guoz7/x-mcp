@@ -50,6 +50,7 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from browser_bridge import BridgeError, BrowserBridge, _x_post_url_parts  # noqa: E402
+from browser_executor import Browser, ExecutorError, TOOLS as BROWSER_TOOLS  # noqa: E402
 from oauth import OAuthError, OAuthManager, validate_account_ref  # noqa: E402
 from x_api import XApiClient, XApiError  # noqa: E402
 from x_public import PublicReadError, PublicXClient  # noqa: E402
@@ -153,9 +154,17 @@ class McpSession:
 class SessionRegistry:
     """Thread-safe, bounded, in-memory MCP session registry."""
 
-    def __init__(self, *, idle_seconds: int = 30 * 60, limit: int = MAX_SESSIONS) -> None:
+    def __init__(
+        self,
+        *,
+        idle_seconds: int = 30 * 60,
+        limit: int = MAX_SESSIONS,
+        on_expire: Any = None,
+    ) -> None:
         self.idle_seconds = idle_seconds
         self.limit = limit
+        # Expiry must release per-session resources owned outside this registry.
+        self.on_expire = on_expire
         self._sessions: dict[str, McpSession] = {}
         self._lock = threading.Lock()
 
@@ -214,6 +223,12 @@ class SessionRegistry:
             with session.condition:
                 session.stream_closed = True
                 session.condition.notify_all()
+            if self.on_expire is not None:
+                try:
+                    self.on_expire(sid)
+                except Exception:
+                    # A cleanup failure must not block expiry of other sessions.
+                    pass
 
 
 class XStarter:
@@ -278,6 +293,78 @@ class XStarter:
             endpoint=self.environ.get("X_STARTER_AGENT_HELP_BOARD_URL"),
         )
         self.connector_registry = _default_connector_registry(self.mode)
+        self._browser_lock = threading.RLock()
+        self._browsers: dict[str, Browser] = {}
+        self._browser_namespace = uuid.uuid4().hex
+        self._browser_profile_root = self._profile_root(state_dir)
+        owner_profile = self.environ.get("X_STARTER_OWNER_PROFILE", "").strip()
+        self._owner_profile = (
+            Path(owner_profile).expanduser().resolve() if owner_profile else None
+        )
+        self._owner_session: str | None = None
+        self._browser_closed = False
+
+    def _profile_root(self, state_dir: str) -> Path:
+        """Keep disposable Chromium profiles off slow removable media.
+
+        Chromium writes thousands of small files at startup. Measured on this
+        host, a profile on the USB HDD took 15-33 s while the same profile on
+        the NVMe SSD took 0.3 s. X_STARTER_BROWSER_PROFILE_DIR overrides this.
+        """
+
+        configured = self.environ.get("X_STARTER_BROWSER_PROFILE_DIR", "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
+        local = os.environ.get("LOCALAPPDATA", "").strip()
+        if local:
+            return Path(local) / "x-starter" / "browser-profiles"
+        return Path(state_dir) / "browser-profiles"
+
+    def _browser_for(self, arguments: dict[str, Any]) -> Browser:
+        self._bridge()
+        session = arguments.get("_mcp_session_id") or "stdio"
+        with self._browser_lock:
+            if self._browser_closed:
+                raise StarterError("BROWSER_EXECUTOR_CLOSED", "The browser executor service is closed.")
+            existing = self._browsers.get(session)
+            if existing is not None and getattr(existing, "timed_out", False) is True:
+                # A stranded worker cannot accept new work. Drop it and start
+                # a fresh executor rather than failing every later tool call.
+                existing.close()
+                del self._browsers[session]
+            if session not in self._browsers:
+                if self._owner_profile is not None:
+                    # A signed-in profile must not be shared by two sessions.
+                    if self._owner_session not in {None, session}:
+                        raise StarterError(
+                            "BROWSER_OWNER_EXCLUSIVE",
+                            "The owner browser is already used by another MCP session.",
+                        )
+                    self._owner_session = session
+                    self._browsers[session] = Browser(profile=self._owner_profile)
+                    return self._browsers[session]
+                if len(self._browsers) >= 8:
+                    raise StarterError("BROWSER_CAPACITY", "Close an MCP session before opening another browser.")
+                digest = hashlib.sha256(session.encode()).hexdigest()
+                self._browsers[session] = Browser(
+                    profile=self._browser_profile_root / self._browser_namespace / digest
+                )
+            return self._browsers[session]
+
+    def close_browser_session(self, session_id: str) -> None:
+        with self._browser_lock:
+            browser = self._browsers.get(session_id)
+            if browser is not None:
+                browser.close()
+                del self._browsers[session_id]
+            if self._owner_session == session_id:
+                self._owner_session = None
+
+    def close(self) -> None:
+        with self._browser_lock:
+            self._browser_closed = True
+            for session_id in list(self._browsers):
+                self.close_browser_session(session_id)
 
     def _validate_live_config(self) -> LiveConfig:
         if not self.environ.get("X_STARTER_ENABLE_LIVE", "").strip():
@@ -838,6 +925,93 @@ class XStarter:
                 },
             },
             {
+                "name": "browser_open",
+                "title": "Open an allowlisted browser page",
+                "description": (
+                    "Open a URL in the dedicated visible browser executor and return a fresh observation. "
+                    "The executor never returns cookies, tokens, passwords, or private storage."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"url": {"type": "string", "minLength": 1, "maxLength": 2048}},
+                    "required": ["url"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False},
+            },
+            next(tool for tool in BROWSER_TOOLS if tool["name"] == "browser_scroll"),
+            {
+                "name": "browser_type",
+                "title": "Type into the focused field",
+                "description": (
+                    "Type up to 280 characters into the focused field. On X this "
+                    "requires a claimed action_id and claim_token."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "observation_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "fingerprint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                        "text": {"type": "string", "minLength": 1, "maxLength": 280},
+                        "action_id": {"type": "string", "maxLength": 64},
+                        "claim_token": {"type": "string", "maxLength": 128},
+                    },
+                    "required": ["observation_id", "fingerprint_sha256", "text"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False},
+            },
+            {
+                "name": "browser_observe",
+                "title": "Observe the visible browser page",
+                "description": "Return safe visible page text and a state fingerprint.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+                "annotations": {"readOnlyHint": True, "idempotentHint": True},
+            },
+            {
+                "name": "browser_screenshot",
+                "title": "Capture the visible browser page",
+                "description": "Capture a screenshot bound to the current observation fingerprint.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "observation_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "fingerprint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                        "include_data": {"type": "boolean", "default": False},
+                    },
+                    "required": ["observation_id", "fingerprint_sha256"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True},
+            },
+            {
+                "name": "browser_click",
+                "title": "Perform one guarded browser click",
+                "description": "Click one selector or coordinate only when the observation fingerprint is unchanged.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "observation_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                        "fingerprint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                        "selector": {"type": "string", "maxLength": 240},
+                        "x_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                        "y_ratio": {"type": "number", "minimum": 0, "maximum": 1},
+                        "action_id": {"type": "string", "maxLength": 64},
+                        "claim_token": {"type": "string", "maxLength": 128},
+                    },
+                    "required": ["observation_id", "fingerprint_sha256"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False},
+            },
+            {
+                "name": "browser_close",
+                "title": "Close the dedicated browser",
+                "description": "Close the dedicated browser executor process.",
+                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+                "annotations": {"readOnlyHint": False, "destructiveHint": False},
+            },
+            {
                 "name": "x_browser_next_action",
                 "title": "Claim the next browser action",
                 "description": (
@@ -1102,6 +1276,13 @@ class XStarter:
         scoped = dict(arguments)
         if session_id is not None:
             scoped["_mcp_session_id"] = session_id
+        # Serialize browser dispatch against session deletion and app shutdown.
+        browser_dispatch = name in {
+            "browser_open", "browser_observe", "browser_screenshot", "browser_click",
+            "browser_close", "browser_scroll", "browser_type"
+        }
+        if browser_dispatch:
+            self._browser_lock.acquire()
         try:
             trace.append(_event("mcp_server", "request_validated", tool=name, mode=self.mode))
             if name == "x_session_status":
@@ -1128,6 +1309,20 @@ class XStarter:
                 data = self._x_post_delete(scoped, trace)
             elif name == "x_timeline_restore":
                 data = self._x_timeline_restore(arguments, trace)
+            elif name == "browser_open":
+                data = self._browser_open(scoped, trace)
+            elif name == "browser_observe":
+                data = self._browser_observe(scoped, trace)
+            elif name == "browser_scroll":
+                data = self._browser_scroll(scoped, trace)
+            elif name == "browser_screenshot":
+                data = self._browser_screenshot(scoped, trace)
+            elif name == "browser_click":
+                data = self._browser_click(scoped, trace)
+            elif name == "browser_type":
+                data = self._browser_type(scoped, trace)
+            elif name == "browser_close":
+                data = self._browser_close(scoped, trace)
             elif name == "x_browser_next_action":
                 data = self._x_browser_next_action(scoped, trace)
             elif name == "x_browser_complete_action":
@@ -1224,6 +1419,10 @@ class XStarter:
                 },
                 "meta": self._meta(trace, simulated=self.mode == "mock"),
             }
+
+        finally:
+            if browser_dispatch:
+                self._browser_lock.release()
 
     def _meta(self, trace: list[dict[str, Any]], *, simulated: bool) -> dict[str, Any]:
         external = any(
@@ -1515,6 +1714,130 @@ class XStarter:
             ),
         }
 
+    def _browser_open(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        if self.mode != "browser":
+            raise StarterError("BROWSER_BRIDGE_REQUIRED", "Browser executor requires X_STARTER_MODE=browser.")
+        url = _required_string(arguments, "url", max_length=2048)
+        try:
+            result = self._browser_for(arguments).open(url)
+        except ExecutorError as exc:
+            raise StarterError(exc.code, exc.message) from None
+        trace.append(_event("browser_executor", "page_opened", host=urlparse(url).hostname))
+        return result
+
+    def _browser_observe(self, arguments: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
+        if self.mode != "browser":
+            raise StarterError("BROWSER_BRIDGE_REQUIRED", "Browser executor requires X_STARTER_MODE=browser.")
+        try:
+            result = self._browser_for(arguments).observe()
+        except ExecutorError as exc:
+            raise StarterError(exc.code, exc.message) from None
+        trace.append(_event("browser_executor", "page_observed", observation_id=result["observation_id"]))
+        return result
+
+    def _browser_screenshot(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        self._bridge()
+        try:
+            result = self._browser_for(arguments).screenshot(
+                _required_string(arguments, "observation_id", max_length=64),
+                _required_string(arguments, "fingerprint_sha256", max_length=64),
+                bool(arguments.get("include_data", False)),
+            )
+        except ExecutorError as exc:
+            raise StarterError(exc.code, exc.message) from None
+        trace.append(_event("browser_executor", "screenshot_captured", observation_id=result["observation_id"]))
+        return result
+
+    def _browser_click(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        self._bridge()
+        browser = self._browser_for(arguments)
+        self._arm_x_action(arguments, browser, trace)
+        try:
+            result = browser.click(
+                observation_id=_required_string(arguments, "observation_id", max_length=64),
+                fingerprint_sha256=_required_string(arguments, "fingerprint_sha256", max_length=64),
+                selector=arguments.get("selector"),
+                x_ratio=arguments.get("x_ratio"),
+                y_ratio=arguments.get("y_ratio"),
+            )
+        except ExecutorError as exc:
+            raise StarterError(exc.code, exc.message) from None
+        trace.append(_event("browser_executor", "click_completed", observation_id=result["observation_id"]))
+        return result
+
+    def _browser_scroll(self, arguments: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
+        self._bridge()
+        try:
+            result = self._browser_for(arguments).scroll(
+                observation_id=_required_string(arguments, "observation_id", max_length=64),
+                fingerprint_sha256=_required_string(arguments, "fingerprint_sha256", max_length=64),
+                delta_y=arguments.get("delta_y"),
+            )
+        except ExecutorError as exc:
+            raise StarterError(exc.code, exc.message) from None
+        trace.append(_event("browser_executor", "page_scrolled", observation_id=result["observation_id"]))
+        return result
+
+    def _arm_x_action(
+        self, arguments: dict[str, Any], browser: Browser, trace: list[dict[str, Any]]
+    ) -> None:
+        action_id = arguments.get("action_id")
+        claim_token = arguments.get("claim_token")
+        if (action_id is None) != (claim_token is None):
+            raise StarterError(
+                "INVALID_ARGUMENT", "Provide action_id and claim_token together."
+            )
+        if action_id is None:
+            return
+        try:
+            verified = self._bridge().verify_claim(
+                _required_string(arguments, "action_id", max_length=64),
+                _required_string(arguments, "claim_token", max_length=128),
+                session_id=arguments.get("_mcp_session_id"),
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message) from None
+        try:
+            browser.authorize_x_action(
+                action_id=verified["action"]["action_id"],
+                claim_token=claim_token,
+                lease_expires_epoch=verified["lease_expires_epoch"],
+                action_type=str(verified["action"].get("type", "")),
+            )
+        except ExecutorError as exc:
+            raise StarterError(exc.code, exc.message) from None
+        trace.append(
+            _event("browser_executor", "x_action_armed",
+                   action_id=verified["action"]["action_id"])
+        )
+
+    def _browser_type(self, arguments: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
+        self._bridge()
+        browser = self._browser_for(arguments)
+        self._arm_x_action(arguments, browser, trace)
+        try:
+            result = browser.type_text(
+                observation_id=_required_string(arguments, "observation_id", max_length=64),
+                fingerprint_sha256=_required_string(arguments, "fingerprint_sha256", max_length=64),
+                text=_required_string(arguments, "text", max_length=280),
+            )
+        except ExecutorError as exc:
+            raise StarterError(exc.code, exc.message) from None
+        trace.append(_event("browser_executor", "text_typed", observation_id=result["observation_id"]))
+        return result
+
+    def _browser_close(self, arguments: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
+        self._bridge()
+        self._browser_for(arguments).close()
+        trace.append(_event("browser_executor", "browser_closed"))
+        return {"closed": True}
+
     def _x_browser_next_action(
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]
     ) -> dict[str, Any]:
@@ -1591,9 +1914,12 @@ class XStarter:
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]
     ) -> dict[str, Any]:
         action_id = _required_string(arguments, "action_id", max_length=64)
+        # Action IDs are durable handoff handles. A restarted MCP session must
+        # be able to inspect the result, while claim and completion remain
+        # session-scoped and token-protected.
         action = self._bridge().get_action(
             action_id,
-            session_id=arguments.get("_mcp_session_id"),
+            allow_cross_session=True,
         )
         trace.append(
             _event(
@@ -3033,7 +3359,10 @@ def handle_message(
         try:
             result = fixtures.handle(method, params if isinstance(params, dict) else {})
         except ValueError as exc:
-            return _rpc_error(request_id, -32602, str(exc))
+            # The spec reserves -32002 for "this URI does not exist"; the
+            # resource fixtures use ValueError for that case.
+            code = -32002 if method == "resources/read" else -32602
+            return _rpc_error(request_id, code, str(exc))
         if result is not None:
             return _rpc_result(request_id, result)
         return _rpc_error(request_id, -32601, f"Method not found: {method}")
@@ -3078,10 +3407,18 @@ def handle_message(
                 notify_client(notification)
                 notification = None
         is_error = not bool(result.get("ok"))
+        content = []
+        if not is_error and params["name"] == "browser_screenshot":
+            data = result.get("data", {})
+            image_data = data.pop("data_base64", None)
+            if image_data:
+                content.append({"type": "image", "mimeType": "image/png", "data": image_data})
+        # Keep image bytes out of the textual context and structured metadata.
+        content.insert(0, {"type": "text", "text": _json_text(result)})
         return _rpc_result(
             request_id,
             {
-                "content": [{"type": "text", "text": _json_text(result)}],
+                "content": content,
                 "structuredContent": result,
                 "isError": is_error,
             },
@@ -3212,7 +3549,7 @@ def make_http_handler(
     app: XStarter,
     sessions: SessionRegistry | None = None,
 ) -> type[BaseHTTPRequestHandler]:
-    registry = sessions or SessionRegistry()
+    registry = sessions or SessionRegistry(on_expire=app.close_browser_session)
 
     class McpHTTPServer(ThreadingHTTPServer):
         daemon_threads = True
@@ -3347,6 +3684,20 @@ def make_http_handler(
                 self._send_json(403, {"error": "Forbidden Host or Origin"})
                 return
             if self.path == "/health":
+                # A shallow health flag hides a dead browser worker. Report the
+                # executor state so DSH can distinguish "alive" from "usable".
+                browsers = []
+                with app._browser_lock:
+                    for session, browser in app._browsers.items():
+                        browsers.append({
+                            "session": hashlib.sha256(session.encode()).hexdigest()[:12],
+                            "timed_out": bool(getattr(browser, "timed_out", False)),
+                            "worker_alive": bool(
+                                getattr(browser, "worker", None)
+                                and browser.worker.is_alive()
+                            ),
+                            "page_open": getattr(browser, "page", None) is not None,
+                        })
                 self._send_json(
                     200,
                     {
@@ -3356,6 +3707,7 @@ def make_http_handler(
                         "mode": app.mode,
                         "transport": "streamable-http",
                         "conformance": app.conformance,
+                        "browser_executors": browsers,
                     },
                 )
                 return
@@ -3422,6 +3774,7 @@ def make_http_handler(
             if not session_id or not registry.delete(session_id):
                 self._send_json(404, {"error": "Session not found"})
                 return
+            app.close_browser_session(session_id)
             self.send_response(204)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -3590,6 +3943,7 @@ def run_http(app: XStarter, host: str, port: int) -> int:
         pass
     finally:
         server.server_close()
+        app.close()
     return 0
 
 
@@ -3660,9 +4014,12 @@ def main(argv: list[str] | None = None) -> int:
         from walkthrough import run_walkthrough
 
         return run_walkthrough(app)
-    if args.transport == "http":
-        return run_http(app, args.host, args.port)
-    return run_stdio(app)
+    try:
+        if args.transport == "http":
+            return run_http(app, args.host, args.port)
+        return run_stdio(app)
+    finally:
+        app.close()
 
 
 if __name__ == "__main__":

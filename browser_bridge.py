@@ -862,14 +862,46 @@ class BrowserBridge:
             return self.public_action(action, include_claim=False)
 
     def get_action(
-        self, action_id: str, *, session_id: str | None = None
+        self,
+        action_id: str,
+        *,
+        session_id: str | None = None,
+        allow_cross_session: bool = False,
     ) -> dict[str, Any]:
         with self._lock:
             data = self._read()
             action = data["actions"].get(action_id)
-            if not isinstance(action, dict) or not self._scope_ok(action, session_id):
+            if not isinstance(action, dict) or (
+                not allow_cross_session and not self._scope_ok(action, session_id)
+            ):
                 raise BridgeError("ACTION_NOT_FOUND", "The browser action does not exist.")
             return self.public_action(action, include_claim=False)
+
+    def verify_claim(
+        self,
+        action_id: str,
+        claim_token: str,
+        *,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Prove that a caller holds a live claim before granting UI access."""
+
+        with self._lock:
+            action = self._read()["actions"].get(action_id)
+            if not isinstance(action, dict) or not self._scope_ok(action, session_id):
+                raise BridgeError("ACTION_NOT_FOUND", "The browser action does not exist.")
+            if action["status"] != "claimed":
+                raise BridgeError(
+                    "ACTION_NOT_CLAIMED",
+                    "Only a claimed action can grant browser access.",
+                    details={"state": action["status"]},
+                )
+            if not secrets.compare_digest(str(action.get("claim_token", "")), claim_token):
+                raise BridgeError("CLAIM_TOKEN_MISMATCH", "The action claim token is invalid.")
+            return {
+                "action": self.public_action(action, include_claim=False),
+                "lease_expires_epoch": float(action.get("lease_expires_epoch", 0)),
+            }
 
     def _validate_action_result(
         self,

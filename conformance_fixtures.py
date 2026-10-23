@@ -89,6 +89,39 @@ def _empty_input_schema() -> dict[str, Any]:
     }
 
 
+def _content_output_schema() -> dict[str, Any]:
+    """Declare the shape every fixture tool returns.
+
+    The fixtures all return a content block list (optionally with ``isError``),
+    so one honest schema covers them without inventing per-tool structure.
+    """
+
+    return {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+            "content": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["type"],
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["text", "image", "audio", "resource"],
+                        },
+                        "text": {"type": "string"},
+                        "data": {"type": "string"},
+                        "mimeType": {"type": "string"},
+                        "resource": {"type": "object"},
+                    },
+                },
+            },
+            "isError": {"type": "boolean"},
+        },
+    }
+
+
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "test_simple_text",
@@ -196,6 +229,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "inputSchema": JSON_SCHEMA_2020_12_INPUT_SCHEMA,
     },
 ]
+
+
+for _fixture_tool in TOOL_DEFINITIONS:
+    # Every fixture returns MCP content blocks, so one shared declaration is
+    # accurate. setdefault keeps any future per-tool schema intact.
+    _fixture_tool.setdefault("outputSchema", _content_output_schema())
 
 
 RESOURCES: list[dict[str, Any]] = [
@@ -588,6 +627,10 @@ def _handle_tool_call(params: dict[str, Any]) -> dict[str, Any]:
     arguments = params.get("arguments")
     if not isinstance(arguments, dict):
         arguments = {}
+    # Reject malformed input before any fixture handler runs. The official
+    # robustness checks send wrong types and expect -32602 rather than a
+    # partially executed tool.
+    _validate_arguments(name, arguments)
     meta = params.get("_meta")
     if not isinstance(meta, dict):
         meta = {}
@@ -811,6 +854,7 @@ def _get_prompt(params: dict[str, Any]) -> dict[str, Any]:
     arguments = params.get("arguments")
     if not isinstance(arguments, dict):
         arguments = {}
+    _validate_prompt_arguments(name, arguments)
 
     if name == "test_simple_prompt":
         return {
@@ -941,6 +985,78 @@ def _required_string(params: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} must be a non-empty string")
     return value
+
+
+def _schema_type_matches(value: Any, expected: str) -> bool:
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    return True
+
+
+def _definition(name: str) -> dict[str, Any] | None:
+    for definition in TOOL_DEFINITIONS:
+        if definition.get("name") == name:
+            return definition
+    return None
+
+
+def _validate_arguments(name: str, arguments: dict[str, Any]) -> None:
+    """Check required keys and primitive types against the declared schema."""
+
+    definition = _definition(name)
+    if definition is None:
+        raise ValueError(f"Unknown tool: {name}")
+    schema = definition.get("inputSchema") or {}
+    properties = schema.get("properties") or {}
+    required = schema.get("required") or []
+    for key in required:
+        if key not in arguments:
+            raise ValueError(f"Missing required argument: {key}")
+    if schema.get("additionalProperties") is False:
+        unknown = sorted(set(arguments) - set(properties))
+        if unknown:
+            raise ValueError(f"Unknown argument: {unknown[0]}")
+    for key, value in arguments.items():
+        rule = properties.get(key) or {}
+        expected = rule.get("type")
+        if isinstance(expected, str) and not _schema_type_matches(value, expected):
+            raise ValueError(f"{key} must be of type {expected}")
+        enum = rule.get("enum")
+        if isinstance(enum, list) and value not in enum:
+            raise ValueError(f"{key} must be one of {enum}")
+    for clause in schema.get("allOf") or []:
+        for branch in clause.get("anyOf") or []:
+            if not any(key in arguments for key in branch.get("required") or []):
+                raise ValueError(
+                    "At least one of these arguments is required: "
+                    + ", ".join(branch.get("required") or [])
+                )
+
+
+def _validate_prompt_arguments(name: str, arguments: dict[str, Any]) -> None:
+    for prompt in PROMPTS:
+        if prompt.get("name") != name:
+            continue
+        required = [
+            item.get("name")
+            for item in prompt.get("arguments") or []
+            if item.get("required")
+        ]
+        for key in required:
+            value = arguments.get(key)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"Missing required argument: {key}")
+        return
 
 
 def _content(item: dict[str, Any]) -> dict[str, Any]:

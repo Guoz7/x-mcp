@@ -134,6 +134,32 @@ class BrowserCompatibilityContractTests(unittest.TestCase):
         )
         self.assertEqual(completed["status"], "uncertain")
 
+    def test_action_get_survives_mcp_session_restart(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        bridge = BrowserBridge(temp.name)
+        bridge.queue_observation(action_type="observe_account", session_id="old-session")
+        action = bridge.next_action(session_id="old-session")
+        self.assertIsNotNone(action)
+        reread = bridge.get_action(
+            action["action_id"],
+            session_id="new-session",
+            allow_cross_session=True,
+        )
+        self.assertEqual(reread["action_id"], action["action_id"])
+        self.assertEqual(reread["status"], "claimed")
+        with self.assertRaises(BridgeError) as caught:
+            bridge.complete_action(
+                action_id=action["action_id"],
+                claim_token=action["claim_token"],
+                outcome="uncertain",
+                result=None,
+                error={"code": "SESSION_RESTART"},
+                executor_context={"browser_family": "firefox"},
+                session_id="new-session",
+            )
+        self.assertEqual(caught.exception.code, "ACTION_NOT_FOUND")
+
     def test_mcp_schema_exposes_metadata_inputs(self) -> None:
         state = tempfile.TemporaryDirectory()
         self.addCleanup(state.cleanup)
