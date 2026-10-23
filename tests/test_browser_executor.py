@@ -194,8 +194,106 @@ class BrowserExecutorContractTests(unittest.TestCase):
             browser._type_impl("obs", "a" * 64, "hello")
             with self.assertRaises(ExecutorError) as caught:
                 browser._type_impl("obs", "a" * 64, "again")
-        self.assertEqual(caught.exception.code, "X_WRITE_CONFIRMATION_REQUIRED")
+        # The typing stage is single-use. The click stage survives, because
+        # publishing has to type the payload and then submit it.
+        self.assertEqual(caught.exception.code, "X_ACTION_STAGE_EXHAUSTED")
         browser.page.keyboard.type.assert_called_once_with("hello", delay=0)
+
+    def test_publish_claim_allows_one_type_then_one_click(self) -> None:
+        """A publish needs both stages; neither stage may repeat."""
+
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/home")
+        browser.page.locator.return_value.count.return_value = 1
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="publish_post",
+        )
+        with patch.object(browser, "_assert_observation"), patch.object(
+            browser, "_observe_impl", return_value={"observation_id": "fresh"}
+        ):
+            browser._type_impl("obs", "a" * 64, "hello")
+        # Typing must not consume the submit click.
+        self.assertIsNotNone(browser.x_grant)
+        with patch.object(browser, "_assert_observation"), patch.object(
+            browser, "_dispatch_click", return_value={"ok": True}
+        ):
+            browser._click_impl("obs", "a" * 64, "button", None, None)
+        self.assertIsNone(browser.x_grant)
+
+    def test_second_typing_step_is_rejected_for_the_same_claim(self) -> None:
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/home")
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="publish_post",
+        )
+        with patch.object(browser, "_assert_observation"), patch.object(
+            browser, "_observe_impl", return_value={"observation_id": "fresh"}
+        ):
+            browser._type_impl("obs", "a" * 64, "first")
+            with self.assertRaises(ExecutorError) as caught:
+                browser._type_impl("obs", "a" * 64, "second")
+        self.assertEqual(caught.exception.code, "X_ACTION_STAGE_EXHAUSTED")
+        # Exhausting typing must not disarm the pending submit click.
+        self.assertIsNotNone(browser.x_grant)
+        self.assertEqual(browser.x_grant["click_remaining"], 1)
+
+    def test_delete_claim_cannot_type(self) -> None:
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/home")
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="delete_post",
+        )
+        with patch.object(browser, "_assert_observation"):
+            with self.assertRaises(ExecutorError) as caught:
+                browser._type_impl("obs", "a" * 64, "nope")
+        self.assertEqual(caught.exception.code, "X_ACTION_SCOPE_MISMATCH")
+
+    def test_reauthorizing_the_same_claim_cannot_refill_a_stage(self) -> None:
+        """A second tool call must not reset the counters for one claim."""
+
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/home")
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="publish_post",
+        )
+        with patch.object(browser, "_assert_observation"), patch.object(
+            browser, "_observe_impl", return_value={"observation_id": "fresh"}
+        ):
+            browser._type_impl("obs", "a" * 64, "hello")
+        # The server re-verifies the claim on every browser tool call.
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="publish_post",
+        )
+        with patch.object(browser, "_assert_observation"):
+            with self.assertRaises(ExecutorError) as caught:
+                browser._type_impl("obs", "a" * 64, "again")
+        self.assertEqual(caught.exception.code, "X_ACTION_STAGE_EXHAUSTED")
+        # The submit click is still available exactly once.
+        self.assertEqual(browser.x_grant["click_remaining"], 1)
+
+    def test_fully_used_claim_cannot_be_rearmed(self) -> None:
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/home")
+        browser.page.locator.return_value.count.return_value = 1
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="delete_post",
+        )
+        with patch.object(browser, "_assert_observation"), patch.object(
+            browser, "_dispatch_click", return_value={"ok": True}
+        ):
+            browser._click_impl("obs", "a" * 64, "button", None, None)
+        with self.assertRaises(ExecutorError) as caught:
+            browser.authorize_x_action(
+                action_id="act", claim_token="t" * 32,
+                lease_expires_epoch=time.time() + 60, action_type="delete_post",
+            )
+        self.assertEqual(caught.exception.code, "X_ACTION_EXHAUSTED")
 
     def test_non_x_typing_does_not_need_a_claim(self) -> None:
         browser = Browser()

@@ -227,6 +227,42 @@ $env:X_STARTER_ENABLE_BROWSER = "1"
 python .\server.py --transport http --port 8765
 ```
 
+Or start it directly, without environment variables:
+
+```powershell
+python .\server.py --mode browser --transport http --port 8765
+```
+
+## Install in five minutes
+
+1. Check this machine:
+
+   ```powershell
+   python -X utf8 selfcheck.py
+   ```
+
+   Every failing line prints the exact command that fixes it.
+2. Print a client configuration and paste it into your host:
+
+   ```powershell
+   python -X utf8 server.py --print-config codex     # TOML for ~/.codex/config.toml
+   python -X utf8 server.py --print-config claude    # JSON for Claude
+   python -X utf8 server.py --print-config cursor    # JSON for Cursor
+   ```
+
+   The output uses the interpreter and paths that exist on this machine.
+3. For owner reads and writes only, sign in yourself:
+
+   ```powershell
+   $env:X_STARTER_OWNER_PROFILE = "$env:LOCALAPPDATA\x-starter\owner-profiles\owner-x"
+   New-Item -ItemType Directory -Force $env:X_STARTER_OWNER_PROFILE | Out-Null
+   python -X utf8 owner_login_open.py    # visible window; the agent types nothing
+   python -X utf8 owner_login_check.py   # expect state: signed_in
+   ```
+
+Public reads, the composer workbench, and the interaction links need no
+sign-in. Owner reads and every write need the profile above.
+
 State defaults to `%LOCALAPPDATA%\x-starter\state\browser`. Do not point
 `X_STARTER_STATE_DIR` at removable media: every action rewrites and fsyncs the
 state file, and the same ten actions took 292 s on the USB HDD in this project

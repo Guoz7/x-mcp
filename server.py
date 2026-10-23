@@ -957,10 +957,10 @@ class XStarter:
             next(tool for tool in BROWSER_TOOLS if tool["name"] == "browser_scroll"),
             {
                 "name": "browser_type",
-                "title": "Type into the focused field",
+                "title": "Type into a field",
                 "description": (
-                    "Type up to 280 characters into the focused field. On X this "
-                    "requires a claimed action_id and claim_token."
+                    "Type up to 280 characters, optionally focusing one field first. "
+                    "On a gated host this requires a claimed action_id and claim_token."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -968,6 +968,7 @@ class XStarter:
                         "observation_id": {"type": "string", "minLength": 1, "maxLength": 64},
                         "fingerprint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                         "text": {"type": "string", "minLength": 1, "maxLength": 280},
+                        "selector": {"type": "string", "minLength": 1, "maxLength": 240},
                         "action_id": {"type": "string", "maxLength": 64},
                         "claim_token": {"type": "string", "maxLength": 128},
                     },
@@ -1886,6 +1887,7 @@ class XStarter:
                 observation_id=_required_string(arguments, "observation_id", max_length=64),
                 fingerprint_sha256=_required_string(arguments, "fingerprint_sha256", max_length=64),
                 text=_required_string(arguments, "text", max_length=280),
+                selector=arguments.get("selector"),
             )
         except ExecutorError as exc:
             raise StarterError(exc.code, exc.message) from None
@@ -4206,17 +4208,30 @@ def config_report(app: XStarter) -> dict[str, Any]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Teaching-grade X MCP starter")
-    parser.add_argument("--mode", choices=["mock", "live"], default=None)
+    parser.add_argument("--mode", choices=["mock", "live", "browser"], default=None)
     parser.add_argument("--transport", choices=["stdio", "http"], default="stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--check-config", action="store_true")
     parser.add_argument("--demo", action="store_true")
+    parser.add_argument(
+        "--print-config",
+        nargs="?",
+        const="all",
+        choices=["all", "codex", "claude", "cursor"],
+        default=None,
+        help="Print a ready-to-paste MCP client config and exit.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.print_config:
+        from client_config import build
+
+        print(json.dumps(build(args.print_config, port=args.port), indent=2, ensure_ascii=False))
+        return 0
     try:
         app = XStarter(mode=args.mode)
     except StarterError as exc:

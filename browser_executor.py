@@ -197,6 +197,25 @@ def _profile_hosts() -> frozenset[str]:
     return frozenset(item.strip().lower() for item in raw.split(",") if item.strip())
 
 
+def _gated_hosts() -> frozenset[str]:
+    """Hosts where a browser interaction counts as an X write.
+
+    Production is x.com and twitter.com. X_BROWSER_EXECUTOR_GATED_HOSTS exists
+    so the acceptance suite can exercise the real gate against a loopback
+    fixture; it must never point at a host the owner is signed in to.
+    """
+
+    raw = os.environ.get("X_BROWSER_EXECUTOR_GATED_HOSTS", "").strip()
+    if not raw:
+        return frozenset({"x.com", "twitter.com"})
+    return frozenset(item.strip().lower() for item in raw.split(",") if item.strip())
+
+
+def _is_gated(host: str) -> bool:
+    allowed = _gated_hosts()
+    return host in allowed or any(host.endswith("." + item) for item in allowed)
+
+
 def _profile_screen_name(url: str, hosts: frozenset[str] | None = None) -> str | None:
     """Return the handle when the current URL is a profile page, else None."""
 
@@ -272,6 +291,10 @@ class Browser:
         self.visual_observation_id: str | None = None
         self.visual_digest: str | None = None
         self.x_grant: dict[str, Any] | None = None
+        # Stages already consumed per claimed action. Without this, a second
+        # tool call would re-arm the same claim and refresh the counters,
+        # letting one confirmation type or click more than once.
+        self._x_consumed: dict[str, set[str]] = {}
         self.lock = threading.RLock()
         self.tasks: queue.Queue[Any] = queue.Queue()
         self.worker: threading.Thread | None = None
@@ -527,22 +550,37 @@ class Browser:
             raise ExecutorError("ACTION_UNCERTAIN", "Scroll verification failed; observe again before retrying.") from exc
 
     def type_text(self, *, observation_id: str, fingerprint_sha256: str,
-                  text: str) -> dict[str, Any]:
+                  text: str, selector: str | None = None) -> dict[str, Any]:
         if not isinstance(text, str) or not text or len(text) > 280:
             raise ExecutorError(
                 "INVALID_ARGUMENT", "text must be a string of 1 to 280 characters."
             )
+        if selector is not None and (not isinstance(selector, str) or not selector.strip()
+                                     or len(selector) > 240):
+            raise ExecutorError(
+                "INVALID_ARGUMENT", "selector must be a non-empty string up to 240 characters."
+            )
         return self._run_on_worker(
-            lambda: self._type_impl(observation_id, fingerprint_sha256, text)
+            lambda: self._type_impl(observation_id, fingerprint_sha256, text, selector)
         )
 
     def _type_impl(self, observation_id: str, fingerprint_sha256: str,
-                   text: str) -> dict[str, Any]:
+                   text: str, selector: str | None = None) -> dict[str, Any]:
         self._assert_observation(observation_id, fingerprint_sha256)
         host = (urlparse(self.page.url).hostname or "").lower()
-        if host in {"x.com", "twitter.com"} or host.endswith((".x.com", ".twitter.com")):
+        if _is_gated(host):
             # Typing on X is a write step and needs the same claim as a click.
             self._consume_x_grant(self.X_TYPE_ACTIONS)
+        if selector:
+            # Focus an explicit field instead of typing wherever focus happens
+            # to be, and refuse an ambiguous target rather than guessing.
+            target = self.page.locator(selector)
+            if target.count() != 1:
+                raise ExecutorError(
+                    "TARGET_NOT_UNIQUE", "The selector must match exactly one field."
+                )
+            target.click(timeout=5000)
+            self.page.wait_for_timeout(150)
         self.observation_id = None
         self.visual_observation_id = None
         self.visual_digest = None
@@ -577,7 +615,7 @@ class Browser:
     ) -> dict[str, Any]:
         self._assert_observation(observation_id, fingerprint_sha256)
         host = (urlparse(self.page.url).hostname or "").lower()
-        if host in {"x.com", "twitter.com"} or host.endswith((".x.com", ".twitter.com")):
+        if _is_gated(host):
             # X interaction requires a live, single-use claim from the action queue.
             self._consume_x_grant(self.X_CLICK_ACTIONS)
         if selector:
@@ -623,22 +661,51 @@ class Browser:
         if lease_expires_epoch <= time.time():
             raise ExecutorError("ACTION_LEASE_EXPIRED", "The action lease has expired.")
         with self.lock:
+            consumed = self._x_consumed.setdefault(action_id, set())
+            typing_remaining = (
+                1 if action_type in self.X_TYPE_ACTIONS and "typing" not in consumed else 0
+            )
+            click_remaining = (
+                1 if action_type in self.X_CLICK_ACTIONS and "click" not in consumed else 0
+            )
+            if typing_remaining == 0 and click_remaining == 0:
+                raise ExecutorError(
+                    "X_ACTION_EXHAUSTED",
+                    "This claim has no unused browser stages left.",
+                )
+            # Keep the table bounded; claims are short-lived.
+            if len(self._x_consumed) > 64:
+                for stale in list(self._x_consumed)[:-64]:
+                    self._x_consumed.pop(stale, None)
             self.x_grant = {
                 "action_id": action_id,
                 "claim_token": claim_token,
                 "expires": float(lease_expires_epoch),
                 "action_type": action_type,
+                "typing_remaining": typing_remaining,
+                "click_remaining": click_remaining,
             }
         return {
             "authorized": True,
             "action_id": action_id,
             "action_type": action_type,
-            "single_use": True,
+            # A publish needs one typing step and one click step. Each stage is
+            # single-use; a second attempt at the same stage is rejected.
+            "stages": {
+                "typing": 1 if action_type in self.X_TYPE_ACTIONS else 0,
+                "click": 1 if action_type in self.X_CLICK_ACTIONS else 0,
+            },
         }
 
     def _consume_x_grant(self, allowed: frozenset[str]) -> dict[str, Any]:
+        """Consume one stage of the grant, keeping the other stage available.
+
+        Publishing needs to type the payload and then click Submit. Clearing
+        the whole grant after typing would make the publish path impossible,
+        so each stage is counted separately and still single-use.
+        """
+
         grant = self.x_grant
-        self.x_grant = None
         if not isinstance(grant, dict):
             raise ExecutorError(
                 "X_WRITE_CONFIRMATION_REQUIRED",
@@ -647,11 +714,26 @@ class Browser:
         if float(grant.get("expires", 0)) <= time.time():
             raise ExecutorError("ACTION_LEASE_EXPIRED", "The action lease has expired.")
         if grant.get("action_type") not in allowed:
+            self.x_grant = None
             raise ExecutorError(
                 "X_ACTION_SCOPE_MISMATCH",
                 "This claimed action does not permit that browser step.",
-                details={"action_type": grant.get("action_type")},
             )
+        stage = "typing" if allowed == self.X_TYPE_ACTIONS else "click"
+        remaining = int(grant.get(f"{stage}_remaining", 0))
+        if remaining <= 0:
+            # Do not clear the grant: the other stage may still be pending.
+            # The counter already stays at zero, so this stage cannot refill.
+            raise ExecutorError(
+                "X_ACTION_STAGE_EXHAUSTED",
+                "This claimed action already used that browser step.",
+            )
+        grant[f"{stage}_remaining"] = remaining - 1
+        self._x_consumed.setdefault(str(grant.get("action_id", "")), set()).add(stage)
+        if stage == "click":
+            # A click is the final step for both publish and delete. Nothing
+            # of this claim may be reused after it.
+            self.x_grant = None
         return grant
 
     def _assert_visual_snapshot(self, observation_id: str) -> None:
@@ -723,6 +805,7 @@ class Browser:
             self.visual_observation_id = None
             self.visual_digest = None
             self.x_grant = None
+            self._x_consumed = {}
 
 
 BROWSER = Browser()
