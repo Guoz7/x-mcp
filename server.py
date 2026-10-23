@@ -274,7 +274,7 @@ class XStarter:
             )
         state_dir = (
             self.environ.get("X_STARTER_STATE_DIR", "").strip()
-            or str(Path(SCRIPT_DIR) / ".x-starter-state" / self.mode)
+            or str(self._default_state_root() / self.mode)
         )
         self.bridge = (
             BrowserBridge(
@@ -320,6 +320,20 @@ class XStarter:
         if local:
             return Path(local) / "x-starter" / "browser-profiles"
         return Path(state_dir) / "browser-profiles"
+
+    def _default_state_root(self) -> Path:
+        """Keep the bridge state off slow removable media.
+
+        Measured on this host, ten action cycles took 292 s when the state
+        lived on a USB HDD and 0.26 s on the NVMe system drive, because every
+        action rewrites and fsyncs the state file. The project directory is
+        not a safe default for that. X_STARTER_STATE_DIR still overrides this.
+        """
+
+        local = self.environ.get("LOCALAPPDATA", "").strip()
+        if local:
+            return Path(local) / "x-starter" / "state"
+        return Path(SCRIPT_DIR) / ".x-starter-state"
 
     def _browser_for(self, arguments: dict[str, Any]) -> Browser:
         self._bridge()
@@ -1993,6 +2007,30 @@ class XStarter:
             raise StarterError(
                 "BROWSER_BRIDGE_REQUIRED",
                 "Owner reads require X_STARTER_MODE=browser with an executor.",
+            )
+        if self._owner_profile is None:
+            # Without a persistent profile every read lands on the login wall.
+            # Say that up front instead of paying for a browser launch.
+            raise StarterError(
+                "OWNER_PROFILE_NOT_CONFIGURED",
+                "Set X_STARTER_OWNER_PROFILE to a signed-in Chromium profile before reading the owner account.",
+                details={
+                    "setup": [
+                        "Set X_STARTER_OWNER_PROFILE to a local Chromium profile directory.",
+                        "Sign in to X yourself in that profile; the agent never types credentials.",
+                        "Run owner_login_check.py and confirm state=signed_in.",
+                    ]
+                },
+            )
+        required_family = self.environ.get("X_STARTER_BROWSER_FAMILY", "").strip().lower()
+        if required_family and required_family != "chromium":
+            raise StarterError(
+                "BROWSER_FAMILY_UNSUPPORTED",
+                (
+                    "This server's integrated executor is Chromium-only, so it cannot "
+                    "satisfy X_STARTER_BROWSER_FAMILY."
+                ),
+                details={"required": required_family, "executor": "chromium"},
             )
         target = arguments.get("target")
         if target not in {"account", "timeline"}:

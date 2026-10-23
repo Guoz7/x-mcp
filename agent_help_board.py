@@ -112,8 +112,9 @@ class AgentHelpBoard:
         self.endpoint = endpoint.strip().rstrip("/") if endpoint and endpoint.strip() else None
         self.provider = "http" if self.endpoint else "local"
         self._lock = threading.RLock()
-        if self.provider == "local" and not self.state_path.exists():
-            self._write({"schema": "agent-help-board/v1", "requests": {}, "pending": {}})
+        # Do not create the file on construction. A mock or read-only session
+        # never posts a request, and an eager fsync here cost seconds per
+        # startup on a slow disk while producing no useful state.
 
     def _read(self) -> dict[str, Any]:
         try:

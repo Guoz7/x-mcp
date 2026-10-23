@@ -336,7 +336,7 @@ class BrowserExecutorContractTests(unittest.TestCase):
         app.close()
 
     def test_owner_profile_is_exclusive_to_one_session(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT) as profile:
+        with tempfile.TemporaryDirectory() as profile:
             app = XStarter(mode="browser", environ={
                 "X_STARTER_ENABLE_BROWSER": "1", "X_STARTER_OWNER_PROFILE": profile,
             })
@@ -350,7 +350,7 @@ class BrowserExecutorContractTests(unittest.TestCase):
             app.close()
 
     def test_disposable_profiles_avoid_the_state_disk_by_default(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT) as state:
+        with tempfile.TemporaryDirectory() as state:
             app = XStarter(mode="browser", environ={
                 "X_STARTER_ENABLE_BROWSER": "1",
                 "X_STARTER_STATE_DIR": state,
@@ -360,7 +360,7 @@ class BrowserExecutorContractTests(unittest.TestCase):
             self.assertNotIn(state, str(browser.profile))
             self.assertIn("x-starter", str(browser.profile))
             app.close()
-        with tempfile.TemporaryDirectory(dir=ROOT) as state, tempfile.TemporaryDirectory(dir=ROOT) as profiles:
+        with tempfile.TemporaryDirectory() as state, tempfile.TemporaryDirectory() as profiles:
             app = XStarter(mode="browser", environ={
                 "X_STARTER_ENABLE_BROWSER": "1",
                 "X_STARTER_STATE_DIR": state,
@@ -370,8 +370,24 @@ class BrowserExecutorContractTests(unittest.TestCase):
             self.assertTrue(str(browser.profile).startswith(str(Path(profiles).resolve())))
             app.close()
 
+    def test_default_state_dir_avoids_removable_media(self) -> None:
+        """Every action fsyncs state; a USB HDD made that 29 s per cycle."""
+
+        local = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(local, ignore_errors=True))
+        app = XStarter(
+            mode="browser",
+            environ={"X_STARTER_ENABLE_BROWSER": "1", "LOCALAPPDATA": local},
+        )
+        try:
+            state = str(app.bridge.root)
+            self.assertTrue(state.startswith(str(Path(local).resolve())), state)
+            self.assertNotIn(str(ROOT), state)
+        finally:
+            app.close()
+
     def test_owner_profile_does_not_embed_credentials_in_tool_output(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT) as profile:
+        with tempfile.TemporaryDirectory() as profile:
             app = XStarter(mode="browser", environ={
                 "X_STARTER_ENABLE_BROWSER": "1", "X_STARTER_OWNER_PROFILE": profile,
             })

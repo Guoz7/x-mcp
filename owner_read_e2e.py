@@ -90,6 +90,9 @@ def main() -> int:
                 "X_STARTER_ENABLE_BROWSER": "1",
                 "X_STARTER_STATE_DIR": str(Path(temporary) / "state"),
                 "X_STARTER_READ_BASE_URL": base,
+                # The read loop refuses to start without an owner profile;
+                # point it at the throwaway directory this test owns.
+                "X_STARTER_OWNER_PROFILE": str(Path(temporary) / "owner-profile"),
                 "X_BROWSER_EXECUTOR_HEADLESS": "1",
                 "X_BROWSER_EXECUTOR_ALLOWED_HOSTS": "127.0.0.1",
                 "X_BROWSER_EXECUTOR_PROFILE_HOSTS": "127.0.0.1",

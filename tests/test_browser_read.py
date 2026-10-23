@@ -247,6 +247,7 @@ class OwnerReadToolTests(unittest.TestCase):
     def _app(self) -> XStarter:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        (Path(temp.name) / "owner-profile").mkdir()
         return XStarter(
             mode="browser",
             environ={
@@ -255,8 +256,33 @@ class OwnerReadToolTests(unittest.TestCase):
                 "X_STARTER_STATE_DIR": str(Path(temp.name) / "state"),
                 "X_STARTER_BROWSER_PROFILE_DIR": str(Path(temp.name) / "profiles"),
                 "X_BROWSER_EXECUTOR_PROFILE": str(Path(temp.name) / "profile"),
+                "X_STARTER_OWNER_PROFILE": str(Path(temp.name) / "owner-profile"),
             },
         )
+
+    def test_owner_read_refuses_to_start_without_a_profile(self) -> None:
+        app = XStarter(
+            mode="browser",
+            environ={"X_STARTER_ENABLE_BROWSER": "1"},
+        )
+        result = app.call_tool("x_owner_read", {"target": "timeline"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "OWNER_PROFILE_NOT_CONFIGURED")
+        self.assertIn("setup", result["error"]["details"])
+
+    def test_owner_read_refuses_a_family_the_executor_cannot_serve(self) -> None:
+        app = XStarter(
+            mode="browser",
+            environ={
+                "X_STARTER_ENABLE_BROWSER": "1",
+                "X_STARTER_OWNER_PROFILE": str(ROOT),
+                "X_STARTER_BROWSER_FAMILY": "firefox",
+            },
+        )
+        result = app.call_tool("x_owner_read", {"target": "account"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "BROWSER_FAMILY_UNSUPPORTED")
+        self.assertEqual(result["error"]["details"]["required"], "firefox")
 
     def test_owner_read_queues_an_action_and_fails_closed_when_signed_out(self) -> None:
         app = self._app()

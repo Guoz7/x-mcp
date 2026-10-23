@@ -224,9 +224,13 @@ Start the server:
 ```powershell
 $env:X_STARTER_MODE = "browser"
 $env:X_STARTER_ENABLE_BROWSER = "1"
-$env:X_STARTER_STATE_DIR = "D:\workspace\agent-help\x-starter\.x-starter-state\browser"
 python .\server.py --transport http --port 8765
 ```
+
+State defaults to `%LOCALAPPDATA%\x-starter\state\browser`. Do not point
+`X_STARTER_STATE_DIR` at removable media: every action rewrites and fsyncs the
+state file, and the same ten actions took 292 s on the USB HDD in this project
+versus 0.26 s on the system drive.
 
 Run the workflow:
 
