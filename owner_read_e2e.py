@@ -53,6 +53,7 @@ WALL = b'''<!doctype html><html><head><title>X</title></head><body>
 
 class Fixture(BaseHTTPRequestHandler):
     signed_out = False
+    delayed = False
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?")[0]
@@ -62,6 +63,14 @@ class Fixture(BaseHTTPRequestHandler):
             body = PROFILE
         else:
             body = HOME
+            if Fixture.delayed:
+                before, main = HOME.decode().split("<main>", 1)
+                articles, after = main.split("</main>", 1)
+                body = (
+                    before + "<main></main><script>setTimeout(() => {"
+                    "document.querySelector('main').innerHTML = "
+                    + json.dumps(articles) + ";}, 2500)</script>" + after
+                ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -102,8 +111,20 @@ def main() -> int:
             }
         )
         from server import XStarter
+        from browser_executor import Browser
+        from browser_read import read_timeline
 
         try:
+            delayed_browser = Browser(profile=Path(temporary) / "delayed-profile")
+            try:
+                Fixture.delayed = True
+                first = read_timeline(delayed_browser, base_url=base, limit=2)
+                check("delayed_first_navigation_waits_for_posts", len(first["posts"]) == 2)
+                second = read_timeline(delayed_browser, base_url=base, limit=2)
+                check("delayed_reused_navigation_waits_for_posts", len(second["posts"]) == 2)
+            finally:
+                Fixture.delayed = False
+                delayed_browser.close()
             app = XStarter(mode="browser", environ=os.environ)
             try:
                 Fixture.signed_out = True

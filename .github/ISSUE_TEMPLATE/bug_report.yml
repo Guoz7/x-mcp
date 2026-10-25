@@ -1,0 +1,41 @@
+name: Bug report
+description: Report a reproducible problem without sharing private account data
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include passwords, cookies, OAuth tokens, browser profiles, or private screenshots. Use SECURITY.md for suspected security issues.
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      placeholder: 0.9.1 or a commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Execution mode
+      options:
+        - mock
+        - public web read
+        - OAuth/API
+        - browser
+        - DSH
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include commands and a minimal fixture. Redact all secrets.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true

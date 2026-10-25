@@ -250,6 +250,38 @@
           "tool": null,
           "alias_of": "intent-level name; maps to a tool in tools/list",
           "kind": "mcp"
+        },
+        {
+          "name": "x_interaction_batch_plan",
+          "read_only": true,
+          "side_effect": "local",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": "x_interaction_batch_plan"
+        },
+        {
+          "name": "x_interaction_batch_prepare",
+          "read_only": true,
+          "side_effect": "local",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": "x_interaction_batch_prepare"
+        },
+        {
+          "name": "x_interaction_batch_start",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "mcp",
+          "tool": "x_interaction_batch_start"
+        },
+        {
+          "name": "x_interaction_batch_execute",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "mcp",
+          "tool": "x_interaction_batch_execute"
         }
       ],
       "limitations": [
@@ -278,6 +310,21 @@
         },
         "x_timeline_restore": {
           "tool": "x_timeline_restore"
+        },
+        "x_interaction_batch_plan": {
+          "tool": "x_interaction_batch_plan"
+        },
+        "x_interaction_batch_prepare": {
+          "tool": "x_interaction_batch_prepare"
+        },
+        "x_interaction_batch_start": {
+          "tool": "x_interaction_batch_start"
+        },
+        "x_interaction_batch_execute": {
+          "tool": "x_interaction_batch_execute"
+        },
+        "x_interaction_batch_status": {
+          "tool": "x_interaction_batch_status"
         }
       }
     },
@@ -450,6 +497,27 @@
           "side_effect": "external",
           "requires_confirmation": true,
           "execution_mode": "browser"
+        },
+        {
+          "name": "like_post",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "browser"
+        },
+        {
+          "name": "repost_post",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "browser"
+        },
+        {
+          "name": "reply_post",
+          "read_only": false,
+          "side_effect": "external",
+          "requires_confirmation": true,
+          "execution_mode": "browser"
         }
       ],
       "limitations": [
@@ -459,7 +527,8 @@
         "Each action exposes mobile, tablet, and desktop viewport classes plus a locator priority.",
         "Set X_STARTER_BROWSER_FAMILY=firefox to enforce a Firefox-only controlled experiment.",
         "Completion accepts safe executor context, locator strategy, and pre/postcondition evidence; sensitive context is rejected.",
-        "A page that cannot be proven is reported as uncertain, never retried."
+        "A page that cannot be proven is reported as uncertain, never retried.",
+        "The interaction batch queues 20 likes, 1 repost, and 10 replies as separate actions; live completion still needs a visual-capable executor."
       ],
       "tool_mapping": {
         "_note": "These are the queueing tools. A trusted agent performs the typed action.",

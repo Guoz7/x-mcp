@@ -221,6 +221,66 @@ class BrowserExecutorContractTests(unittest.TestCase):
             browser._click_impl("obs", "a" * 64, "button", None, None)
         self.assertIsNone(browser.x_grant)
 
+    def test_x_status_selector_scopes_to_the_canonical_article(self) -> None:
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/johnlinkvk37/status/123")
+        original = Mock()
+        original.count.return_value = 2
+        scoped = Mock()
+        scoped.count.return_value = 1
+        browser.page.locator.side_effect = lambda selector: (
+            original if selector == 'article [data-testid="like"]' else scoped
+        )
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="like_post",
+        )
+        with patch.object(browser, "_assert_observation"), patch.object(
+            browser, "_dispatch_click", return_value={"ok": True}
+        ) as dispatch:
+            browser._click_impl("obs", "a" * 64, 'article [data-testid="like"]', None, None)
+        dispatch.assert_called_once_with(
+            'article:has(a[href="/johnlinkvk37/status/123"]) [data-testid="like"]',
+            None,
+            None,
+        )
+
+    def test_x_selector_error_does_not_consume_claim_stage(self) -> None:
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/johnlinkvk37/status/123")
+        ambiguous = Mock()
+        ambiguous.count.return_value = 2
+        browser.page.locator.return_value = ambiguous
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="like_post",
+        )
+        with patch.object(browser, "_assert_observation"):
+            with self.assertRaises(ExecutorError) as caught:
+                browser._click_impl("obs", "a" * 64, 'article [data-testid="like"]', None, None)
+        self.assertEqual(caught.exception.code, "TARGET_NOT_UNIQUE")
+        self.assertEqual(browser.x_grant["click_remaining"], 1)
+
+    def test_repost_claim_keeps_one_stage_for_confirmation_click(self) -> None:
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/johnlinkvk37/status/123")
+        browser.page.locator.return_value.count.return_value = 1
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="repost_post",
+        )
+        with patch.object(browser, "_assert_observation"), patch.object(
+            browser, "_dispatch_click", return_value={"ok": True}
+        ) as dispatch:
+            browser._click_impl("obs", "a" * 64, 'article [data-testid="retweet"]', None, None)
+            browser.authorize_x_action(
+                action_id="act", claim_token="t" * 32,
+                lease_expires_epoch=time.time() + 60, action_type="repost_post",
+            )
+            browser._click_impl("obs", "a" * 64, 'article [data-testid="retweet"]', None, None)
+        self.assertEqual(dispatch.call_count, 2)
+        self.assertIsNone(browser.x_grant)
+
     def test_second_typing_step_is_rejected_for_the_same_claim(self) -> None:
         browser = Browser()
         browser.page = Mock(url="https://x.com/home")
@@ -740,3 +800,19 @@ class BrowserExecutorContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class BatchFastPathTests(unittest.TestCase):
+    def test_fast_path_uses_single_worker_call(self):
+        browser = Browser()
+        with patch.object(browser, "_run_on_worker", return_value={"verified": True}) as run:
+            result = browser.execute_x_action(
+                action_type="like_post",
+                post_url="https://x.com/a/status/1",
+                author="a",
+                text=None,
+                action_id="act",
+                claim_token="t" * 32,
+                lease_expires_epoch=time.time() + 60,
+            )
+        self.assertEqual(result, {"verified": True})
+        run.assert_called_once()

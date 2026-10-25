@@ -263,7 +263,12 @@ def read_account(browser: Browser, *, base_url: str | None = None) -> dict[str, 
 def read_timeline(
     browser: Browser, *, limit: int = 20, base_url: str | None = None
 ) -> dict[str, Any]:
-    """Read posts visible on the home timeline with canonical permalinks."""
+    """Read canonical posts from the visible home timeline.
+
+    X virtualizes the feed, so one observation often exposes fewer posts than
+    the requested limit. Scroll through a bounded number of observations and
+    merge the visible results. The browser still returns only page evidence.
+    """
 
     base = _base_url(base_url)
     try:
@@ -271,46 +276,75 @@ def read_timeline(
     except ExecutorError as exc:
         raise ReadError(exc.code, exc.message) from None
     _detect_login_wall(home)
-    articles = home.get("articles") or []
-    if not articles:
-        raise ReadError(
-            "TIMELINE_EMPTY",
-            "No posts were visible on the home timeline.",
-            details={"url_path": home["url"].split("?")[0][:120]},
-        )
+    observations = 0
+    scrolls = 0
+    seen_posts: set[str] = set()
     posts: list[dict[str, Any]] = []
     skipped_without_link = 0
-    for article in articles:
-        text = str(article.get("text", "")).strip()
-        status = None
-        for link in article.get("links") or []:
-            status = _handle_from_status_url(str(link), _hosts_for(base))
-            if status:
+
+    while True:
+        observations += 1
+        articles = home.get("articles") or []
+        if not articles and not posts:
+            raise ReadError(
+                "TIMELINE_EMPTY",
+                "No posts were visible on the home timeline.",
+                details={"url_path": home["url"].split("?")[0][:120]},
+            )
+
+        for article in articles:
+            text = str(article.get("text", "")).strip()
+            status = None
+            for link in article.get("links") or []:
+                status = _handle_from_status_url(str(link), _hosts_for(base))
+                if status:
+                    break
+            if status is None:
+                skipped_without_link += 1
+                continue
+            author, status_id = status
+            post_url = f"{base}/{author}/status/{status_id}"
+            if not text or post_url in seen_posts:
+                continue
+            seen_posts.add(post_url)
+            posts.append({"url": post_url, "author": author, "text": text})
+            if len(posts) >= limit:
                 break
-        if status is None:
-            skipped_without_link += 1
-            continue
-        author, status_id = status
-        if not text:
-            continue
-        posts.append(
-            {
-                "url": f"{base}/{author}/status/{status_id}",
-                "author": author,
-                "text": text,
-            }
-        )
         if len(posts) >= limit:
             break
+
+        # Keep the read bounded. If a mock or an older executor does not
+        # expose observation-bound scrolling, return the evidence already seen.
+        if scrolls >= 20:
+            break
+        observation_id = home.get("observation_id")
+        fingerprint = home.get("fingerprint_sha256")
+        if not isinstance(observation_id, str) or not isinstance(fingerprint, str):
+            break
+        try:
+            next_home = browser.scroll(
+                observation_id=observation_id,
+                fingerprint_sha256=fingerprint,
+                delta_y=900,
+            )
+        except ExecutorError:
+            break
+        if not isinstance(next_home, dict):
+            break
+        home = next_home
+        scrolls += 1
+
     if not posts:
         raise ReadError(
             "TIMELINE_LINKS_MISSING",
             "Visible posts had no canonical status permalink.",
-            details={"articles": len(articles), "skipped": skipped_without_link},
+            details={"articles": len(home.get("articles") or []), "skipped": skipped_without_link},
         )
     return {
-        "posts": posts,
-        "visible_articles": len(articles),
+        "posts": posts[:limit],
+        "visible_articles": len(home.get("articles") or []),
+        "observations": observations,
+        "scrolls": scrolls,
         "skipped_without_permalink": skipped_without_link,
     }
 

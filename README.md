@@ -1,5 +1,19 @@
 # X Starter
 
+## Internal tester ZIP
+
+See `TESTING.md` for the current Windows tester workflow. Run `tester.cmd setup`,
+then `tester.cmd login`, and merge the locally generated MCP configuration.
+
+Latest local evidence (2026-10-25): a real DSH run reused the owner's manual
+login, verified one timeline post through `x_owner_read`, captured an image,
+and closed the browser (agent exit 0). This was the working tree, not the older
+r2 ZIP. It does not verify posting or liking. Home navigation now waits for
+timeline content or a login wall before returning, including reused contexts.
+The bundle is a source test package: it requires Python 3.11+, installed Chrome,
+and network access for the first dependency install. It contains no model runtime
+or account session. Browser mode needs no API key; the agent host supplies its model.
+
 One command shows the teaching loop:
 
 ```text
@@ -7,15 +21,18 @@ connect X -> inspect the account -> draft and queue one post -> read metrics -> 
 ```
 
 The default path is fully simulated and needs no credentials. The same server
-also has a browser-backed path for real account reads, publish, delete, and
-restore verification.
+also has a browser-backed path for real account reads and confirmed X
+interactions. The current local acceptance record completed 20 likes, 1 repost,
+and 10 replies with 31 verified changes. Its account-specific logs are kept
+outside the public source tree. See `RELEASE_READINESS.md` for the release
+boundary.
 
 ## Quick start
 
 Requirements:
 
 - Windows PowerShell 7 or PowerShell 5.1
-- Python 3.10 or newer, or the Codex bundled Python used by `run_mock.ps1`
+- Python 3.11 or newer
 - Node.js 20 or newer for the optional conformance suite
 
 Run the deterministic walkthrough:
@@ -52,10 +69,10 @@ for progress and server-to-client requests.
 | Area | Status | Evidence |
 |---|---|---|
 | Mock tools and walkthrough | Verified local code | `tests/test_mock.py`; `--demo` |
-| MCP tools, resources, prompts | Verified local code | 357-test suite (`quality_gate.ps1`); conformance profile |
+| MCP tools, resources, prompts | Verified local code | 480-test suite (`quality_gate.ps1`); conformance profile |
 | Streamable HTTP sessions | Verified local code | Session, delete, expiry, Origin, and version tests |
 | Browser action bridge | Implemented and unit-tested | `browser_bridge.py` |
-| Publish and delete protocol | Implemented; real X test is recorded separately | See `../docs/verification/x-starter-mcp-2026-10-21.md` |
+| Publish and delete protocol | Implemented; real-X evidence is release-local | See `TESTING.md` and `RELEASE_READINESS.md` |
 | Browser text extraction | Verified against the current X profile layout | Computer Use read of @guoz7777 on 2026-10-21 |
 | Protocol conformance | 39/39 checks; 227/227 server checks | `mcp-conformance-2026-10-21.json` |
 | Credential-free public reads | **Verified live** | `x_public_profile/timeline/post` read @guoz7777 and @NASA on 2026-10-22, no token |
@@ -256,7 +273,7 @@ python .\server.py --mode browser --transport http --port 8765
    ```powershell
    $env:X_STARTER_OWNER_PROFILE = "$env:LOCALAPPDATA\x-starter\owner-profiles\owner-x"
    New-Item -ItemType Directory -Force $env:X_STARTER_OWNER_PROFILE | Out-Null
-   python -X utf8 owner_login_open.py    # visible window; the agent types nothing
+   python -X utf8 owner_login_open.py    # ordinary Chrome; sign in manually and close it
    python -X utf8 owner_login_check.py   # expect state: signed_in
    ```
 
@@ -390,9 +407,9 @@ python -I -X utf8 .\server.py --transport http --port 8765
 npx -y checkmcp@0.5.1 http://127.0.0.1:8765/mcp
 ```
 
-Result on 2026-10-21: `150 passed, 0 failed, 0 advisory` across handshake,
-schemas, errors, robustness, and security. This run uses mock mode and does not
-write to X.
+The latest release verification reported `94 passed, 0 failed, 0 advisory`
+across handshake, schemas, errors, robustness, and security. Re-run it against
+the exact release candidate; this check uses mock mode and does not write to X.
 
 ## Project map
 
@@ -405,6 +422,9 @@ x-starter/
 |-- conformance_fixtures.py   # Official protocol fixture profile
 |-- walkthrough.py            # Four-step teaching demo
 |-- run_mock.ps1              # One command, no credentials
+|-- release_check.py          # Public-tree and version safety check
+|-- RELEASE_READINESS.md      # Release blockers and pre-tag checklist
+|-- TESTING.md                # Reproducible local tester workflow
 |-- skill.md                  # Agent-readable onboarding contract
 |-- lessons/                  # Six short lessons
 |-- templates/                # Post starters and review checklist
@@ -420,13 +440,13 @@ x-starter/
   prototype owns a separate browser/profile per MCP session, with eight slots.
   MCP DELETE, idle session expiry, and server shutdown all close these
   browsers. New sessions do not inherit an existing owner's login.
-- Generic clicks on X are blocked pending confirmed-job integration. The
-  standalone browser executor endpoint is a local prototype, not a production
-  multi-tenant service.
+- Arbitrary generic clicks on X remain blocked; only confirmed, action-scoped
+  jobs may write. The standalone browser executor endpoint is a local
+  prototype, not a production multi-tenant service.
 - The compatibility matrix proves executor geometry, not X's layout at those
   settings. Only DPR 1 has been exercised against the real site.
-- `x_owner_read` is proven against a synthetic X-shaped fixture and a signed-out
-  profile. An authenticated timeline read has not been executed.
+- `x_owner_read` and the owner timeline loop were exercised in a local DSH run.
+  This does not prove a remote multi-tenant deployment or every X layout.
 - Real X API reads and OAuth callback are implemented but not verified with a real account in this run.
 - X API writes are implemented behind OAuth user context; server-side scheduling remains disabled.
 - Output schemas validate the shared envelope. Tool-specific `data` shapes are

@@ -203,6 +203,9 @@ def _compatibility_contract(
         "observe_timeline": ["x_home", "x_profile"],
         "publish_post": ["x_home", "x_profile"],
         "delete_post": ["x_status"],
+        "like_post": ["x_status"],
+        "repost_post": ["x_status"],
+        "reply_post": ["x_status"],
     }
     return {
         "schema": "x-starter-browser-context/v1",
@@ -305,6 +308,7 @@ class BrowserBridge:
             "account": None,
             "timeline": None,
             "writes": {},
+            "batches": {},
             "actions": {},
             "evidence": [],
         }
@@ -774,17 +778,150 @@ class BrowserBridge:
             self._write(data)
         return action
 
+    def prepare_interaction_batch(
+        self, plan: dict[str, Any], *, session_id: str | None = None, ttl_seconds: int = 180
+    ) -> dict[str, Any]:
+        """Create a confirmed batch record without touching X."""
+        if not isinstance(plan, dict) or plan.get("status") != "planned_not_executed":
+            raise BridgeError("INVALID_BATCH", "Prepare requires a planner result.")
+        operations = plan.get("operations")
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 31:
+            raise BridgeError("INVALID_BATCH", "The batch must contain from 1 to 31 operations.")
+        limits = {"like": 20, "repost": 1, "reply": 10}
+        counts = {
+            key: sum(1 for item in operations if isinstance(item, dict) and item.get("action") == key)
+            for key in limits
+        }
+        if any(counts[key] > limits[key] for key in limits):
+            raise BridgeError("INVALID_BATCH", "The batch exceeds the interaction limits.")
+        if sum(counts.values()) != len(operations) or counts["like"] < 1:
+            raise BridgeError("INVALID_BATCH", "The batch contains an unsupported or empty operation.")
+        batch_id = "batch_" + uuid_hex()
+        phrase = "INTERACT " + secrets.token_hex(3).upper()
+        now = self._now()
+        record = {
+            "batch_id": batch_id,
+            "state": "prepared",
+            "created_at": _now_iso(now),
+            "expires_epoch": now + max(30, min(int(ttl_seconds), 600)),
+            "confirmation_phrase": phrase,
+            "operations": operations,
+            "session_id": session_id,
+            "action_ids": [],
+        }
+        with self._lock:
+            data = self._read()
+            data.setdefault("batches", {})[batch_id] = record
+            self._append_evidence(data, "interaction_batch_prepared", batch_id, {"operation_count": len(operations), "counts": counts})
+            self._write(data)
+        return {"batch_id": batch_id, "state": "prepared", "expires_at": _now_iso(record["expires_epoch"]), "confirmation_phrase": phrase, "operation_count": len(operations), "counts": counts}
+
+    def queue_interaction_batch(self, batch_id: str, confirmation: str, *, session_id: str | None = None) -> dict[str, Any]:
+        """Queue independently leased browser actions after exact confirmation."""
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if not isinstance(record, dict) or not self._scope_ok(record, session_id):
+                raise BridgeError("BATCH_NOT_FOUND", "The interaction batch does not exist.")
+            if record.get("state") != "prepared":
+                raise BridgeError("BATCH_NOT_READY", "The interaction batch is not prepared.")
+            if self._now() > float(record.get("expires_epoch", 0)):
+                record["state"] = "expired"
+                self._write(data)
+                raise BridgeError("BATCH_EXPIRED", "The interaction batch confirmation expired.")
+            if not secrets.compare_digest(str(record.get("confirmation_phrase", "")), confirmation):
+                raise BridgeError("CONFIRMATION_MISMATCH", "The batch confirmation phrase does not match.")
+            action_ids: list[str] = []
+            for operation in record["operations"]:
+                action_type = {"like": "like_post", "repost": "repost_post", "reply": "reply_post"}[operation["action"]]
+                payload = dict(operation)
+                payload["post_url"] = payload["url"]
+                payload["batch_id"] = batch_id
+                action = self._new_action(
+                    data,
+                    action_type=action_type,
+                    payload=payload,
+                    session_id=session_id,
+                    batch_id=batch_id,
+                )
+                action_ids.append(action["action_id"])
+            record["state"] = "queued"
+            record["action_ids"] = action_ids
+            self._append_evidence(data, "interaction_batch_queued", batch_id, {"action_count": len(action_ids)})
+            self._write(data)
+            return {"batch_id": batch_id, "state": "queued", "action_ids": action_ids, "operation_count": len(action_ids)}
+
+    def interaction_batch_status(
+        self, batch_id: str, *, session_id: str | None = None
+    ) -> dict[str, Any]:
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if not isinstance(record, dict) or not self._scope_ok(record, session_id):
+                raise BridgeError("BATCH_NOT_FOUND", "The interaction batch does not exist.")
+            action_ids = [str(item) for item in record.get("action_ids") or []]
+            actions = [data["actions"].get(action_id) for action_id in action_ids]
+            actions = [item for item in actions if isinstance(item, dict)]
+            counts = {"pending": 0, "claimed": 0, "completed": 0, "uncertain": 0, "failed": 0}
+            changed = 0
+            results: list[dict[str, Any]] = []
+            for action in actions:
+                status = str(action.get("status", "pending"))
+                counts[status] = counts.get(status, 0) + 1
+                result = action.get("result")
+                if isinstance(result, dict) and result.get("changed") is True:
+                    changed += 1
+                results.append(
+                    {
+                        "action_id": action["action_id"],
+                        "type": action["type"],
+                        "status": status,
+                        "result": result if status == "completed" else None,
+                        "error": action.get("error"),
+                    }
+                )
+            if counts["pending"] or counts["claimed"]:
+                state = "queued"
+            elif counts["uncertain"] or counts["failed"]:
+                state = "partial"
+            else:
+                state = "completed"
+            record["state"] = state
+            self._write(data)
+            return {
+                "batch_id": batch_id,
+                "state": state,
+                "planned": len(action_ids),
+                "counts": counts,
+                "changed": changed,
+                "remaining": counts["pending"] + counts["claimed"],
+                "results": results,
+            }
+
     def next_action(
         self,
         *,
         lease_seconds: int = 120,
         session_id: str | None = None,
+        batch_id: str | None = None,
     ) -> dict[str, Any] | None:
+        def action_order(action: dict[str, Any]) -> tuple[int, str, str]:
+            payload = action.get("payload") or {}
+            sequence = payload.get("sequence")
+            # JSON state is written with sorted keys. Never use dictionary
+            # order as execution order for a confirmed batch.
+            if isinstance(sequence, int) and not isinstance(sequence, bool):
+                return (sequence, str(action.get("created_at", "")), str(action.get("action_id", "")))
+            return (10**9, str(action.get("created_at", "")), str(action.get("action_id", "")))
+
         with self._lock:
             data = self._read()
             now = self._now()
-            for action in data["actions"].values():
+            scoped_actions = sorted(data["actions"].values(), key=action_order)
+            for action in scoped_actions:
                 if not self._scope_ok(action, session_id):
+                    continue
+                if batch_id is not None and action.get("batch_id") != batch_id:
                     continue
                 if action["status"] == "pending":
                     action["status"] = "claimed"
@@ -801,8 +938,10 @@ class BrowserBridge:
                     )
                     self._write(data)
                     return self.public_action(action, include_claim=True)
-            for action in data["actions"].values():
+            for action in scoped_actions:
                 if not self._scope_ok(action, session_id):
+                    continue
+                if batch_id is not None and action.get("batch_id") != batch_id:
                     continue
                 if (
                     action["status"] == "claimed"
@@ -1105,6 +1244,40 @@ class BrowserBridge:
                 "verified_absent": True,
                 "verification": str(result.get("verification", "reload_returned_absent")),
             }
+        if action_type in {"like_post", "repost_post"}:
+            try:
+                author, _status_id = _x_post_url_parts(str(result.get("post_url", "")))
+            except BridgeError:
+                raise BridgeError("INVALID_ACTION_RESULT", "The interaction result needs a canonical X status URL.") from None
+            if author.lower() != str(payload.get("author", author)).lstrip("@").lower():
+                raise BridgeError("ACCOUNT_MISMATCH", "The interaction author does not match the target URL.")
+            if result.get("verified") is not True:
+                raise BridgeError("INTERACTION_NOT_VERIFIED", "The interaction state was not verified.")
+            if str(result.get("post_url", "")).split("?")[0].rstrip("/") != str(payload.get("post_url", "")).split("?")[0].rstrip("/"):
+                raise BridgeError("TARGET_MISMATCH", "The interaction target changed.")
+            return {
+                "post_url": payload["post_url"],
+                "author": author,
+                "verified": True,
+                "state": str(result.get("state", "active")),
+                "changed": bool(result.get("changed", True)),
+            }
+        if action_type == "reply_post":
+            if result.get("verified") is not True:
+                raise BridgeError("INTERACTION_NOT_VERIFIED", "The reply was not verified.")
+            text = str(result.get("text", ""))
+            if text != str(payload.get("text", "")):
+                raise BridgeError("TEXT_MISMATCH", "The reply text does not match the confirmed text.")
+            if str(result.get("post_url", "")).split("?")[0].rstrip("/") != str(payload.get("post_url", "")).split("?")[0].rstrip("/"):
+                raise BridgeError("TARGET_MISMATCH", "The reply target changed.")
+            return {
+                "post_url": payload["post_url"],
+                "reply_url": str(result.get("reply_url", "")),
+                "text": text,
+                "text_sha256": _text_digest(text),
+                "verified": True,
+                "changed": bool(result.get("changed", True)),
+            }
         raise BridgeError("INVALID_ACTION_TYPE", "Unknown action result type.")
 
     def public_write(self, record: dict[str, Any]) -> dict[str, Any]:
@@ -1187,6 +1360,7 @@ class BrowserBridge:
         action_type: str,
         payload: dict[str, Any],
         session_id: str | None = None,
+        batch_id: str | None = None,
     ) -> dict[str, Any]:
         action_id = "act_" + uuid_hex()
         instructions, schema = _action_contract(action_type)
@@ -1206,6 +1380,7 @@ class BrowserBridge:
             "error": None,
             "execution": None,
             "session_id": session_id,
+            "batch_id": batch_id,
         }
         data["actions"][action_id] = action
         return action
@@ -1336,6 +1511,57 @@ def _action_contract(action_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
                         "type": "string",
                         "pattern": "^[0-9a-f]{64}$",
                     },
+                },
+            },
+        )
+    if action_type in {"like_post", "repost_post"}:
+        verb = "like" if action_type == "like_post" else "repost"
+        return (
+            {
+                "executor": "trusted_agent_computer_use",
+                "steps": [
+                    "Open the exact canonical X status URL.",
+                    f"Click the {verb} control once." if action_type == "like_post" else "Click Repost, then confirm the repost menu item once.",
+                    f"Verify the visible {verb} state for this exact status URL.",
+                    "Return uncertain if the control or postcondition is not proven.",
+                ],
+                "unknown_result_policy": "Return uncertain; do not retry the interaction.",
+            },
+            {
+                "type": "object",
+                "required": ["post_url", "author", "verified"],
+                "properties": {
+                    "post_url": {"type": "string"},
+                    "author": {"type": "string"},
+                    "verified": {"type": "boolean"},
+                    "state": {"type": "string"},
+                    "changed": {"type": "boolean"},
+                },
+            },
+        )
+    if action_type == "reply_post":
+        return (
+            {
+                "executor": "trusted_agent_computer_use",
+                "steps": [
+                    "Open the exact canonical X status URL.",
+                    "Enter the exact confirmed reply text.",
+                    "Submit once.",
+                    "Verify the visible reply text and canonical reply URL.",
+                    "Return uncertain if submission or verification is unclear.",
+                ],
+                "unknown_result_policy": "Return uncertain; do not retry the reply.",
+            },
+            {
+                "type": "object",
+                "required": ["post_url", "reply_url", "text", "text_sha256", "verified"],
+                "properties": {
+                    "post_url": {"type": "string"},
+                    "reply_url": {"type": "string"},
+                    "text": {"type": "string"},
+                    "text_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "verified": {"type": "boolean"},
+                    "changed": {"type": "boolean"},
                 },
             },
         )

@@ -1,4 +1,8 @@
 __pycache__/
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 *.pyc
 .x-starter-token-store/
 .x-starter-state/
@@ -6,5 +10,15 @@ __pycache__/
 .browser-executor-audit.jsonl
 .agent-work/
 *.log
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+releases/
 .env
 .env.*
+.venv/
+mcp-client.json
+mcp-codex.toml
+control-test-result.html

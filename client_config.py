@@ -26,9 +26,9 @@ def _python() -> str:
     configured = os.environ.get("X_STARTER_PYTHON", "").strip()
     if configured:
         return configured
-    bundled = Path(r"E:\app\fingerprint-browser\venv\Scripts\python.exe")
-    if bundled.exists():
-        return str(bundled)
+    local = SCRIPT_DIR / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if local.is_file():
+        return str(local)
     return sys.executable
 
 

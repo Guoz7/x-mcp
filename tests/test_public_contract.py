@@ -457,6 +457,17 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertIn("Do not retry the write", text)
         self.assertIn("Never turn an unknown into a success claim", text)
 
+    def test_skill_documents_first_login_and_batch_boundary(self) -> None:
+        text = load_skill()
+        self.assertIn("## First-login handoff", text)
+        self.assertIn("Continue with Google", text)
+        self.assertIn("x_interaction_batch_plan", text)
+        self.assertIn("one_minute_sla: not_verified", text)
+        self.assertIn("x_interaction_batch_prepare", text)
+        self.assertIn("x_interaction_batch_start", text)
+        self.assertIn("x_interaction_batch_execute", text)
+        self.assertIn("x_interaction_batch_status", text)
+
     def test_skill_documents_connector_extension_rules(self) -> None:
         text = load_skill()
         self.assertIn("## Add a connector", text)

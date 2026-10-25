@@ -22,14 +22,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from browser_paths import find_chrome
+
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("X_BROWSER_EXECUTOR_PORT", "8770"))
 PROFILE = Path(os.environ.get("X_BROWSER_EXECUTOR_PROFILE", ".browser-executor-profile")).resolve()
-CHROME = os.environ.get(
-    "X_BROWSER_EXECUTOR_CHROME",
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-)
+CHROME = find_chrome()
 ALLOWED_HOSTS = {
     item.strip().lower()
     for item in os.environ.get(
@@ -366,11 +365,14 @@ class Browser:
                     "Run the executor with the bundled Playwright environment.",
                 ) from exc
             if self.context is None:
+                executable = find_chrome()
+                if not executable:
+                    raise ExecutorError("BROWSER_BINARY_MISSING", "Install Chrome or set X_BROWSER_EXECUTOR_CHROME to its executable.")
                 self.profile.mkdir(parents=True, exist_ok=True)
                 self.playwright = sync_playwright().start()
                 try:
                     browser_options = {
-                        "executable_path": CHROME,
+                        "executable_path": executable,
                         "headless": os.environ.get("X_BROWSER_EXECUTOR_HEADLESS") == "1",
                         "viewport": _viewport(),
                         "args": ["--disable-sync", "--no-first-run", "--no-default-browser-check"],
@@ -407,7 +409,51 @@ class Browser:
             else:
                 self.page.goto(url, wait_until="commit", timeout=15000)
                 self.page.wait_for_timeout(1200)
+            self._wait_for_initial_content(url)
             return self.observe()
+
+    def _wait_for_initial_content(self, requested_url: str) -> None:
+        """A committed SPA navigation does not mean the timeline has rendered."""
+        parsed = urlparse(requested_url)
+        if parsed.hostname not in _profile_hosts():
+            return
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        path = parsed.path.rstrip("/")
+        is_status = bool(re.match(r"^/[^/]+/status/\d+$", path))
+        is_home = path == "/home"
+        if not (is_home or is_status):
+            return
+
+        ready_script = (
+            "() => !!document.querySelector('article') "
+            "|| !!document.querySelector('a[href=\"/i/flow/login\"], a[href=\"/login\"]') "
+            "|| /Something went wrong|Try reloading/i.test(document.body?.innerText || '')"
+        )
+
+        try:
+            self.page.wait_for_function(
+                ready_script if is_status else (
+                    "() => location.pathname.replace(/\\/$/, '') !== '/home'"
+                    " || !!document.querySelector('article a[href*=\"/status/\"]')"
+                    " || !!document.querySelector('a[href=\"/i/flow/login\"], a[href=\"/login\"]')"
+                ),
+                timeout=15000,
+            )
+        except PlaywrightTimeoutError:
+            if not is_status:
+                # Leave empty home pages observable; the reader reports a typed
+                # failure rather than inventing posts or a successful login.
+                return
+            # X occasionally commits the SPA route before its status payload is
+            # available. A single pre-action reload is safe; after it, leave the
+            # page observable so the action layer can stop on an unproven state.
+            try:
+                self.page.reload(wait_until="commit", timeout=15000)
+                self.page.wait_for_timeout(1200)
+                self.page.wait_for_function(ready_script, timeout=15000)
+            except PlaywrightTimeoutError:
+                return
 
     def observe(self) -> dict[str, Any]:
         return self._run_on_worker(self._observe_impl)
@@ -616,30 +662,55 @@ class Browser:
         self._assert_observation(observation_id, fingerprint_sha256)
         host = (urlparse(self.page.url).hostname or "").lower()
         if _is_gated(host):
-            # X interaction requires a live, single-use claim from the action queue.
-            self._consume_x_grant(self.X_CLICK_ACTIONS)
+            # Preserve the write gate before touching the page target. A
+            # missing or expired claim must fail without querying selectors.
+            self._validate_x_grant(self.X_CLICK_ACTIONS)
+        effective_selector = selector
         if selector:
-            target = self.page.locator(selector)
-            if target.count() != 1:
-                raise ExecutorError("TARGET_NOT_UNIQUE", "The selector must match exactly one element.")
+            effective_selector = self._resolve_click_selector(selector, host)
         elif x_ratio is not None and y_ratio is not None:
             if not (0 <= x_ratio <= 1 and 0 <= y_ratio <= 1):
                 raise ExecutorError("INVALID_COORDINATE", "Coordinate ratios must be between 0 and 1.")
             self._assert_visual_snapshot(observation_id)
         else:
             raise ExecutorError("INVALID_ARGUMENT", "Provide selector or coordinate ratios.")
+        if _is_gated(host):
+            # Validate the target before consuming the claim. A selector error
+            # must leave the action retryable; only dispatch consumes the stage.
+            self._consume_x_grant(self.X_CLICK_ACTIONS)
         # Consume before dispatch: a timeout may happen after the click landed.
         self.observation_id = None
         try:
-            return self._dispatch_click(selector, x_ratio, y_ratio)
+            return self._dispatch_click(effective_selector, x_ratio, y_ratio)
         except Exception as exc:
             raise ExecutorError(
                 "ACTION_UNCERTAIN", "Click dispatch or verification failed; do not retry this observation."
             ) from exc
 
+    def _resolve_click_selector(self, selector: str, host: str) -> str:
+        """Resolve X status controls to the article for the canonical URL.
+
+        A status page can contain the main post and a related-post article.
+        A selector such as ``article [data-testid="like"]`` is therefore
+        ambiguous even when the intended control is visually obvious. Scope
+        only this known X status shape; do not guess for arbitrary pages.
+        """
+
+        target = self.page.locator(selector)
+        if target.count() == 1:
+            return selector
+        if _is_gated(host) and selector.startswith("article "):
+            path = urlparse(self.page.url).path.rstrip("/")
+            if re.match(r"^/[^/]+/status/\d+$", path):
+                suffix = selector[len("article "):]
+                scoped = f'article:has(a[href="{path}"]) {suffix}'
+                if self.page.locator(scoped).count() == 1:
+                    return scoped
+        raise ExecutorError("TARGET_NOT_UNIQUE", "The selector must match exactly one element.")
+
     # Only these claimed action types may touch a signed-in X page.
-    X_TYPE_ACTIONS = frozenset({"publish_post"})
-    X_CLICK_ACTIONS = frozenset({"publish_post", "delete_post"})
+    X_TYPE_ACTIONS = frozenset({"publish_post", "reply_post"})
+    X_CLICK_ACTIONS = frozenset({"publish_post", "delete_post", "like_post", "repost_post", "reply_post"})
 
     def authorize_x_action(
         self,
@@ -656,17 +727,38 @@ class Browser:
         if action_type not in self.X_CLICK_ACTIONS:
             raise ExecutorError(
                 "X_ACTION_NOT_A_WRITE",
-                "Only a claimed publish or delete action may touch a signed-in X page.",
+                "Only a claimed confirmed X action may touch a signed-in X page.",
             )
         if lease_expires_epoch <= time.time():
             raise ExecutorError("ACTION_LEASE_EXPIRED", "The action lease has expired.")
         with self.lock:
+            # The MCP server re-verifies the claim on every browser tool call.
+            # Reuse the live grant for a multi-stage action instead of
+            # reinitializing its counters between typing and clicking.
+            if (
+                isinstance(self.x_grant, dict)
+                and self.x_grant.get("action_id") == action_id
+                and secrets.compare_digest(str(self.x_grant.get("claim_token", "")), claim_token)
+                and self.x_grant.get("action_type") == action_type
+                and float(self.x_grant.get("expires", 0)) > time.time()
+            ):
+                return {
+                    "authorized": True,
+                    "action_id": action_id,
+                    "action_type": action_type,
+                    "stages": {
+                        "typing": int(self.x_grant.get("typing_remaining", 0)),
+                        "click": int(self.x_grant.get("click_remaining", 0)),
+                    },
+                }
             consumed = self._x_consumed.setdefault(action_id, set())
             typing_remaining = (
                 1 if action_type in self.X_TYPE_ACTIONS and "typing" not in consumed else 0
             )
             click_remaining = (
-                1 if action_type in self.X_CLICK_ACTIONS and "click" not in consumed else 0
+                (2 if action_type == "repost_post" else 1)
+                if action_type in self.X_CLICK_ACTIONS and "click" not in consumed
+                else 0
             )
             if typing_remaining == 0 and click_remaining == 0:
                 raise ExecutorError(
@@ -693,7 +785,7 @@ class Browser:
             # single-use; a second attempt at the same stage is rejected.
             "stages": {
                 "typing": 1 if action_type in self.X_TYPE_ACTIONS else 0,
-                "click": 1 if action_type in self.X_CLICK_ACTIONS else 0,
+                "click": click_remaining,
             },
         }
 
@@ -704,6 +796,20 @@ class Browser:
         the whole grant after typing would make the publish path impossible,
         so each stage is counted separately and still single-use.
         """
+
+        grant = self._validate_x_grant(allowed)
+        stage = "typing" if allowed == self.X_TYPE_ACTIONS else "click"
+        remaining = int(grant.get(f"{stage}_remaining", 0))
+        grant[f"{stage}_remaining"] = remaining - 1
+        self._x_consumed.setdefault(str(grant.get("action_id", "")), set()).add(stage)
+        if stage == "click" and int(grant.get("click_remaining", 0)) <= 0:
+            # A repost opens a confirmation menu and needs a second click.
+            # Clear the grant only after its final click stage is consumed.
+            self.x_grant = None
+        return grant
+
+    def _validate_x_grant(self, allowed: frozenset[str]) -> dict[str, Any]:
+        """Check a grant without consuming it, preserving retryable errors."""
 
         grant = self.x_grant
         if not isinstance(grant, dict):
@@ -728,12 +834,6 @@ class Browser:
                 "X_ACTION_STAGE_EXHAUSTED",
                 "This claimed action already used that browser step.",
             )
-        grant[f"{stage}_remaining"] = remaining - 1
-        self._x_consumed.setdefault(str(grant.get("action_id", "")), set()).add(stage)
-        if stage == "click":
-            # A click is the final step for both publish and delete. Nothing
-            # of this claim may be reused after it.
-            self.x_grant = None
         return grant
 
     def _assert_visual_snapshot(self, observation_id: str) -> None:
@@ -756,6 +856,259 @@ class Browser:
             self.page.mouse.click(round(x_ratio * width), round(y_ratio * height))
         self.page.wait_for_timeout(300)
         return self._observe_impl()
+
+    def execute_x_action(
+        self,
+        *,
+        action_type: str,
+        post_url: str,
+        author: str,
+        text: str | None,
+        action_id: str,
+        claim_token: str,
+        lease_expires_epoch: float,
+    ) -> dict[str, Any]:
+        """Run one confirmed X action without putting the model in the UI loop.
+
+        This is the fast path for a bounded batch. It still uses the same
+        claim stages as the low-level browser tools and stops when a semantic
+        postcondition cannot be proven. The model remains the fallback for
+        pages that need visual interpretation.
+        """
+
+        if action_type not in {"like_post", "repost_post", "reply_post"}:
+            raise ExecutorError("X_ACTION_NOT_A_WRITE", "The action is not a supported X interaction.")
+        try:
+            return self._run_on_worker(
+                lambda: self._execute_x_action_impl(
+                    action_type=action_type,
+                    post_url=post_url,
+                    author=author,
+                    text=text,
+                    action_id=action_id,
+                    claim_token=claim_token,
+                    lease_expires_epoch=lease_expires_epoch,
+                ),
+                timeout=max(30.0, min(self.start_timeout + 30.0, 180.0)),
+            )
+        except ExecutorError:
+            raise
+        except Exception as exc:
+            # Do not let a Playwright timeout tear down the MCP HTTP handler.
+            # The action has already consumed its grant, so the only safe
+            # outcome is an auditable uncertain result and no retry.
+            raise ExecutorError(
+                "ACTION_UNCERTAIN",
+                "The X action executor failed before its postcondition was proven.",
+            ) from exc
+
+    def _execute_x_action_impl(
+        self,
+        *,
+        action_type: str,
+        post_url: str,
+        author: str,
+        text: str | None,
+        action_id: str,
+        claim_token: str,
+        lease_expires_epoch: float,
+    ) -> dict[str, Any]:
+        self._open_impl(post_url)
+        parsed = urlparse(post_url)
+        status_path = parsed.path.rstrip("/")
+        def find_target() -> Any:
+            locator = self.page.locator(
+                f'article[data-testid="tweet"]:has(a[href="{status_path}"])'
+            )
+            if locator.count() != 1:
+                locator = self.page.locator(f'article:has(a[href="{status_path}"])')
+            return locator
+
+        target = find_target()
+        target_deadline = time.monotonic() + 10.0
+        while target.count() != 1 and time.monotonic() < target_deadline:
+            self.page.wait_for_timeout(250)
+            target = find_target()
+        if target.count() != 1:
+            self.page.screenshot(type="png", full_page=False)
+            raise ExecutorError(
+                "ACTION_UNCERTAIN",
+                "The exact X status article was not uniquely located; screenshot fallback is required.",
+            )
+
+        def one(selector: str) -> Any:
+            locator = target.locator(selector)
+            if locator.count() == 1:
+                return locator
+            return None
+
+        def wait_for_count(locator: Any, expected: int = 1, timeout_ms: int = 5000) -> bool:
+            deadline = time.monotonic() + timeout_ms / 1000
+            while time.monotonic() < deadline:
+                if locator.count() == expected:
+                    return True
+                self.page.wait_for_timeout(250)
+            return locator.count() == expected
+
+        if action_type in {"like_post", "repost_post"}:
+            active_selector = '[data-testid="unlike"]' if action_type == "like_post" else '[data-testid="unretweet"]'
+            control_selector = '[data-testid="like"]' if action_type == "like_post" else '[data-testid="retweet"]'
+            control_deadline = time.monotonic() + 5.0
+            active = one(active_selector)
+            control = one(control_selector)
+            while active is None and control is None and time.monotonic() < control_deadline:
+                self.page.wait_for_timeout(250)
+                active = one(active_selector)
+                control = one(control_selector)
+            if active is not None:
+                return {
+                    "post_url": post_url,
+                    "author": author,
+                    "verified": True,
+                    "state": "liked" if action_type == "like_post" else "reposted",
+                    "changed": False,
+                    "locator_strategy": "dom",
+                }
+            if control is None:
+                self.page.screenshot(type="png", full_page=False)
+                raise ExecutorError(
+                    "ACTION_UNCERTAIN",
+                    "The X interaction control was not uniquely exposed; screenshot fallback is required.",
+                )
+            self._consume_x_grant(self.X_CLICK_ACTIONS)
+            control.click(timeout=5000)
+            self.page.wait_for_timeout(350)
+            if action_type == "repost_post":
+                confirm = self.page.locator('[data-testid="retweetConfirm"]')
+                if confirm.count() != 1:
+                    confirm = self.page.get_by_role("menuitem", name=re.compile(r"Repost", re.I))
+                if confirm.count() != 1:
+                    self.page.screenshot(type="png", full_page=False)
+                    raise ExecutorError("ACTION_UNCERTAIN", "The repost confirmation control was not proven.")
+                self._consume_x_grant(self.X_CLICK_ACTIONS)
+                confirm.click(timeout=5000)
+                self.page.wait_for_timeout(500)
+                verified = wait_for_count(target.locator('[data-testid="unretweet"]'))
+            else:
+                # X can acknowledge the click after the page has returned.
+                # Wait for the state transition, but never click again.
+                verified = wait_for_count(target.locator('[data-testid="unlike"]'))
+            if not verified:
+                # The click is already consumed. A single read-only reload can
+                # prove a delayed server acknowledgement without retrying it.
+                try:
+                    self.page.reload(wait_until="commit", timeout=15000)
+                    self.page.wait_for_timeout(1200)
+                    self._wait_for_initial_content(post_url)
+                    target = find_target()
+                    active_selector = (
+                        '[data-testid="unretweet"]'
+                        if action_type == "repost_post"
+                        else '[data-testid="unlike"]'
+                    )
+                    verified = target.count() == 1 and wait_for_count(
+                        target.locator(active_selector), timeout_ms=8000
+                    )
+                except Exception:
+                    verified = False
+            if not verified:
+                raise ExecutorError("ACTION_UNCERTAIN", "The X interaction postcondition was not proven.")
+            return {
+                "post_url": post_url,
+                "author": author,
+                "verified": True,
+                "state": "liked" if action_type == "like_post" else "reposted",
+                "changed": True,
+                "locator_strategy": "dom",
+            }
+
+        if not isinstance(text, str) or not text:
+            raise ExecutorError("INVALID_ARGUMENT", "A reply action needs confirmed text.")
+        # X keeps hidden composer instances in the DOM. Restrict the fast path
+        # to the visible instance before applying the uniqueness gate.
+        def visible_composer() -> Any:
+            locator = self.page.locator('[data-testid="tweetTextarea_0"]:visible')
+            if locator.count() == 1:
+                return locator
+            return self.page.locator('[contenteditable="true"]:visible')
+
+        # A status route can render the reply composer several seconds after
+        # the article. Do not classify that normal loading window as an
+        # uncertain write; wait for one visible composer, but never pick an
+        # arbitrary duplicate.
+        composer = visible_composer()
+        deadline = time.monotonic() + 10.0
+        while composer.count() != 1 and time.monotonic() < deadline:
+            self.page.wait_for_timeout(250)
+            composer = visible_composer()
+        if composer.count() != 1:
+            self.page.screenshot(type="png", full_page=False)
+            raise ExecutorError("ACTION_UNCERTAIN", "The reply composer was not uniquely located.")
+        self._consume_x_grant(self.X_TYPE_ACTIONS)
+        composer.fill(text)
+        self.page.wait_for_timeout(150)
+        submit = self.page.locator('[data-testid="tweetButtonInline"]:visible')
+        if submit.count() != 1:
+            submit = self.page.get_by_role("button", name=re.compile(r"Reply", re.I))
+        deadline = time.monotonic() + 5.0
+        while submit.count() != 1 and time.monotonic() < deadline:
+            self.page.wait_for_timeout(250)
+            submit = self.page.locator('[data-testid="tweetButtonInline"]:visible')
+            if submit.count() != 1:
+                submit = self.page.get_by_role("button", name=re.compile(r"Reply", re.I))
+        if submit.count() != 1:
+            self.page.screenshot(type="png", full_page=False)
+            raise ExecutorError("ACTION_UNCERTAIN", "The reply submit control was not uniquely located.")
+        self._consume_x_grant(self.X_CLICK_ACTIONS)
+        submit.click(timeout=5000)
+        self.page.wait_for_timeout(650)
+        reply_url = ""
+
+        def canonical_status_url(href: str) -> str:
+            parsed = urlparse(href)
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) < 3 or parts[1] != "status" or not parts[2].isdigit():
+                return ""
+            return f"https://x.com/{parts[0]}/status/{parts[2]}"
+
+        def reply_hrefs() -> list[str]:
+            # Prefer the article that contains the exact submitted text. This
+            # avoids treating an older reply in the thread as our post.
+            values = self.page.locator("article").evaluate_all(
+                """(articles, needle) => articles
+                    .filter(article => (article.innerText || '').includes(needle))
+                    .flatMap(article => Array.from(article.querySelectorAll('a[href*="/status/"]'))
+                        .map(link => link.getAttribute('href') || ''))""",
+                text,
+            )
+            if values:
+                return values
+            return self.page.locator('article a[href*="/status/"]').evaluate_all(
+                "els => els.map(el => el.getAttribute('href') || '')"
+            )
+
+        for href in reply_hrefs():
+            candidate = canonical_status_url(href)
+            if candidate and urlparse(candidate).path != status_path:
+                reply_url = candidate
+        if not reply_url or text not in (self.page.locator("body").inner_text() or ""):
+            self.page.wait_for_timeout(1500)
+            if not reply_url:
+                for href in reply_hrefs():
+                    candidate = canonical_status_url(href)
+                    if candidate and urlparse(candidate).path != status_path:
+                        reply_url = candidate
+            if not reply_url or text not in (self.page.locator("body").inner_text() or ""):
+                raise ExecutorError("ACTION_UNCERTAIN", "The reply text or canonical reply URL was not proven.")
+        return {
+            "post_url": post_url,
+            "reply_url": reply_url,
+            "text": text,
+            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "verified": True,
+            "changed": True,
+            "locator_strategy": "dom",
+        }
 
     def close(self) -> None:
         if self.worker and self.worker.is_alive() and threading.get_ident() != self.worker_ident:

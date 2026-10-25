@@ -10,12 +10,7 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding $false
 
 $python = $env:X_STARTER_PYTHON
 if (-not $python) {
-    $bundled = "C:\Users\54736\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-    if (Test-Path -LiteralPath $bundled) {
-        $python = $bundled
-    } else {
-        $python = (Get-Command python -ErrorAction Stop).Source
-    }
+    $python = (Get-Command python -ErrorAction Stop).Source
 }
 
 $env:X_STARTER_MODE = "mock"

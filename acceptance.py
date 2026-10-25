@@ -173,7 +173,8 @@ def main(argv: list[str] | None = None) -> int:
             record(script.removesuffix(".py"), proves, code, out)
 
     if args.with_dsh:
-        probe = Path(r"D:\workspace\agent-help\.agent-work\dsh_native_image_probe.py")
+        configured_probe = os.environ.get("X_STARTER_DSH_PROBE", "").strip()
+        probe = Path(configured_probe) if configured_probe else SCRIPT_DIR / ".agent-work" / "dsh_native_image_probe.py"
         if not probe.is_file():
             record("dsh", "real DSH agent against Google and X", 127, "probe script missing")
         else:

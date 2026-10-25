@@ -5,7 +5,7 @@ documented local command-server option and keep the starter's stdio contract:
 
 ```text
 command: <python executable>
-args: -I -X utf8 D:\workspace\agent-help\x-starter\server.py
+args: -I -X utf8 <PATH_TO_X_STARTER>\server.py
 env:
   X_STARTER_MODE=mock
 ```

@@ -4,12 +4,12 @@ Use a project-scoped MCP server entry. Keep the token out of this file.
 
 ```toml
 [mcp_servers.x_starter]
-command = "C:\\Users\\54736\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe"
+command = "python"
 args = [
   "-I",
   "-X",
   "utf8",
-  "D:\\workspace\\agent-help\\x-starter\\server.py",
+  "<PATH_TO_X_STARTER>\\server.py",
 ]
 
 [mcp_servers.x_starter.env]
@@ -35,7 +35,7 @@ For a real local browser run, use a separate server mode and an executing agent:
 ```t
 X_STARTER_MODE=browser
 X_STARTER_ENABLE_BROWSER=1
-X_STARTER_STATE_DIR=D:\workspace\agent-help\x-starter\.x-starter-state\browser
+X_STARTER_STATE_DIR=%LOCALAPPDATA%\\x-starter\\state\\browser
 ```
 
 The agent claims `x_browser_next_action`, uses Computer Use, and returns the

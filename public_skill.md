@@ -38,6 +38,21 @@ Read this whole file before your first call.
    and do not put one in a tool argument.
 5. Restart the client so it reloads the server list.
 
+## First-login handoff
+
+The first owner login is a human step. Run `tester.cmd login` once. The launcher
+opens ordinary Chrome with a dedicated persistent profile and does not type a
+password, code, or OAuth approval. The human may choose `Continue with Google`.
+
+If Google opens a blank popup, do not retry writes or clear the profile. Close
+the dedicated browser, restart `tester.cmd login`, and use the new ordinary
+Chrome window. Close the dedicated browser after reaching the signed-in X home
+page before the MCP client reuses the profile. Then run `tester.cmd check-login`
+and require `state: signed_in`.
+
+The MCP executor reads visible page state only. It never reads cookies, storage,
+passwords, or tokens. Each client must use its own profile directory.
+
 Local development uses `http://127.0.0.1:8765/mcp`. That address is for the
 machine that runs the server. It is not a public endpoint.
 
@@ -321,6 +336,51 @@ Rules for an uncertain result:
 
 Never turn an unknown into a success claim. Never turn a mock result into a
 live claim.
+
+## Bounded interaction batch
+
+Call `x_interaction_batch_plan` after a verified owner timeline read when the
+owner asks for a bounded batch. The default demonstration shape is 20 likes on
+posts from 20 distinct authors, 1 repost, and 10 drafted replies.
+
+The planner is read-only. It selects canonical status URLs, rejects duplicate
+authors for the like set, and returns 31 ordered operations. It does not click,
+type, open intent links, or change X. Its result must say
+`planned_not_executed`, `real_x_state_changed: false`, and
+`one_minute_sla: not_verified` until a compatible action executor passes live
+acceptance.
+
+For a real batch, require fresh owner confirmation immediately before the
+external actions. Use one expiring batch record, one action lease per target,
+exact postconditions, and an `uncertain` stop state. Never retry an uncertain
+interaction without checking current X state first.
+
+The browser bridge now exposes `x_interaction_batch_prepare`,
+`x_interaction_batch_start`, and `x_interaction_batch_execute`. Prepare creates
+a local expiring confirmation record. Start consumes the exact phrase and
+queues separate action leases: 20 `like_post`, 1 `repost_post`, and 10
+`reply_post`. Each action requires its own target proof and postcondition. An
+uncertain action stops the batch.
+
+`x_interaction_batch_execute` is the fast path. It runs queued actions inside
+the MCP browser executor, uses DOM/accessibility locators first, and captures a
+screenshot when a target is not proven. It returns per-action results and
+elapsed time. Do not report the one-minute target as passed from a planner
+benchmark or a synthetic page. The live executor must prove every action and
+elapsed time.
+
+Set `failure_policy: "stop"` for strict acceptance. Set
+`failure_policy: "continue"` for a long, explicitly approved job. In continue
+mode, an uncertain action is recorded once and never retried; independent
+remaining actions may proceed. The result reports both the uncertain action
+and whether execution continued. This improves throughput, but it does not
+turn an uncertain action into success.
+
+Use `x_interaction_batch_status` to inspect a prepared or partially executed
+batch. It returns pending, claimed, completed, and uncertain counts, changed
+actions, and per-action evidence. It never retries an action. This status call
+is the recovery surface for long jobs, so a client can show progress without
+holding an MCP request open.
 
 ## Add a connector
 

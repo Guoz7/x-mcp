@@ -62,6 +62,7 @@ from connector_runtime import (
 )  # noqa: E402
 from write_store import WriteStore, WriteStoreError  # noqa: E402
 import composer  # noqa: E402
+import interaction_batch  # noqa: E402
 
 
 class StarterError(Exception):
@@ -1201,6 +1202,118 @@ class XStarter:
                 },
             },
             {
+                "name": "x_interaction_batch_plan",
+                "title": "Plan a bounded X interaction batch",
+                "description": (
+                    "Select distinct timeline targets for up to 20 likes, one repost, and up to 10 replies. "
+                    "Planning is read-only and does not open X or perform an interaction. "
+                    "The one-minute target remains unverified until a compatible executor passes live acceptance."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "posts": {
+                            "type": "array",
+                            "maxItems": 200,
+                            "description": "Observed X status objects. Each item must contain author and canonical status url.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "author": {"type": "string", "minLength": 1, "maxLength": 80},
+                                    "url": {"type": "string", "description": "Canonical https://x.com/<author>/status/<id> URL."},
+                                    "text": {"type": "string", "maxLength": 500},
+                                },
+                                "required": ["author", "url"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "reply_texts": {"type": "array", "maxItems": 10, "items": {"type": "string", "minLength": 1, "maxLength": 280}},
+                        "like_count": {"type": "integer", "minimum": 1, "maximum": 20, "default": 20},
+                        "repost_count": {"type": "integer", "minimum": 0, "maximum": 1, "default": 1},
+                        "reply_count": {"type": "integer", "minimum": 0, "maximum": 10, "default": 10},
+                        "budget_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 60},
+                    },
+                    "required": ["posts", "reply_texts"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+            },
+            {
+                "name": "x_interaction_batch_prepare",
+                "title": "Prepare a bounded X interaction batch",
+                "description": (
+                    "Create an expiring local confirmation record. This does not change X. "
+                    "Pass the complete data object returned by x_interaction_batch_plan, including "
+                    "status, batch_id, counts, operations, and execution."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "plan": {"type": "object"},
+                        "ttl_seconds": {"type": "integer", "minimum": 30, "maximum": 600, "default": 180},
+                    },
+                    "required": ["plan"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
+                "name": "x_interaction_batch_start",
+                "title": "Start the confirmed X interaction batch",
+                "description": "After exact confirmation, queue the planned bounded interactions as separate leased actions. The agent must stop on uncertainty.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "batch_id": {"type": "string", "maxLength": 64},
+                        "confirmation": {"type": "string", "maxLength": 40},
+                    },
+                    "required": ["batch_id", "confirmation"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+            },
+            {
+                "name": "x_interaction_batch_execute",
+                "title": "Execute a confirmed X interaction batch",
+                "description": (
+                    "Run the queued batch inside the MCP browser executor. The executor uses DOM and "
+                    "accessibility locators first, captures a screenshot when a target is not proven, "
+                    "records every independent action, and stops on uncertainty."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "batch_id": {"type": "string", "maxLength": 64},
+                        "confirmation": {"type": "string", "maxLength": 40},
+                        "lease_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 300},
+                        "failure_policy": {
+                            "type": "string",
+                            "enum": ["stop", "continue"],
+                            "default": "stop",
+                            "description": "Stop at the first uncertain action, or isolate it and continue independent actions without retrying it.",
+                        },
+                    },
+                    "required": ["batch_id", "confirmation"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+            },
+            {
+                "name": "x_interaction_batch_status",
+                "title": "Read X interaction batch progress",
+                "description": (
+                    "Return per-action progress for a prepared or partially executed batch. "
+                    "This is read-only and never retries an uncertain action."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"batch_id": {"type": "string", "maxLength": 64}},
+                    "required": ["batch_id"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
+            },
+            {
                 "name": "account_summary",
                 "title": "Inspect X account",
                 "description": (
@@ -1399,6 +1512,16 @@ class XStarter:
                 data = self._x_owner_read(scoped, trace)
             elif name == "x_evidence_get":
                 data = self._x_evidence_get(arguments, trace)
+            elif name == "x_interaction_batch_plan":
+                data = self._x_interaction_batch_plan(arguments, trace)
+            elif name == "x_interaction_batch_prepare":
+                data = self._x_interaction_batch_prepare(scoped, trace)
+            elif name == "x_interaction_batch_start":
+                data = self._x_interaction_batch_start(scoped, trace)
+            elif name == "x_interaction_batch_execute":
+                data = self._x_interaction_batch_execute(scoped, trace)
+            elif name == "x_interaction_batch_status":
+                data = self._x_interaction_batch_status(scoped, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -2199,6 +2322,178 @@ class XStarter:
             )
         )
         return evidence
+
+    def _x_interaction_batch_plan(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        try:
+            result = interaction_batch.plan_batch(
+                arguments.get("posts"),
+                reply_texts=arguments.get("reply_texts", []),
+                like_count=_bounded_int(arguments, "like_count", default=20, minimum=1, maximum=20),
+                repost_count=_bounded_int(arguments, "repost_count", default=1, minimum=0, maximum=1),
+                reply_count=_bounded_int(arguments, "reply_count", default=10, minimum=0, maximum=10),
+                budget_seconds=_bounded_int(arguments, "budget_seconds", default=60, minimum=1, maximum=600),
+            )
+        except interaction_batch.BatchPlanError as exc:
+            raise StarterError("INVALID_BATCH", str(exc)) from None
+        trace.append(_event(
+            "x_adapter", "interaction_batch_planned",
+            operations=result["operation_count"], external_call=False,
+        ))
+        return result
+
+    def _x_interaction_batch_prepare(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        try:
+            result = self._bridge().prepare_interaction_batch(
+                arguments.get("plan"),
+                session_id=arguments.get("_mcp_session_id"),
+                ttl_seconds=_bounded_int(arguments, "ttl_seconds", default=180, minimum=30, maximum=600),
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("auth_boundary", "interaction_batch_prepared", batch_id=result["batch_id"], operation_count=result["operation_count"]))
+        return result
+
+    def _x_interaction_batch_start(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        batch_id = _required_string(arguments, "batch_id", max_length=64)
+        confirmation = _required_string(arguments, "confirmation", max_length=40)
+        try:
+            result = self._bridge().queue_interaction_batch(
+                batch_id, confirmation, session_id=arguments.get("_mcp_session_id")
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("auth_boundary", "interaction_batch_queued", batch_id=batch_id, operation_count=result["operation_count"]))
+        return result
+
+    def _x_interaction_batch_execute(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Execute a confirmed batch without a model round trip per action."""
+
+        batch_id = _required_string(arguments, "batch_id", max_length=64)
+        confirmation = _required_string(arguments, "confirmation", max_length=40)
+        lease_seconds = _bounded_int(arguments, "lease_seconds", default=300, minimum=60, maximum=600)
+        failure_policy = arguments.get("failure_policy", "stop")
+        if failure_policy not in {"stop", "continue"}:
+            raise StarterError("INVALID_ARGUMENT", "failure_policy must be stop or continue.")
+        session_id = arguments.get("_mcp_session_id")
+        try:
+            queued = self._bridge().queue_interaction_batch(
+                batch_id, confirmation, session_id=session_id
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+
+        results: list[dict[str, Any]] = []
+        started = time.monotonic()
+        for _ in queued["action_ids"]:
+            action = self._bridge().next_action(
+                lease_seconds=lease_seconds,
+                session_id=session_id,
+                batch_id=batch_id,
+            )
+            if action is None:
+                break
+            browser = self._browser_for({"_mcp_session_id": session_id})
+            payload = action.get("payload") or {}
+            try:
+                verified = self._bridge().verify_claim(
+                    action["action_id"], action["claim_token"], session_id=session_id
+                )
+                browser.authorize_x_action(
+                    action_id=action["action_id"],
+                    claim_token=action["claim_token"],
+                    lease_expires_epoch=verified["lease_expires_epoch"],
+                    action_type=action.get("type", ""),
+                )
+                result = browser.execute_x_action(
+                    action_type=action["type"],
+                    post_url=str(payload.get("post_url") or payload.get("url")),
+                    author=str(payload.get("author", "")),
+                    text=payload.get("text"),
+                    action_id=action["action_id"],
+                    claim_token=action["claim_token"],
+                    lease_expires_epoch=verified["lease_expires_epoch"],
+                )
+                completed = self._bridge().complete_action(
+                    action_id=action["action_id"],
+                    claim_token=action["claim_token"],
+                    outcome="succeeded",
+                    result=result,
+                    error=None,
+                    executor_context={
+                        "browser_family": result.get("browser_family", "chromium"),
+                        "host": "x.com",
+                        "mode": "browser",
+                        "page_kind": "x_status",
+                    },
+                    locator_strategy=result.get("locator_strategy", "dom"),
+                    session_id=session_id,
+                )
+                results.append({"action_id": action["action_id"], "status": completed["status"], "result": completed.get("result")})
+            except (BridgeError, ExecutorError, StarterError) as exc:
+                error = {"code": getattr(exc, "code", "ACTION_UNCERTAIN"), "message": str(exc)}
+                try:
+                    self._bridge().complete_action(
+                        action_id=action["action_id"],
+                        claim_token=action["claim_token"],
+                        outcome="uncertain",
+                        result=None,
+                        error=error,
+                        executor_context={"browser_family": "chromium", "host": "x.com", "mode": "browser", "page_kind": "x_status"},
+                        session_id=session_id,
+                    )
+                except BridgeError:
+                    pass
+                results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
+                if failure_policy == "stop":
+                    break
+
+        try:
+            browser.close()
+        except Exception:
+            pass
+        trace.append(_event("browser_executor", "interaction_batch_executed", batch_id=batch_id, actions=len(results)))
+        return {
+            "batch_id": batch_id,
+            "planned": queued["operation_count"],
+            "processed": len(results),
+            "results": results,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "stopped_on_uncertainty": any(item["status"] == "uncertain" for item in results),
+            "continued_after_uncertainty": failure_policy == "continue" and any(
+                item["status"] == "uncertain" for item in results
+            ),
+            "failure_policy": failure_policy,
+            "browser_closed": True,
+        }
+
+    def _x_interaction_batch_status(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        batch_id = _required_string(arguments, "batch_id", max_length=64)
+        try:
+            result = self._bridge().interaction_batch_status(
+                batch_id, session_id=arguments.get("_mcp_session_id")
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(
+            _event(
+                "browser_executor",
+                "interaction_batch_status_read",
+                batch_id=batch_id,
+                state=result["state"],
+                remaining=result["remaining"],
+            )
+        )
+        return result
 
     def _require_connected(self) -> None:
         if not self.connected:
