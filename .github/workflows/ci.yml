@@ -16,12 +16,12 @@ jobs:
       # ubuntu-latest provides the supported system Python. Avoid a runtime
       # download so a transient tool-cache outage cannot block source checks.
       - name: Check Python version
-        run: python3 --version
+        run: python3.12 --version
       - name: Validate release tree
-        run: python3 release_check.py
+        run: python3.12 release_check.py
       - name: Compile Python sources
-        run: python3 -m compileall -q .
+        run: python3.12 -m compileall -q .
       - name: Run unit and contract tests
-        run: python3 -m unittest discover -s tests -p 'test_*.py'
+        run: python3.12 -m unittest discover -s tests -p 'test_*.py'
       - name: Check whitespace
         run: git diff --check
