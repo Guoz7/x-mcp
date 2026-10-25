@@ -11,21 +11,17 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
+      # ubuntu-latest provides the supported system Python. Avoid a runtime
+      # download so a transient tool-cache outage cannot block source checks.
+      - name: Check Python version
+        run: python3 --version
       - name: Validate release tree
-        run: python release_check.py
+        run: python3 release_check.py
       - name: Compile Python sources
-        run: python -m compileall -q .
+        run: python3 -m compileall -q .
       - name: Run unit and contract tests
-        run: python -m unittest discover -s tests -p 'test_*.py'
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Check whitespace
         run: git diff --check
