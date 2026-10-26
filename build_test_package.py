@@ -16,6 +16,11 @@ FILES = (
     "client_config.py", "selfcheck.py", "mcp_client.py", "tester.py", "tester.cmd", "internal-test.cmd",
     "requirements-browser.txt", "README.md", "TESTING.md", "ONE-CLICK-INTERNAL.md", "PROMPTS.md",
     "public_skill.md", "skill.md", "connector-manifest.json", "data/post_insights.json", "ui/composer.html",
+    "RELEASE_READINESS.md", "SECURITY.md", "CHANGELOG.md", "LICENSE-DECISION.md",
+    "PROMOTION.md", "docs/PERFORMANCE.md", "docs/promotion/DEMO.md",
+    "docs/promotion/x-mcp-promo-story.json",
+    "docs/promotion/x-mcp-promo-deck.html", "docs/promotion/x-mcp-promo.mp4",
+    "docs/promotion/x-mcp-promo.srt", "docs/promotion/x-mcp-promo-narration.md",
     "owner_login_open.py", "owner_login_check.py", "executor_visual_e2e.py",
     "executor_matrix_e2e.py", "owner_read_e2e.py", "write_flow_e2e.py", "interaction_batch_e2e.py",
 )

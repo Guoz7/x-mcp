@@ -22,3 +22,21 @@ releases/
 mcp-client.json
 mcp-codex.toml
 control-test-result.html
+
+# Generated promotion-video intermediates; keep the final MP4, deck, SRT and story.
+docs/promotion/*-work/
+
+# Local live-account probes and benchmark artifacts. These are not release inputs.
+benchmarks/
+cleanup_delete_test_post.py
+delete_e2e_live.py
+delete_e2e_live2.py
+follow_baseline_strict.py
+follow_cost_probe.py
+follow_final_audit.py
+follow_restore_batch.py
+follow_scale_probe.py
+follow_strict_restore.py
+follow_truth_restore.py
+follow_write_probe.py
+publish_e2e_live.py

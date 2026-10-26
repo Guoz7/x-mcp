@@ -475,6 +475,13 @@ class Browser:
                 .slice(0, 400)
                 .map(a => a.href)
                 .filter(href => typeof href === 'string' && href.length < 300),
+            // The signed-in account's own profile link in the left navigation.
+            // This is the only authoritative owner signal: timeline post
+            // authors are other accounts and must never be used as the owner.
+            nav_profile_href: (() => {
+                const link = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+                return link ? link.getAttribute('href') : null;
+            })(),
             articles: Array.from(document.querySelectorAll('article'))
                 .slice(0, 40)
                 .map(node => ({
@@ -697,7 +704,19 @@ class Browser:
         """
 
         target = self.page.locator(selector)
-        if target.count() == 1:
+        # X mounts the status article asynchronously after navigation. Give a
+        # scoped selector a short settling window before calling it ambiguous.
+        scoped_status_selector = selector.startswith("article ") or selector.startswith("article:has(")
+        deadline = (
+            time.monotonic() + 5.0
+            if _is_gated(host) and scoped_status_selector
+            else time.monotonic()
+        )
+        count = target.count()
+        while count != 1 and time.monotonic() < deadline:
+            self.page.wait_for_timeout(150)
+            count = target.count()
+        if count == 1:
             return selector
         if _is_gated(host) and selector.startswith("article "):
             path = urlparse(self.page.url).path.rstrip("/")

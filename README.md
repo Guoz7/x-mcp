@@ -1,5 +1,13 @@
 # X Starter
 
+## Explain and promote it
+
+If you are showing this project to a new user, start with `PROMOTION.md`.
+It contains a plain-language description, a public benchmark table, a safe
+synthetic-account demo, copy for a short post, and the limits that must stay
+beside every number. The narrated video source is
+`docs/promotion/x-mcp-promo-story.json`.
+
 ## Internal tester ZIP
 
 See `TESTING.md` for the current Windows tester workflow. Run `tester.cmd setup`,
@@ -69,7 +77,7 @@ for progress and server-to-client requests.
 | Area | Status | Evidence |
 |---|---|---|
 | Mock tools and walkthrough | Verified local code | `tests/test_mock.py`; `--demo` |
-| MCP tools, resources, prompts | Verified local code | 480-test suite (`quality_gate.ps1`); conformance profile |
+| MCP tools, resources, prompts | Verified local code | 482-test suite (`quality_gate.ps1`); conformance profile |
 | Streamable HTTP sessions | Verified local code | Session, delete, expiry, Origin, and version tests |
 | Browser action bridge | Implemented and unit-tested | `browser_bridge.py` |
 | Publish and delete protocol | Implemented; real-X evidence is release-local | See `TESTING.md` and `RELEASE_READINESS.md` |

@@ -22,12 +22,14 @@ not make the service a hosted multi-tenant product.
 
 | Check | Current evidence | Meaning |
 |---|---|---|
-| Python test suite | 480 tests, exit 0 in the current working tree | Offline contracts and local behavior |
+| Python test suite | 482 tests, exit 0 in the current working tree | Offline contracts and local behavior |
 | MCP conformance | Official profile 39/39 in the recorded run | Protocol behavior for the tested profile |
 | `checkmcp` | 94/94 in the latest release verification | Schema, error, robustness, and security checks for that run |
 | DSH/X owner batch | 20 likes, 1 repost, 10 replies; 31 verified actions | One owner-controlled acceptance run, not a scale guarantee |
 | One-minute batch target | Not verified | The measured action window was 133 seconds |
 | Page-level parallelism | Not implemented | Current executor is serial |
+| Local HTTP pressure | 512 clients: 994.06 RPS, 0 errors; 2048 clients: 533.08 RPS, 0 errors | Local mock only; no X network or model |
+| Promotion demo | `mock_creator` walkthrough and 115.2 s narrated MP4 | Synthetic local account; no X request |
 
 Local acceptance logs and account-specific evidence are intentionally not
 committed here. Re-run the commands in `TESTING.md` against the exact commit

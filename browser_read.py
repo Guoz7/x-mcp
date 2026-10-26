@@ -140,38 +140,35 @@ def _profile_candidates(
 def _own_handle(
     observation: dict[str, Any], hosts: frozenset[str] | set[str] = X_HOSTS
 ) -> str:
-    """Pick the signed-in handle from the home page navigation.
+    """Pick the signed-in handle from the left navigation profile link.
 
-    X renders the owner's avatar link as a bare ``/<handle>`` anchor and puts
-    it before other profile links. When the page also shows the owner's own
-    posts, the status author confirms the choice. Nothing is returned when the
-    page cannot settle on one candidate.
+    Only ``a[data-testid="AppTabBar_Profile_Link"]`` identifies the account that
+    is actually signed in. Earlier versions also accepted a post author from the
+    visible timeline, which silently returned other people's accounts as the
+    owner. That is a write-safety bug: an action could be prepared against the
+    wrong account. Do not reintroduce that heuristic.
     """
 
-    candidates = _profile_candidates(observation, hosts)
-    if not candidates:
+    raw = observation.get("nav_profile_href")
+    handle = ""
+    if isinstance(raw, str) and raw:
+        parts = [part for part in urlparse(raw).path.split("/") if part]
+        if len(parts) == 1:
+            handle = parts[0]
+    if not handle or handle.lower() in X_RESERVED_PATHS:
         raise ReadError(
             "OWNER_HANDLE_NOT_VISIBLE",
-            "The home page did not expose a profile link, so the owner handle is unknown. Sign in first.",
+            (
+                "The left navigation did not expose the signed-in profile link. "
+                "Open x.com/home while signed in, or the session is not authenticated."
+            ),
         )
-    # A status URL authored by a candidate is direct evidence that the handle
-    # on screen belongs to the account whose timeline is open.
-    cited = {
-        match[0].lower()
-        for article in observation.get("articles") or []
-        for link in article.get("links") or []
-        if (match := _handle_from_status_url(str(link), hosts))
-    }
-    for handle in candidates:
-        if handle.lower() in cited:
-            return handle
-    if len(candidates) == 1:
-        return candidates[0]
-    raise ReadError(
-        "OWNER_HANDLE_AMBIGUOUS",
-        "Several profile links were visible and none was confirmed by a post author.",
-        details={"candidate_count": len(candidates)},
-    )
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+        raise ReadError(
+            "OWNER_HANDLE_NOT_VISIBLE",
+            "The navigation profile link did not contain a valid screen name.",
+        )
+    return handle
 
 
 def _detect_login_wall(observation: dict[str, Any]) -> None:

@@ -128,6 +128,7 @@ class AccountReadTests(unittest.TestCase):
     HOME = _observation(
         "https://x.com/home",
         links=["https://x.com/guoz7777", "https://x.com/i/flow/login"],
+        nav_profile_href="/guoz7777",
         articles=[
             {"text": "a post", "links": ["https://x.com/guoz7777/status/2112242496441061458"]}
         ],
@@ -189,7 +190,7 @@ class AccountReadTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "OWNER_SIGNED_OUT")
         self.assertEqual(browser.open.call_count, 1)
 
-    def test_ambiguous_handles_are_rejected(self) -> None:
+    def test_missing_navigation_profile_link_is_rejected(self) -> None:
         home = _observation(
             "https://x.com/home",
             links=["https://x.com/alice", "https://x.com/bob"],
@@ -199,24 +200,41 @@ class AccountReadTests(unittest.TestCase):
         browser.open.side_effect = [home]
         with self.assertRaises(ReadError) as caught:
             read_account(browser)
-        self.assertEqual(caught.exception.code, "OWNER_HANDLE_AMBIGUOUS")
+        self.assertEqual(caught.exception.code, "OWNER_HANDLE_NOT_VISIBLE")
 
-    def test_author_of_a_visible_post_disambiguates(self) -> None:
+    def test_timeline_post_author_is_never_treated_as_the_owner(self) -> None:
+        # Regression: a home timeline author used to be accepted as the owner.
+        # That prepared writes against somebody else's account.
         home = _observation(
             "https://x.com/home",
             links=["https://x.com/alice", "https://x.com/bob"],
             articles=[
-                {"text": "mine", "links": ["https://x.com/bob/status/777"]},
+                {"text": "not mine", "links": ["https://x.com/bob/status/777"]},
+            ],
+        )
+        browser = Mock()
+        browser.open.side_effect = [home]
+        with self.assertRaises(ReadError) as caught:
+            read_account(browser)
+        self.assertEqual(caught.exception.code, "OWNER_HANDLE_NOT_VISIBLE")
+
+    def test_navigation_link_wins_over_timeline_authors(self) -> None:
+        home = _observation(
+            "https://x.com/home",
+            links=["https://x.com/alice", "https://x.com/bob"],
+            nav_profile_href="/alice",
+            articles=[
+                {"text": "not mine", "links": ["https://x.com/bob/status/777"]},
             ],
         )
         profile = _observation(
-            "https://x.com/bob",
-            text="Bob\n@bob",
-            profile={"screen_name": "bob", "user_id": "123456789", "recent_post_ids": []},
+            "https://x.com/alice",
+            text="Alice\n@alice",
+            profile={"screen_name": "alice", "user_id": "123456789", "recent_post_ids": []},
         )
         browser = Mock()
         browser.open.side_effect = [home, profile]
-        self.assertEqual(read_account(browser)["username"], "bob")
+        self.assertEqual(read_account(browser)["username"], "alice")
 
     def test_localized_post_count_is_parsed(self) -> None:
         profile = _observation(

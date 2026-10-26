@@ -12,5 +12,7 @@ for public hosted use.
 - Added bounded interaction batches for likes, reposts, and replies.
 - Added credential-free public X reads and an optional Agent Help board.
 - Added source-package smoke tests and a credential-free internal tester ZIP.
+- Added a plain-language promotion kit, public performance snapshot, and a
+  synthetic-account narrated demo source.
 
 Known gaps are tracked in `RELEASE_READINESS.md`.

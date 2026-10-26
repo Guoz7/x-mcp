@@ -1,0 +1,80 @@
+{
+  "title": "X Starter：让 Agent 可靠接入 X",
+  "subtitle": "MCP、浏览器兜底与可验证动作",
+  "engine": "edge",
+  "voice": "zh-CN-XiaoxiaoNeural",
+  "slides": [
+    {
+      "kicker": "X STARTER · MCP",
+      "title": "让支持 MCP 的 Agent 接入 X",
+      "lead": "先读懂，再确认，再执行。每一步都有清晰边界。",
+      "points": [
+        {"title": "公开读取", "body": "读取公开资料，不需要把 API Key 放进提示词。"},
+        {"title": "浏览器兜底", "body": "DOM 和可访问性优先，必要时使用受保护的截图坐标。"},
+        {"title": "动作证据", "body": "写入需要确认、租约、后置验证和可追溯结果。"}
+      ],
+      "stats": [
+        {"value": "48", "label": "本地 Demo 可发现工具"},
+        {"value": "0", "label": "测试包携带的凭据"}
+      ],
+      "narration": "这是 X Starter。它不是另一个只能聊天的插件，而是一层让 Agent 接入 X 的 MCP 接口。Agent 先读取和规划，主人确认后才执行写入，每一步都留下清晰的结果。"
+    },
+    {
+      "kicker": "TEST ACCOUNT",
+      "title": "先用一个测试账号跑通完整流程",
+      "lead": "账号：mock_creator。它是本地合成账号，不连接真实 X。",
+      "points": [
+        {"title": "连接", "body": "Agent 发现工具并检查当前模式。"},
+        {"title": "创作", "body": "生成一条可审阅的帖子草稿。"},
+        {"title": "复核", "body": "把内容放进待复核队列，不直接发布。"},
+        {"title": "复盘", "body": "读取示例指标，并准备下一步协作交接。"}
+      ],
+      "table": {
+        "headers": ["步骤", "结果"],
+        "rows": [["account_summary", "mock_creator"], ["draft_post", "154 字符草稿"], ["schedule_post", "mock_scheduled"], ["recent_metrics", "示例数据"]]
+      },
+      "narration": "宣传视频先从测试账号开始。运行一条命令，Agent 会连接、检查账号、写出草稿、放入复核队列，再读取示例指标。页面会明确告诉观众：这是本地模拟，没有请求 X，也没有发布内容。"
+    },
+    {
+      "kicker": "MEASURED",
+      "title": "我们用实验数据说话",
+      "lead": "把可复现的本地数据和真实外部边界分开。",
+      "stats": [
+        {"value": "994", "label": "RPS · 512 客户端本地 HTTP mock"},
+        {"value": "0", "label": "错误 · 同一轮测试"},
+        {"value": "42/42", "label": "视口、DPR、主题矩阵"}
+      ],
+      "table": {
+        "headers": ["测试", "结果", "范围"],
+        "rows": [["视觉兜底", "27/27", "Chromium 合成页面"], ["压力极限", "533 RPS", "2048 本地客户端"], ["公开 profile", "1.31-1.59 s", "真实 X 只读"]]
+      },
+      "narration": "这些数字有明确口径。512 个本地客户端的 HTTP mock 达到 994 RPS，错误为零。视觉兜底通过二十七项检查，六种视口和主题组合通过四十二项检查。真实 X 公开 profile 冷读约一到一点六秒。"
+    },
+    {
+      "kicker": "HONEST LIMITS",
+      "title": "边界也要一起展示",
+      "lead": "好宣传不是只报最好看的数字，而是让观众知道数字能证明什么。",
+      "points": [
+        {"title": "已验证", "body": "内部 DSH/X 批次完成 31 个动作，31 个结果验证成功，耗时 133 秒。"},
+        {"title": "未承诺", "body": "这不是一分钟 SLA，也没有验收 200 次关注或 500 条评论每天。"},
+        {"title": "外部限制", "body": "快速公开时间线读取触发过 HTTP 429，系统会分类并保留这个事实。"}
+      ],
+      "narration": "我们也把限制放在画面上。一次内部 DSH 和 X 验收完成了三十一个动作，但耗时一百三十三秒，所以不能宣传成一分钟服务。两百次关注、每天五百条评论和页面级并行写入，目前都没有通过验收。"
+    },
+    {
+      "kicker": "TRY IT",
+      "title": "开发者可以马上复现",
+      "lead": "先用模拟账号，再决定是否接入自己的浏览器。",
+      "points": [
+        {"title": "第一步", "body": "运行 python server.py --demo，查看 mock_creator 的四步流程。"},
+        {"title": "第二步", "body": "运行 tester.cmd smoke，验证真实 MCP stdio 握手。"},
+        {"title": "第三步", "body": "阅读 PROMOTION.md 和 RELEASE_READINESS.md，再决定下一步。"}
+      ],
+      "stats": [
+        {"value": "1", "label": "条命令启动本地演示"},
+        {"value": "0", "label": "需要的账号密钥"}
+      ],
+      "narration": "现在就可以试。先运行 server.py 的 demo，看到本地测试账号和完整调用链，再运行 tester smoke 验证 MCP 握手。确认理解边界后，再用自己的专用浏览器配置做只读测试。"
+    }
+  ]
+}

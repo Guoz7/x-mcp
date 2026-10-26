@@ -245,6 +245,23 @@ class BrowserExecutorContractTests(unittest.TestCase):
             None,
         )
 
+    def test_scoped_status_selector_waits_for_async_article_mount(self) -> None:
+        browser = Browser()
+        browser.page = Mock(url="https://x.com/johnlinkvk37/status/123")
+        scoped = Mock()
+        scoped.count.side_effect = [0, 1]
+        browser.page.locator.return_value = scoped
+        browser.authorize_x_action(
+            action_id="act", claim_token="t" * 32,
+            lease_expires_epoch=time.time() + 60, action_type="delete_post",
+        )
+        selector = 'article:has(a[href="/johnlinkvk37/status/123"]) [data-testid="caret"]'
+        with patch.object(browser, "_assert_observation"), patch.object(
+            browser, "_dispatch_click", return_value={"ok": True}
+        ) as dispatch:
+            browser._click_impl("obs", "a" * 64, selector, None, None)
+        dispatch.assert_called_once_with(selector, None, None)
+
     def test_x_selector_error_does_not_consume_claim_stage(self) -> None:
         browser = Browser()
         browser.page = Mock(url="https://x.com/johnlinkvk37/status/123")

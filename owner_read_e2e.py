@@ -30,7 +30,7 @@ from pathlib import Path
 
 HOME = b'''<!doctype html><html><head><title>Home / X</title></head><body>
 <nav><a href="/home">Home</a><a href="/explore">Explore</a>
-<a href="/tester">Profile</a></nav>
+<a data-testid="AppTabBar_Profile_Link" href="/tester">Profile</a></nav>
 <main>
 <article><a href="/alice/status/111"><time>1h</time></a>
   <div>alice</div><div>first visible post</div></article>

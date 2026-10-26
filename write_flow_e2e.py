@@ -24,7 +24,7 @@ from pathlib import Path
 
 
 PAGE = b'''<!doctype html><html><head><title>Compose / X</title></head><body>
-<nav><a href="/home">Home</a><a href="/tester">Profile</a></nav>
+<nav><a href="/home">Home</a><a data-testid="AppTabBar_Profile_Link" href="/tester">Profile</a></nav>
 <main>
 <article><a href="/tester/status/900"><time>1m</time></a>
   <div>tester</div><div>existing post</div></article>
