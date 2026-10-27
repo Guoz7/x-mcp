@@ -785,9 +785,9 @@ class BrowserBridge:
         if not isinstance(plan, dict) or plan.get("status") != "planned_not_executed":
             raise BridgeError("INVALID_BATCH", "Prepare requires a planner result.")
         operations = plan.get("operations")
-        if not isinstance(operations, list) or not 1 <= len(operations) <= 31:
-            raise BridgeError("INVALID_BATCH", "The batch must contain from 1 to 31 operations.")
-        limits = {"like": 20, "repost": 1, "reply": 10}
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 410:
+            raise BridgeError("INVALID_BATCH", "The batch must contain from 1 to 410 operations.")
+        limits = {"like": 200, "repost": 10, "reply": 200}
         counts = {
             key: sum(1 for item in operations if isinstance(item, dict) and item.get("action") == key)
             for key in limits
@@ -865,17 +865,28 @@ class BrowserBridge:
             counts = {"pending": 0, "claimed": 0, "completed": 0, "uncertain": 0, "failed": 0}
             changed = 0
             results: list[dict[str, Any]] = []
+            chunks: dict[int, dict[str, int]] = {}
             for action in actions:
                 status = str(action.get("status", "pending"))
                 counts[status] = counts.get(status, 0) + 1
                 result = action.get("result")
                 if isinstance(result, dict) and result.get("changed") is True:
                     changed += 1
+                chunk = (action.get("payload") or {}).get("chunk")
+                if isinstance(chunk, int) and not isinstance(chunk, bool):
+                    bucket = chunks.setdefault(
+                        chunk,
+                        {"planned": 0, "pending": 0, "claimed": 0,
+                         "completed": 0, "uncertain": 0, "failed": 0},
+                    )
+                    bucket["planned"] += 1
+                    bucket[status] = bucket.get(status, 0) + 1
                 results.append(
                     {
                         "action_id": action["action_id"],
                         "type": action["type"],
                         "status": status,
+                        "chunk": chunk if isinstance(chunk, int) else None,
                         "result": result if status == "completed" else None,
                         "error": action.get("error"),
                     }
@@ -895,6 +906,10 @@ class BrowserBridge:
                 "counts": counts,
                 "changed": changed,
                 "remaining": counts["pending"] + counts["claimed"],
+                "chunks": [
+                    {"chunk": key, **chunks[key]}
+                    for key in sorted(chunks)
+                ],
                 "results": results,
             }
 
@@ -904,6 +919,7 @@ class BrowserBridge:
         lease_seconds: int = 120,
         session_id: str | None = None,
         batch_id: str | None = None,
+        chunk: int | None = None,
     ) -> dict[str, Any] | None:
         def action_order(action: dict[str, Any]) -> tuple[int, str, str]:
             payload = action.get("payload") or {}
@@ -922,6 +938,8 @@ class BrowserBridge:
                 if not self._scope_ok(action, session_id):
                     continue
                 if batch_id is not None and action.get("batch_id") != batch_id:
+                    continue
+                if chunk is not None and (action.get("payload") or {}).get("chunk") != chunk:
                     continue
                 if action["status"] == "pending":
                     action["status"] = "claimed"
@@ -942,6 +960,8 @@ class BrowserBridge:
                 if not self._scope_ok(action, session_id):
                     continue
                 if batch_id is not None and action.get("batch_id") != batch_id:
+                    continue
+                if chunk is not None and (action.get("payload") or {}).get("chunk") != chunk:
                     continue
                 if (
                     action["status"] == "claimed"

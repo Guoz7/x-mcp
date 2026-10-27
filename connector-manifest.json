@@ -282,12 +282,23 @@
           "requires_confirmation": true,
           "execution_mode": "mcp",
           "tool": "x_interaction_batch_execute"
+        },
+        {
+          "name": "x_interaction_batch_status",
+          "read_only": true,
+          "side_effect": "local",
+          "requires_confirmation": false,
+          "execution_mode": "mcp",
+          "tool": "x_interaction_batch_status"
         }
       ],
       "limitations": [
         "Mock mode is the default. Live reads and writes need an explicit host-side gate.",
         "The manifest lists publish, so this connector is not read-only by default. Every write still needs an exact confirmation phrase.",
         "Prepare writes one local record and leaves X unchanged, so it is read_only with side_effect local. Publish needs the exact phrase.",
+        "One plan covers up to 200 likes, 10 reposts and 200 replies, split into numbered chunks of at most 50 operations.",
+        "A chunk can be run by the built-in browser executor or by an external agent that claims one action at a time.",
+        "There is no follow tool. Follow remains a Web Intent link that a human must confirm in the browser.",
         "The endpoint is a placeholder. Replace YOUR_AHAN_HOST before you connect.",
         "The manifest lists the public subset only; call tools/list for the full catalog."
       ],

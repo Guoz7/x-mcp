@@ -1056,7 +1056,8 @@ class XStarter:
                 "description": (
                     "Return one typed action for a trusted agent using Computer Use. "
                     "The action includes a browser context contract and viewport classes. "
-                    "A successful action completion requires a claim token."
+                    "A successful action completion requires a claim token. "
+                    "Pass batch_id and chunk to work through one confirmed batch chunk at a time."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -1066,7 +1067,18 @@ class XStarter:
                             "minimum": 30,
                             "maximum": 600,
                             "default": 120,
-                        }
+                        },
+                        "batch_id": {
+                            "type": "string",
+                            "maxLength": 64,
+                            "description": "Only claim actions that belong to this confirmed batch.",
+                        },
+                        "chunk": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Only claim actions in this chunk of the batch.",
+                        },
                     },
                     "additionalProperties": False,
                 },
@@ -1205,7 +1217,8 @@ class XStarter:
                 "name": "x_interaction_batch_plan",
                 "title": "Plan a bounded X interaction batch",
                 "description": (
-                    "Select distinct timeline targets for up to 20 likes, one repost, and up to 10 replies. "
+                    "Select distinct timeline targets for up to 200 likes, up to 10 reposts, and up to 200 replies. "
+                    "Operations are split into numbered chunks so a caller can confirm and run one chunk at a time. "
                     "Planning is read-only and does not open X or perform an interaction. "
                     "The one-minute target remains unverified until a compatible executor passes live acceptance."
                 ),
@@ -1227,11 +1240,18 @@ class XStarter:
                                 "additionalProperties": False,
                             },
                         },
-                        "reply_texts": {"type": "array", "maxItems": 10, "items": {"type": "string", "minLength": 1, "maxLength": 280}},
-                        "like_count": {"type": "integer", "minimum": 1, "maximum": 20, "default": 20},
-                        "repost_count": {"type": "integer", "minimum": 0, "maximum": 1, "default": 1},
-                        "reply_count": {"type": "integer", "minimum": 0, "maximum": 10, "default": 10},
+                        "reply_texts": {"type": "array", "maxItems": 200, "items": {"type": "string", "minLength": 1, "maxLength": 280}},
+                        "like_count": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                        "repost_count": {"type": "integer", "minimum": 0, "maximum": 10, "default": 1},
+                        "reply_count": {"type": "integer", "minimum": 0, "maximum": 200, "default": 10},
                         "budget_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 60},
+                        "chunk_size": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 50,
+                            "default": 20,
+                            "description": "Operations per chunk. Each chunk can be confirmed and executed separately.",
+                        },
                     },
                     "required": ["posts", "reply_texts"],
                     "additionalProperties": False,
@@ -1278,7 +1298,10 @@ class XStarter:
                 "description": (
                     "Run the queued batch inside the MCP browser executor. The executor uses DOM and "
                     "accessibility locators first, captures a screenshot when a target is not proven, "
-                    "records every independent action, and stops on uncertainty."
+                    "records every independent action, and stops on uncertainty. "
+                    "Omit batch_id to run only one chunk; pass chunk to select which chunk. "
+                    "Use this when the MCP host owns the browser. Otherwise let an external agent "
+                    "claim actions with x_browser_next_action and report back with x_browser_complete_action."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -1286,6 +1309,12 @@ class XStarter:
                         "batch_id": {"type": "string", "maxLength": 64},
                         "confirmation": {"type": "string", "maxLength": 40},
                         "lease_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 300},
+                        "chunk": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 100,
+                            "description": "Run only this chunk of the batch. Omit to run every chunk in order.",
+                        },
                         "failure_policy": {
                             "type": "string",
                             "enum": ["stop", "continue"],
@@ -2049,9 +2078,18 @@ class XStarter:
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]
     ) -> dict[str, Any]:
         lease = _bounded_int(arguments, "lease_seconds", default=120, minimum=30, maximum=600)
+        batch_id = _optional_string(arguments, "batch_id", max_length=64)
+        chunk = arguments.get("chunk")
+        if chunk is not None:
+            if isinstance(chunk, bool) or not isinstance(chunk, int) or not 1 <= chunk <= 100:
+                raise StarterError("INVALID_ARGUMENT", "chunk must be an integer from 1 to 100.")
+        if chunk is not None and batch_id is None:
+            raise StarterError("INVALID_ARGUMENT", "chunk requires batch_id.")
         action = self._bridge().next_action(
             lease_seconds=lease,
             session_id=arguments.get("_mcp_session_id"),
+            batch_id=batch_id,
+            chunk=chunk,
         )
         if action is None:
             return {"status": "idle", "action": None}
@@ -2330,10 +2368,11 @@ class XStarter:
             result = interaction_batch.plan_batch(
                 arguments.get("posts"),
                 reply_texts=arguments.get("reply_texts", []),
-                like_count=_bounded_int(arguments, "like_count", default=20, minimum=1, maximum=20),
-                repost_count=_bounded_int(arguments, "repost_count", default=1, minimum=0, maximum=1),
-                reply_count=_bounded_int(arguments, "reply_count", default=10, minimum=0, maximum=10),
+                like_count=_bounded_int(arguments, "like_count", default=20, minimum=1, maximum=200),
+                repost_count=_bounded_int(arguments, "repost_count", default=1, minimum=0, maximum=10),
+                reply_count=_bounded_int(arguments, "reply_count", default=10, minimum=0, maximum=200),
                 budget_seconds=_bounded_int(arguments, "budget_seconds", default=60, minimum=1, maximum=600),
+                chunk_size=_bounded_int(arguments, "chunk_size", default=20, minimum=1, maximum=50),
             )
         except interaction_batch.BatchPlanError as exc:
             raise StarterError("INVALID_BATCH", str(exc)) from None
@@ -2382,6 +2421,10 @@ class XStarter:
         failure_policy = arguments.get("failure_policy", "stop")
         if failure_policy not in {"stop", "continue"}:
             raise StarterError("INVALID_ARGUMENT", "failure_policy must be stop or continue.")
+        chunk = arguments.get("chunk")
+        if chunk is not None:
+            if isinstance(chunk, bool) or not isinstance(chunk, int) or not 1 <= chunk <= 100:
+                raise StarterError("INVALID_ARGUMENT", "chunk must be an integer from 1 to 100.")
         session_id = arguments.get("_mcp_session_id")
         try:
             queued = self._bridge().queue_interaction_batch(
@@ -2390,13 +2433,34 @@ class XStarter:
         except BridgeError as exc:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
 
+        target_ids = [
+            str(item)
+            for item in queued["action_ids"]
+        ]
+        if chunk is not None:
+            records = self._bridge().interaction_batch_status(
+                batch_id, session_id=session_id
+            )
+            wanted = {
+                item["action_id"]
+                for item in records["results"]
+                if item.get("chunk") == chunk
+            }
+            if not wanted:
+                raise StarterError(
+                    "CHUNK_NOT_FOUND",
+                    f"Chunk {chunk} does not exist in this batch.",
+                )
+            target_ids = [item for item in target_ids if item in wanted]
+
         results: list[dict[str, Any]] = []
         started = time.monotonic()
-        for _ in queued["action_ids"]:
+        for _ in target_ids:
             action = self._bridge().next_action(
                 lease_seconds=lease_seconds,
                 session_id=session_id,
                 batch_id=batch_id,
+                chunk=chunk,
             )
             if action is None:
                 break

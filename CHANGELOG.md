@@ -6,6 +6,15 @@ for public hosted use.
 
 ## 0.9.1 - internal validation
 
+- Interaction batches now accept up to 200 likes, 10 reposts and 200 replies in
+  one plan. Each plan is split into numbered chunks so a chunk can be
+  confirmed, executed and resumed on its own.
+- The same confirmed batch can run through the built-in browser executor or
+  through an external agent that claims one action at a time with
+  `x_browser_next_action` and reports back with `x_browser_complete_action`.
+- `x_interaction_batch_status` reports per-chunk progress so a long job can be
+  inspected without holding an MCP request open.
+
 - Added per-MCP-session browser profiles and lifecycle cleanup.
 - Added claim-gated browser writes with observation-bound evidence.
 - Added owner login and read checks that never handle passwords or tokens.

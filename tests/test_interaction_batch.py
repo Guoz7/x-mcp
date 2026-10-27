@@ -47,6 +47,93 @@ class InteractionBatchTests(unittest.TestCase):
         with self.assertRaises(BatchPlanError):
             plan_batch(make_posts(), reply_texts=["only one"])
 
+    def test_large_batch_is_split_into_confirmed_chunks(self):
+        posts = make_posts(420)
+        plan = plan_batch(
+            posts,
+            reply_texts=[f"reply {i}" for i in range(200)],
+            like_count=200,
+            repost_count=10,
+            reply_count=200,
+            chunk_size=20,
+        )
+        self.assertEqual(plan["operation_count"], 410)
+        self.assertEqual(plan["counts"], {"like": 200, "repost": 10, "reply": 200})
+        self.assertEqual(plan["chunk_size"], 20)
+        self.assertEqual(plan["chunk_count"], 21)
+        self.assertEqual(plan["operations"][0]["chunk"], 1)
+        self.assertEqual(plan["operations"][-1]["chunk"], 21)
+        self.assertEqual(
+            [item["sequence"] for item in plan["operations"]],
+            list(range(1, 411)),
+        )
+
+    def test_chunk_claims_and_status_are_grouped(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = BrowserBridge(directory, account_binding="test")
+            plan = plan_batch(
+                make_posts(60),
+                reply_texts=[f"reply {i}" for i in range(10)],
+                like_count=40,
+                repost_count=0,
+                reply_count=10,
+                chunk_size=20,
+            )
+            prepared = bridge.prepare_interaction_batch(plan, session_id="s1")
+            queued = bridge.queue_interaction_batch(
+                prepared["batch_id"], prepared["confirmation_phrase"], session_id="s1"
+            )
+            self.assertEqual(len(queued["action_ids"]), 50)
+
+            claimed = bridge.next_action(
+                lease_seconds=60,
+                session_id="s1",
+                batch_id=queued["batch_id"],
+                chunk=2,
+            )
+            self.assertIsNotNone(claimed)
+            self.assertEqual(claimed["payload"]["chunk"], 2)
+            self.assertEqual(claimed["payload"]["sequence"], 21)
+
+            status = bridge.interaction_batch_status(queued["batch_id"], session_id="s1")
+            self.assertEqual([item["chunk"] for item in status["chunks"]], [1, 2, 3])
+            self.assertEqual(status["chunks"][1]["planned"], 20)
+            self.assertEqual(status["chunks"][1]["claimed"], 1)
+            self.assertEqual(status["chunks"][1]["pending"], 19)
+            self.assertEqual(status["remaining"], 50)
+
+    def test_chunk_scoped_claim_skips_other_chunks(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = BrowserBridge(directory, account_binding="test")
+            plan = plan_batch(
+                make_posts(50),
+                reply_texts=[],
+                like_count=45,
+                repost_count=0,
+                reply_count=0,
+                chunk_size=20,
+            )
+            prepared = bridge.prepare_interaction_batch(plan, session_id="s1")
+            queued = bridge.queue_interaction_batch(
+                prepared["batch_id"], prepared["confirmation_phrase"], session_id="s1"
+            )
+            seen = []
+            while True:
+                action = bridge.next_action(
+                    lease_seconds=60,
+                    session_id="s1",
+                    batch_id=queued["batch_id"],
+                    chunk=3,
+                )
+                if action is None:
+                    break
+                seen.append(action["payload"]["sequence"])
+            self.assertEqual(seen, [41, 42, 43, 44, 45])
+
     def test_prepare_and_start_queues_31_scoped_actions(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:

@@ -341,10 +341,16 @@ live claim.
 
 Call `x_interaction_batch_plan` after a verified owner timeline read when the
 owner asks for a bounded batch. The default demonstration shape is 20 likes on
-posts from 20 distinct authors, 1 repost, and 10 drafted replies.
+posts from 20 distinct authors, 1 repost, and 10 drafted replies. The same tool
+accepts up to 200 likes, 10 reposts, and 200 replies in one plan.
+
+Every plan is split into numbered chunks. The default `chunk_size` is 20, so
+410 operations become 21 chunks. Each operation carries a `chunk` field, and
+`chunk_count` is returned with the plan. Do not send 200 writes in one user
+instruction without an explicit, per-chunk go-ahead.
 
 The planner is read-only. It selects canonical status URLs, rejects duplicate
-authors for the like set, and returns 31 ordered operations. It does not click,
+authors for the like set, and returns ordered operations. It does not click,
 type, open intent links, or change X. Its result must say
 `planned_not_executed`, `real_x_state_changed: false`, and
 `one_minute_sla: not_verified` until a compatible action executor passes live
@@ -358,16 +364,39 @@ interaction without checking current X state first.
 The browser bridge now exposes `x_interaction_batch_prepare`,
 `x_interaction_batch_start`, and `x_interaction_batch_execute`. Prepare creates
 a local expiring confirmation record. Start consumes the exact phrase and
-queues separate action leases: 20 `like_post`, 1 `repost_post`, and 10
-`reply_post`. Each action requires its own target proof and postcondition. An
-uncertain action stops the batch.
+queues one separate action lease per operation. Each action requires its own
+target proof and postcondition. An uncertain action stops the batch.
 
 `x_interaction_batch_execute` is the fast path. It runs queued actions inside
 the MCP browser executor, uses DOM/accessibility locators first, and captures a
-screenshot when a target is not proven. It returns per-action results and
-elapsed time. Do not report the one-minute target as passed from a planner
-benchmark or a synthetic page. The live executor must prove every action and
-elapsed time.
+screenshot when a target is not proven. It accepts `chunk` to run only one
+chunk, so a large batch can be stopped and resumed between chunks. It returns
+per-action results and elapsed time. Do not report the one-minute target as
+passed from a planner benchmark or a synthetic page. The live executor must
+prove every action and elapsed time.
+
+## Two executors, one contract
+
+The same confirmed batch can be executed by the MCP host or by an external
+agent. Both paths use the same claim token, lease and postcondition rules.
+
+| Path | Who drives the browser | Tool |
+| --- | --- | --- |
+| Built-in | The MCP server owns Chromium | `x_interaction_batch_execute` |
+| External agent | The caller's own agent or Computer Use | `x_browser_next_action` then `x_browser_complete_action` |
+
+For the external path, loop like this:
+
+1. Call `x_browser_next_action` with `batch_id` and `chunk` to claim one action.
+2. Perform exactly that action in the caller's browser.
+3. Call `x_browser_complete_action` with the proof object that matches
+   `result_schema`.
+4. Repeat until the chunk returns `status: "idle"`.
+5. Call `x_interaction_batch_status` and check `chunks` before the next chunk.
+
+One action is claimed at a time, so a second agent cannot write the same target
+in parallel. If a claim is abandoned, its lease expires and the action becomes
+`uncertain`; it is never silently re-queued.
 
 Set `failure_policy: "stop"` for strict acceptance. Set
 `failure_policy: "continue"` for a long, explicitly approved job. In continue
