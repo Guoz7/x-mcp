@@ -70,6 +70,7 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("public_skill.md", build_test_package.FILES)
         self.assertIn("interaction_batch.py", build_test_package.FILES)
         self.assertIn("follow_batch.py", build_test_package.FILES)
+        self.assertIn("follow_pressure.py", build_test_package.FILES)
         self.assertIn("interaction_batch_e2e.py", build_test_package.FILES)
 
     def test_failed_venv_creation_never_installs_into_global_python(self):

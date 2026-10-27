@@ -22,6 +22,8 @@ Real X writes during this benchmark: none.
 | Historical follow verification | 8 / 18 confirmed | 44.4%; separate small run with independent post-action verification |
 | Current mutual candidate read | 4 / 7 visible rows | Owner profile read; 4 rows showed both `Follows you` and `Follow back` |
 | Current follow batch contract | 4 planned, 0 executed | Candidate discovery, plan, confirmation record; no X state change |
+| Synthetic 200-follow ledger pressure | 200 / 200 completed in 10.429 s | Local state ledger only; 19.18 actions/s; no browser or X network |
+| Synthetic 200-follow concurrent pressure | 200 / 200 completed in 11.045 s | Eight workers; 18.11 actions/s; 0 duplicate claims; evidence valid |
 
 ## How to interpret it
 
@@ -40,6 +42,15 @@ The current MCP now has a candidate reader and a follow batch contract. The
 owner profile exposed 7 follower rows in the bounded read, but only 4 had both
 mutual-follow signals. The planner prepared 4 operations and changed no X
 state. It is not a 200-account acceptance run.
+
+Run the reproducible local pressure test with:
+
+```powershell
+python -X utf8 follow_pressure.py --targets 200 --chunk-size 20
+```
+
+This measures the MCP ledger and evidence chain only. It does not measure page
+navigation, browser clicks, X responses, rate limits, or model tokens.
 
 ## Cost boundary
 
