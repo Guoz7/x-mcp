@@ -201,6 +201,8 @@ def _compatibility_contract(
     page_kinds = {
         "observe_account": ["x_profile"],
         "observe_timeline": ["x_home", "x_profile"],
+        "observe_followers": ["x_followers"],
+        "follow_profile": ["x_profile"],
         "publish_post": ["x_home", "x_profile"],
         "delete_post": ["x_status"],
         "like_post": ["x_status"],
@@ -272,6 +274,19 @@ def _x_post_url_parts(value: str) -> tuple[str, str]:
     return match.group(1), match.group(2)
 
 
+def _x_profile_url_parts(value: str) -> str:
+    match = re.fullmatch(
+        r"https?://(?:www\.)?(?:x\.com|twitter\.com)/([A-Za-z0-9_]{1,15})/?",
+        value.strip(),
+    )
+    if match is None:
+        raise BridgeError(
+            "INVALID_PROFILE_URL",
+            "profile_url must be an x.com or twitter.com profile URL.",
+        )
+    return match.group(1)
+
+
 class BrowserBridge:
     """Atomic JSON store for browser actions and tamper-evident evidence."""
 
@@ -311,6 +326,7 @@ class BrowserBridge:
             "batches": {},
             "actions": {},
             "evidence": [],
+            "followers": None,
         }
 
     def _read(self) -> dict[str, Any]:
@@ -759,7 +775,7 @@ class BrowserBridge:
         payload: dict[str, Any] | None = None,
         session_id: str | None = None,
     ) -> dict[str, Any]:
-        if action_type not in {"observe_account", "observe_timeline"}:
+        if action_type not in {"observe_account", "observe_timeline", "observe_followers"}:
             raise BridgeError("INVALID_ARGUMENT", "Unsupported observation type.")
         with self._lock:
             data = self._read()
@@ -912,6 +928,149 @@ class BrowserBridge:
                 ],
                 "results": results,
             }
+
+    def prepare_follow_batch(
+        self, plan: dict[str, Any], *, session_id: str | None = None, ttl_seconds: int = 600
+    ) -> dict[str, Any]:
+        """Create a confirmed follow batch without touching X."""
+
+        if not isinstance(plan, dict) or plan.get("status") != "planned_not_executed":
+            raise BridgeError("INVALID_BATCH", "Prepare requires a follow planner result.")
+        operations = plan.get("operations")
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 200:
+            raise BridgeError("INVALID_BATCH", "The follow batch must contain from 1 to 200 operations.")
+        handles: set[str] = set()
+        for operation in operations:
+            if not isinstance(operation, dict) or operation.get("action") != "follow":
+                raise BridgeError("INVALID_BATCH", "The follow batch contains an unsupported operation.")
+            handle = str(operation.get("handle", "")).strip().lstrip("@")
+            if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+                raise BridgeError("INVALID_BATCH", "Each follow operation needs a valid handle.")
+            if handle.casefold() in handles:
+                raise BridgeError("INVALID_BATCH", "The follow batch contains duplicate handles.")
+            handles.add(handle.casefold())
+            if operation.get("mutual_verified") is not True:
+                raise BridgeError("MUTUAL_PROOF_REQUIRED", "Each follow target needs visible mutual-follow proof.")
+            _x_profile_url_parts(str(operation.get("profile_url", "")))
+        batch_id = "follow_batch_" + uuid_hex()
+        phrase = "FOLLOW " + secrets.token_hex(3).upper()
+        now = self._now()
+        record = {
+            "batch_id": batch_id,
+            "kind": "follow",
+            "state": "prepared",
+            "created_at": _now_iso(now),
+            "expires_epoch": now + max(60, min(int(ttl_seconds), 600)),
+            "confirmation_phrase": phrase,
+            "operations": operations,
+            "session_id": session_id,
+            "action_ids": [],
+        }
+        with self._lock:
+            data = self._read()
+            data.setdefault("batches", {})[batch_id] = record
+            self._append_evidence(
+                data,
+                "follow_batch_prepared",
+                batch_id,
+                {"operation_count": len(operations)},
+            )
+            self._write(data)
+        return {
+            "batch_id": batch_id,
+            "state": "prepared",
+            "expires_at": _now_iso(record["expires_epoch"]),
+            "confirmation_phrase": phrase,
+            "operation_count": len(operations),
+            "counts": {"follow": len(operations)},
+        }
+
+    def queue_follow_batch(
+        self, batch_id: str, confirmation: str, *, session_id: str | None = None
+    ) -> dict[str, Any]:
+        """Queue independently leased follow actions after exact confirmation."""
+
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if (
+                not isinstance(record, dict)
+                or record.get("kind") != "follow"
+                or not self._scope_ok(record, session_id)
+            ):
+                raise BridgeError("BATCH_NOT_FOUND", "The follow batch does not exist.")
+            if record.get("state") != "prepared":
+                raise BridgeError("BATCH_NOT_READY", "The follow batch is not prepared.")
+            if self._now() > float(record.get("expires_epoch", 0)):
+                record["state"] = "expired"
+                self._write(data)
+                raise BridgeError("BATCH_EXPIRED", "The follow batch confirmation expired.")
+            if not secrets.compare_digest(str(record.get("confirmation_phrase", "")), confirmation):
+                raise BridgeError("CONFIRMATION_MISMATCH", "The batch confirmation phrase does not match.")
+            action_ids: list[str] = []
+            for operation in record["operations"]:
+                payload = dict(operation)
+                payload["batch_id"] = batch_id
+                action = self._new_action(
+                    data,
+                    action_type="follow_profile",
+                    payload=payload,
+                    session_id=session_id,
+                    batch_id=batch_id,
+                )
+                action_ids.append(action["action_id"])
+            record["state"] = "queued"
+            record["action_ids"] = action_ids
+            self._append_evidence(
+                data,
+                "follow_batch_queued",
+                batch_id,
+                {"action_count": len(action_ids)},
+            )
+            self._write(data)
+            return {
+                "batch_id": batch_id,
+                "state": "queued",
+                "action_ids": action_ids,
+                "operation_count": len(action_ids),
+            }
+
+    def follow_batch_status(
+        self, batch_id: str, *, session_id: str | None = None
+    ) -> dict[str, Any]:
+        """Read progress for a follow batch using the durable action ledger."""
+
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if (
+                not isinstance(record, dict)
+                or record.get("kind") != "follow"
+                or not self._scope_ok(record, session_id)
+            ):
+                raise BridgeError("BATCH_NOT_FOUND", "The follow batch does not exist.")
+            action_ids = [str(item) for item in record.get("action_ids") or []]
+            if not action_ids:
+                planned = len(record.get("operations") or [])
+                state = str(record.get("state", "prepared"))
+                pending = planned if state == "queued" else 0
+                return {
+                    "batch_id": batch_id,
+                    "state": state,
+                    "planned": planned,
+                    "counts": {
+                        "pending": pending,
+                        "claimed": 0,
+                        "completed": 0,
+                        "uncertain": 0,
+                        "failed": 0,
+                    },
+                    "changed": 0,
+                    "remaining": pending,
+                    "chunks": [],
+                    "results": [],
+                }
+        return self.interaction_batch_status(batch_id, session_id=session_id)
 
     def next_action(
         self,
@@ -1176,6 +1335,48 @@ class BrowserBridge:
             data["account"] = snapshot
             data["account_binding"] = self.account_binding
             return snapshot
+        if action_type == "observe_followers":
+            targets = result.get("targets")
+            owner_username = str(result.get("owner_username", "")).strip().lstrip("@")
+            if (
+                not re.fullmatch(r"[A-Za-z0-9_]{1,15}", owner_username)
+                or not isinstance(targets, list)
+                or len(targets) > 200
+            ):
+                raise BridgeError("INVALID_ACTION_RESULT", "The follower observation result is invalid.")
+            cleaned: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for target in targets:
+                if not isinstance(target, dict):
+                    raise BridgeError("INVALID_ACTION_RESULT", "Each follower target must be an object.")
+                handle = str(target.get("handle", "")).strip().lstrip("@")
+                if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+                    raise BridgeError("INVALID_ACTION_RESULT", "Each follower target needs a valid handle.")
+                if handle.casefold() in seen:
+                    continue
+                seen.add(handle.casefold())
+                if _x_profile_url_parts(str(target.get("profile_url", ""))).casefold() != handle.casefold():
+                    raise BridgeError("TARGET_MISMATCH", "A follower profile URL does not match its handle.")
+                mutual = target.get("mutual_verified") is True
+                cleaned.append({
+                    "handle": handle,
+                    "profile_url": f"https://x.com/{handle}",
+                    "mutual_verified": mutual,
+                    "follows_you": target.get("follows_you") is True,
+                    "state": str(target.get("state", "not_following")),
+                    "candidate_reason": str(target.get("candidate_reason", ""))[:240],
+                })
+            snapshot = {
+                "owner_username": owner_username,
+                "source_url": str(result.get("source_url", "")).split("?")[0],
+                "targets": cleaned,
+                "mutual_count": sum(1 for item in cleaned if item["mutual_verified"]),
+                "visible_count": len(cleaned),
+                "scrolls": int(result.get("scrolls", 0) or 0),
+                "snapshot_sha256": str(result.get("snapshot_sha256", "")),
+            }
+            data["followers"] = snapshot
+            return snapshot
         if action_type == "observe_timeline":
             posts = result.get("posts")
             if not isinstance(posts, list):
@@ -1281,6 +1482,26 @@ class BrowserBridge:
                 "verified": True,
                 "state": str(result.get("state", "active")),
                 "changed": bool(result.get("changed", True)),
+            }
+        if action_type == "follow_profile":
+            handle = str(payload.get("handle", "")).strip().lstrip("@")
+            result_handle = str(result.get("handle", "")).strip().lstrip("@")
+            profile_url = str(result.get("profile_url", "")).strip()
+            if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+                raise BridgeError("INVALID_ACTION_RESULT", "The follow target handle is invalid.")
+            if result_handle.casefold() != handle.casefold():
+                raise BridgeError("ACCOUNT_MISMATCH", "The followed account does not match the target handle.")
+            if _x_profile_url_parts(profile_url).casefold() != handle.casefold():
+                raise BridgeError("TARGET_MISMATCH", "The followed profile URL changed.")
+            if result.get("verified") is not True:
+                raise BridgeError("FOLLOW_NOT_VERIFIED", "The follow state was not verified.")
+            return {
+                "handle": handle,
+                "profile_url": f"https://x.com/{handle}",
+                "verified": True,
+                "state": str(result.get("state", "following")),
+                "changed": bool(result.get("changed", True)),
+                "mutual_verified": bool(payload.get("mutual_verified", False)),
             }
         if action_type == "reply_post":
             if result.get("verified") is not True:
@@ -1454,6 +1675,29 @@ def _action_contract(action_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
                 },
             },
         )
+    if action_type == "observe_followers":
+        return (
+            {
+                "executor": "trusted_agent_computer_use",
+                "steps": [
+                    "Open the signed-in owner's followers page.",
+                    "Read only visible follower handles and the visible Follows you and Follow back labels.",
+                    "Return a bounded target list and snapshot hash.",
+                    "Do not click Follow back or any other control.",
+                ],
+                "untrusted_page_text": True,
+            },
+            {
+                "type": "object",
+                "required": ["owner_username", "source_url", "targets", "snapshot_sha256"],
+                "properties": {
+                    "owner_username": {"type": "string"},
+                    "source_url": {"type": "string"},
+                    "targets": {"type": "array"},
+                    "snapshot_sha256": {"type": "string"},
+                },
+            },
+        )
     if action_type == "observe_timeline":
         return (
             {
@@ -1553,6 +1797,31 @@ def _action_contract(action_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
                 "properties": {
                     "post_url": {"type": "string"},
                     "author": {"type": "string"},
+                    "verified": {"type": "boolean"},
+                    "state": {"type": "string"},
+                    "changed": {"type": "boolean"},
+                },
+            },
+        )
+    if action_type == "follow_profile":
+        return (
+            {
+                "executor": "trusted_agent_computer_use",
+                "steps": [
+                    "Open the exact X profile URL for the target handle.",
+                    "Confirm the visible profile is the target and the owner is not already following it.",
+                    "Click Follow once.",
+                    "Reload the same profile URL and verify the visible state is Following.",
+                    "Return uncertain if the state cannot be proven after reload.",
+                ],
+                "unknown_result_policy": "Return uncertain; do not click Follow again.",
+            },
+            {
+                "type": "object",
+                "required": ["handle", "profile_url", "verified"],
+                "properties": {
+                    "handle": {"type": "string"},
+                    "profile_url": {"type": "string"},
                     "verified": {"type": "boolean"},
                     "state": {"type": "string"},
                     "changed": {"type": "boolean"},

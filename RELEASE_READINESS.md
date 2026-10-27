@@ -22,7 +22,7 @@ not make the service a hosted multi-tenant product.
 
 | Check | Current evidence | Meaning |
 |---|---|---|
-| Python test suite | 482 tests, exit 0 in the current working tree | Offline contracts and local behavior |
+| Python test suite | 491 tests, exit 0 in the current working tree | Offline contracts and local behavior |
 | MCP conformance | Official profile 39/39 in the recorded run | Protocol behavior for the tested profile |
 | `checkmcp` | 94/94 in the latest release verification | Schema, error, robustness, and security checks for that run |
 | DSH/X owner batch | 20 likes, 1 repost, 10 replies; 31 verified actions | One owner-controlled acceptance run, not a scale guarantee |
@@ -30,6 +30,8 @@ not make the service a hosted multi-tenant product.
 | Page-level parallelism | Not implemented | Current executor is serial |
 | Local HTTP pressure | 512 clients: 994.06 RPS, 0 errors; 2048 clients: 533.08 RPS, 0 errors | Local mock only; no X network or model |
 | Promotion demo | `mock_creator` walkthrough and 115.2 s narrated MP4 | Synthetic local account; no X request |
+| Mutual-follow candidate read | 7 visible rows, 4 mutual candidates; evidence chain valid | Real owner read-only run; no X write |
+| Follow batch contract | 4 planned, 0 executed; no X state change | Candidate, plan, confirmation, and lease contracts |
 
 Local acceptance logs and account-specific evidence are intentionally not
 committed here. Re-run the commands in `TESTING.md` against the exact commit
@@ -48,6 +50,9 @@ hosted service:
    store for any hosted deployment.
 4. Run a fresh release-candidate acceptance for OAuth, owner browser reads,
    confirmed writes, recovery, and rollback.
+5. Run a staged live follow acceptance with a disposable/test account. The
+   current owner profile does not expose 200 mutual candidates, so a 200-follow
+   result is not verified.
 5. Decide whether high-volume workloads are supported. The current code does
    not claim 200 follows, 500 replies per day, or a one-minute 31-action SLA.
 6. Deploy and independently test the public Agent Help board if it is part of

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 FILES = (
     "server.py", "browser_bridge.py", "browser_executor.py", "browser_paths.py",
     "browser_read.py", "oauth.py", "x_api.py", "x_public.py", "write_store.py",
-    "agent_help_board.py", "connector_runtime.py", "composer.py", "interaction_batch.py", "conformance_fixtures.py",
+    "agent_help_board.py", "connector_runtime.py", "composer.py", "interaction_batch.py", "follow_batch.py", "conformance_fixtures.py",
     "client_config.py", "selfcheck.py", "mcp_client.py", "tester.py", "tester.cmd", "internal-test.cmd",
     "requirements-browser.txt", "README.md", "TESTING.md", "ONE-CLICK-INTERNAL.md", "PROMPTS.md",
     "public_skill.md", "skill.md", "connector-manifest.json", "data/post_insights.json", "ui/composer.html",
@@ -48,7 +48,7 @@ def build(output: Path) -> dict:
             raise ValueError(f"Forbidden source: {name}")
         payloads[name] = source.read_bytes()
     manifest = {
-        "release": "x-starter-0.9.1-internal-test",
+        "release": "x-starter-0.10.0-internal-test",
         "built_at": datetime.now(timezone.utc).isoformat(),
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "source": "working tree; per-file hashes are authoritative",

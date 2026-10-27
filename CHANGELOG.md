@@ -1,8 +1,15 @@
 # Changelog
 
-This project is currently in the `0.9.x` pre-release line. Entries describe
+This project is currently in the `0.10.x` pre-release line. Entries describe
 implemented repository changes, not a promise that every integration is ready
 for public hosted use.
+
+## 0.10.0 - mutual-follow batch foundation
+
+- Added visible mutual-follow candidate discovery without credential or storage access.
+- Added confirmed follow planning, per-target leases, reload verification, status recovery, and uncertain-stop behavior.
+- Added package, manifest, public skill, prompt, and performance documentation for follow batches.
+- A live 200-follow result remains unverified.
 
 ## 0.9.1 - internal validation
 

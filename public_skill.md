@@ -375,6 +375,30 @@ per-action results and elapsed time. Do not report the one-minute target as
 passed from a planner benchmark or a synthetic page. The live executor must
 prove every action and elapsed time.
 
+## Mutual-follow batch
+
+Use `x_follow_candidates_read` to read the signed-in owner's visible followers.
+Only rows that show both `Follows you` and `Follow back` become candidates. The
+tool returns a bounded snapshot hash and never clicks.
+
+Pass those targets to `x_follow_batch_plan`. The planner is read-only and accepts
+up to 200 unique handles. It rejects targets without visible mutual-follow proof,
+skips targets already marked as following, and splits the plan into chunks.
+
+Call `x_follow_batch_prepare`, show the returned phrase, and wait for exact owner
+confirmation. Then call `x_follow_batch_start` or use the compact execute path.
+Each target receives a separate `follow_profile` action lease.
+
+`x_follow_batch_execute` opens one profile at a time, finds the profile header
+Follow control, clicks once, reloads the profile, and counts success only when
+the visible state is `Following`. A pending request, missing control, rate limit,
+or failed reload becomes `uncertain`; it is never silently retried.
+
+Use `x_follow_batch_status` for recovery after a timeout. It reports completed,
+uncertain, failed, claimed, pending, and changed counts. It never retries an
+action. The ten-minute target is a benchmark condition, not a guarantee; record
+candidate count, X response time, rate limits, and independent verification.
+
 ## Two executors, one contract
 
 The same confirmed batch can be executed by the MCP host or by an external

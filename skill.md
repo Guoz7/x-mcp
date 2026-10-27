@@ -1,7 +1,7 @@
 ---
 name: x-starter
 description: Connect a human-owned X account through MCP. Observe an account or timeline, prepare a confirmed publish or delete, execute it through a trusted browser bridge, and verify a hash-chained evidence record.
-version: 0.3.0
+version: 0.4.0
 entrypoint: ./run_mock.ps1
 mode: mock-by-default
 ---
@@ -37,6 +37,12 @@ this repository. Read the whole file before calling a tool.
 | `x_session_status` | Inspect mode, account, queued actions, and evidence head | Read-only |
 | `x_account_get` | Read or queue an account observation | Read-only |
 | `x_timeline_observe` | Read or queue a timeline observation | Read-only |
+| `x_follow_candidates_read` | Read visible `Follows you` and `Follow back` candidates | Read-only |
+| `x_follow_batch_plan` | Plan up to 200 mutual-follow targets in chunks | Local only |
+| `x_follow_batch_prepare` | Create a follow confirmation phrase | Local only |
+| `x_follow_batch_start` | Queue confirmed follow action leases | External write gate |
+| `x_follow_batch_execute` | Follow one profile at a time and reload-verify it | External write |
+| `x_follow_batch_status` | Read follow progress and uncertain states | Read-only |
 | `x_post_prepare` | Create an expiring write record and phrase | No external side effect |
 | `x_post_publish` | Queue one publish after exact confirmation | External write |
 | `x_post_delete` | Prepare or queue a delete with a second confirmation | External write |

@@ -88,7 +88,7 @@ the start or execute tools. Report operation_count=410, chunk_count=21, counts,
 and the first and last sequence numbers. This task must not change any account.
 ```
 
-## Task 6: small real batch, not 200 follows
+## Task 6: small real interaction batch
 
 ```text
 Use only xstarter MCP and my signed-in account.
@@ -97,7 +97,24 @@ Read the owner timeline, select no more than 3 posts, and prepare no more than
 Run one chunk at a time. Stop on uncertain. If the request times out, call only
 x_interaction_batch_status and do not execute again.
 Report planned, chunk, completed, uncertain, pending, changed, elapsed, and final proof.
-There is currently no follow tool. Do not claim a 200-follow test ran.
+```
+
+## Task 7: mutual-follow candidate and batch test
+
+```text
+Use only xstarter MCP and my signed-in account.
+Call x_follow_candidates_read for my owner handle with limit=200.
+Keep only targets whose visible evidence contains both Follows you and Follow back.
+Call x_follow_batch_plan with those targets, budget_seconds=600, chunk_size=20,
+and require_mutual=true. Report visible_count, mutual_count, operation_count,
+chunk_count, and snapshot_sha256. This phase is read-only.
+Show the exact phrase from x_follow_batch_prepare and wait for explicit confirmation.
+After confirmation, call x_follow_batch_start once or use the compact execute path.
+Run one chunk at a time with x_follow_batch_execute. Stop on uncertain, pending,
+rate_limited, or failed reload. Never retry an uncertain follow.
+Call x_follow_batch_status after each chunk. Count a follow only after reloading
+the exact profile and proving Following. Report completed, uncertain, pending,
+skipped, changed, elapsed, and the evidence hash.
 ```
 
 ## Bug report
@@ -115,5 +132,6 @@ browser profiles, private messages, and screenshots with secrets.
 - Browser reads: available after the tester logs in to a dedicated profile.
 - Likes, reposts and replies: available only through confirmed action leases.
 - Large interaction planning: supports 200 likes, 10 reposts and 200 replies in chunks.
-- Follow automation: not implemented as an MCP tool yet.
-- A 200-follow result: not verified and must not be advertised as complete.
+- Mutual-follow candidate read: available in browser mode.
+- Follow planning, confirmation, leases, reload verification and status: available.
+- A 200-follow result: not verified; the current owner snapshot has fewer than 200 mutual candidates.

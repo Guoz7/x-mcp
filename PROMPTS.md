@@ -115,7 +115,24 @@ Use failure_policy="stop" for strict acceptance. Use failure_policy="continue" o
 the owner explicitly requests an isolated long job. Never retry an uncertain action.
 If the execute request times out, do not execute again; call x_interaction_batch_status.
 Report planned, chunk count, completed, uncertain, pending, changed, and elapsed values separately.
-There is currently no follow tool. Do not claim that a 200-follow test ran.
+```
+
+## 3b. Mutual-follow batch test
+
+```text
+Use only xstarter MCP and my signed-in account.
+Call x_follow_candidates_read for my owner handle with limit=200.
+Keep only targets whose visible evidence contains both Follows you and Follow back.
+Call x_follow_batch_plan with those targets, budget_seconds=600, chunk_size=20,
+and require_mutual=true. Report the candidate count, mutual count, operation count,
+chunk count, and snapshot hash. Planning must not change X.
+Show the exact confirmation phrase from x_follow_batch_prepare and wait for my
+explicit confirmation before any follow. After confirmation, execute one chunk at
+a time with x_follow_batch_execute. Stop on uncertain, pending, rate_limited, or
+failed reload. Never retry an uncertain follow. Use x_follow_batch_status after
+every chunk and report completed, uncertain, pending, skipped, elapsed, and changed.
+Do not claim 200 follows unless 200 distinct profiles were independently reloaded
+and the Following state was proven for every one.
 ```
 
 ## 4. Recovery after timeout

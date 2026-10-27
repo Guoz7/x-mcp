@@ -1,7 +1,7 @@
 # X Starter performance snapshot
 
 Date: 2026-10-27
-Version: `0.9.1`
+Version: `0.10.0`
 Scope: local protocol, local Streamable HTTP, Chromium fixture, and public X read-only probes.
 Credentials: none.
 Real X writes during this benchmark: none.
@@ -20,6 +20,8 @@ Real X writes during this benchmark: none.
 | Historical DSH/X bounded batch | 31 verified actions in 133 s | Internal owner-controlled run; not an SLA |
 | Real browser follow cycle | 1.16 s p50 | Five-target reversible sample; click cycle, not server-confirmed success |
 | Historical follow verification | 8 / 18 confirmed | 44.4%; separate small run with independent post-action verification |
+| Current mutual candidate read | 4 / 7 visible rows | Owner profile read; 4 rows showed both `Follows you` and `Follow back` |
+| Current follow batch contract | 4 planned, 0 executed | Candidate discovery, plan, confirmation record; no X state change |
 
 ## How to interpret it
 
@@ -33,6 +35,11 @@ The follow result needs special care. The 1.16-second number measures the
 browser click cycle. It does not prove that X accepted every write. In a
 separate 18-follow run, only 8 states survived independent verification. Do not
 convert the click-cycle number into a guaranteed 200-follow result.
+
+The current MCP now has a candidate reader and a follow batch contract. The
+owner profile exposed 7 follower rows in the bounded read, but only 4 had both
+mutual-follow signals. The planner prepared 4 operations and changed no X
+state. It is not a 200-account acceptance run.
 
 ## Cost boundary
 

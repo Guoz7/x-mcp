@@ -27,7 +27,7 @@ from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 SERVER_NAME = "x-starter"
-SERVER_VERSION = "0.9.1"
+SERVER_VERSION = "0.10.0"
 DEFAULT_PROTOCOL_VERSION = "2025-11-25"
 SUPPORTED_PROTOCOL_VERSIONS = (
     "2025-11-25",
@@ -63,6 +63,7 @@ from connector_runtime import (
 from write_store import WriteStore, WriteStoreError  # noqa: E402
 import composer  # noqa: E402
 import interaction_batch  # noqa: E402
+import follow_batch  # noqa: E402
 
 
 class StarterError(Exception):
@@ -560,8 +561,13 @@ class XStarter:
                                 "action_types": [
                                     "observe_account",
                                     "observe_timeline",
+                                    "observe_followers",
+                                    "follow_profile",
                                     "publish_post",
                                     "delete_post",
+                                    "like_post",
+                                    "repost_post",
+                                    "reply_post",
                                 ],
                                 "write_flow": [
                                     "observe account",
@@ -1343,6 +1349,124 @@ class XStarter:
                 "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False},
             },
             {
+                "name": "x_follow_candidates_read",
+                "title": "Read visible mutual-follow candidates",
+                "description": (
+                    "Read the signed-in owner's visible follower rows and keep only rows with "
+                    "both Follows you and Follow back evidence. This is read-only."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "username": {"type": "string", "minLength": 1, "maxLength": 16},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 200},
+                    },
+                    "required": ["username"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": False, "openWorldHint": True},
+            },
+            {
+                "name": "x_follow_batch_plan",
+                "title": "Plan a mutual-follow batch",
+                "description": (
+                    "Plan up to 200 profile follows from visible mutual-follow evidence. "
+                    "Planning is read-only and never opens X or clicks Follow."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "targets": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 200,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "handle": {"type": "string", "minLength": 1, "maxLength": 16},
+                                    "profile_url": {"type": "string", "maxLength": 240},
+                                    "mutual_verified": {"type": "boolean"},
+                                    "follows_you": {"type": "boolean"},
+                                    "state": {"type": "string"},
+                                    "candidate_reason": {"type": "string", "maxLength": 240},
+                                },
+                                "required": ["handle"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "budget_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 600},
+                        "chunk_size": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                        "require_mutual": {"type": "boolean", "default": True},
+                    },
+                    "required": ["targets"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+            },
+            {
+                "name": "x_follow_batch_prepare",
+                "title": "Prepare a mutual-follow batch",
+                "description": "Create an expiring confirmation record for a planned follow batch. This does not change X.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "plan": {"type": "object"},
+                        "ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 600},
+                    },
+                    "required": ["plan"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
+                "name": "x_follow_batch_start",
+                "title": "Start a confirmed mutual-follow batch",
+                "description": "Queue one leased follow action per target after the exact confirmation phrase.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "batch_id": {"type": "string", "maxLength": 80},
+                        "confirmation": {"type": "string", "maxLength": 40},
+                    },
+                    "required": ["batch_id", "confirmation"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+            },
+            {
+                "name": "x_follow_batch_execute",
+                "title": "Execute a confirmed mutual-follow batch",
+                "description": (
+                    "Execute queued follows with one claim per target. The browser uses DOM locators first, "
+                    "reload verification, and an uncertain stop policy."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "batch_id": {"type": "string", "maxLength": 80},
+                        "confirmation": {"type": "string", "maxLength": 40},
+                        "lease_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 300},
+                        "chunk": {"type": "integer", "minimum": 1, "maximum": 100},
+                        "failure_policy": {"type": "string", "enum": ["stop", "continue"], "default": "stop"},
+                    },
+                    "required": ["batch_id", "confirmation"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+            },
+            {
+                "name": "x_follow_batch_status",
+                "title": "Read mutual-follow batch progress",
+                "description": "Return completed, uncertain, skipped, and pending follow actions. Never retries a follow.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"batch_id": {"type": "string", "maxLength": 80}},
+                    "required": ["batch_id"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+            },
+            {
                 "name": "account_summary",
                 "title": "Inspect X account",
                 "description": (
@@ -1551,6 +1675,18 @@ class XStarter:
                 data = self._x_interaction_batch_execute(scoped, trace)
             elif name == "x_interaction_batch_status":
                 data = self._x_interaction_batch_status(scoped, trace)
+            elif name == "x_follow_candidates_read":
+                data = self._x_follow_candidates_read(scoped, trace)
+            elif name == "x_follow_batch_plan":
+                data = self._x_follow_batch_plan(arguments, trace)
+            elif name == "x_follow_batch_prepare":
+                data = self._x_follow_batch_prepare(scoped, trace)
+            elif name == "x_follow_batch_start":
+                data = self._x_follow_batch_start(scoped, trace)
+            elif name == "x_follow_batch_execute":
+                data = self._x_follow_batch_execute(scoped, trace)
+            elif name == "x_follow_batch_status":
+                data = self._x_follow_batch_status(scoped, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -2557,6 +2693,229 @@ class XStarter:
                 remaining=result["remaining"],
             )
         )
+        return result
+
+    def _x_follow_candidates_read(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        if self.mode != "browser":
+            raise StarterError("BROWSER_BRIDGE_REQUIRED", "Follow candidate reads require browser mode.")
+        username = _required_string(arguments, "username", max_length=16).lstrip("@")
+        limit = _bounded_int(arguments, "limit", default=200, minimum=1, maximum=200)
+        if not self._owner_profile:
+            raise StarterError(
+                "OWNER_PROFILE_NOT_CONFIGURED",
+                "Set X_STARTER_OWNER_PROFILE to a signed-in browser profile first.",
+            )
+        session_id = arguments.get("_mcp_session_id")
+        bridge = self._bridge()
+        bridge.queue_observation(
+            action_type="observe_followers",
+            payload={"username": username, "limit": limit},
+            session_id=session_id,
+        )
+        claimed = bridge.next_action(lease_seconds=120, session_id=session_id)
+        if claimed is None:
+            raise StarterError("FOLLOW_CANDIDATES_NOT_CLAIMED", "The follower observation was not claimable.")
+        browser = self._browser_for(arguments)
+        try:
+            result = browser.read_follow_candidates(username=username, limit=limit)
+            context = browser_read.executor_context(browser)
+        except ExecutorError as exc:
+            bridge.complete_action(
+                action_id=claimed["action_id"], claim_token=claimed["claim_token"],
+                outcome="uncertain", result=None, error={"code": exc.code, "message": exc.message},
+                session_id=session_id,
+            )
+            raise StarterError(exc.code, exc.message) from None
+        try:
+            completed = bridge.complete_action(
+                action_id=claimed["action_id"], claim_token=claimed["claim_token"],
+                outcome="succeeded", result=result, error=None, executor_context=context,
+                locator_strategy="dom",
+                preconditions_checked=["signed-in X page", "allowlisted host"],
+                postconditions_checked=["bounded follower rows", "mutual labels are visible evidence"],
+                session_id=session_id,
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details={**exc.details, "action_id": claimed["action_id"]}) from None
+        snapshot = completed.get("result") or {}
+        trace.append(_event(
+            "browser_executor", "follow_candidates_read", action_id=claimed["action_id"],
+            visible_count=snapshot.get("visible_count", 0), mutual_count=snapshot.get("mutual_count", 0), external_call=True,
+        ))
+        return {
+            **snapshot,
+            "action_id": claimed["action_id"],
+            "executor_context": context,
+            "disclosure": "Read visible follower rows only. No cookies, storage, credentials, or writes were accessed.",
+        }
+
+    def _x_follow_batch_plan(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        try:
+            result = follow_batch.plan_batch(
+                arguments.get("targets"),
+                budget_seconds=_bounded_int(arguments, "budget_seconds", default=600, minimum=1, maximum=600),
+                chunk_size=_bounded_int(arguments, "chunk_size", default=20, minimum=1, maximum=50),
+                require_mutual=arguments.get("require_mutual", True),
+            )
+        except follow_batch.FollowBatchPlanError as exc:
+            raise StarterError("INVALID_FOLLOW_BATCH", str(exc)) from None
+        trace.append(_event(
+            "x_adapter", "follow_batch_planned",
+            operations=result["operation_count"], external_call=False,
+        ))
+        return result
+
+    def _x_follow_batch_prepare(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        try:
+            result = self._bridge().prepare_follow_batch(
+                arguments.get("plan"),
+                session_id=arguments.get("_mcp_session_id"),
+                ttl_seconds=_bounded_int(arguments, "ttl_seconds", default=600, minimum=60, maximum=600),
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("auth_boundary", "follow_batch_prepared", batch_id=result["batch_id"], operation_count=result["operation_count"]))
+        return result
+
+    def _x_follow_batch_start(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        batch_id = _required_string(arguments, "batch_id", max_length=80)
+        confirmation = _required_string(arguments, "confirmation", max_length=40)
+        try:
+            result = self._bridge().queue_follow_batch(
+                batch_id, confirmation, session_id=arguments.get("_mcp_session_id")
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("auth_boundary", "follow_batch_queued", batch_id=batch_id, operation_count=result["operation_count"]))
+        return result
+
+    def _x_follow_batch_execute(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        batch_id = _required_string(arguments, "batch_id", max_length=80)
+        confirmation = _required_string(arguments, "confirmation", max_length=40)
+        lease_seconds = _bounded_int(arguments, "lease_seconds", default=300, minimum=60, maximum=600)
+        failure_policy = arguments.get("failure_policy", "stop")
+        if failure_policy not in {"stop", "continue"}:
+            raise StarterError("INVALID_ARGUMENT", "failure_policy must be stop or continue.")
+        chunk = arguments.get("chunk")
+        if chunk is not None and (isinstance(chunk, bool) or not isinstance(chunk, int) or not 1 <= chunk <= 100):
+            raise StarterError("INVALID_ARGUMENT", "chunk must be an integer from 1 to 100.")
+        session_id = arguments.get("_mcp_session_id")
+        try:
+            queued = self._bridge().queue_follow_batch(batch_id, confirmation, session_id=session_id)
+        except BridgeError as exc:
+            if exc.code != "BATCH_NOT_READY":
+                raise StarterError(exc.code, exc.message, details=exc.details) from None
+            # Allow the explicit start -> execute flow as well as the compact
+            # execute-only flow. The durable status is the source of handles.
+            existing = self._bridge().follow_batch_status(batch_id, session_id=session_id)
+            if existing.get("state") not in {"queued", "partial"}:
+                raise StarterError(exc.code, exc.message, details=exc.details) from None
+            queued = {
+                "batch_id": batch_id,
+                "operation_count": existing["planned"],
+                "action_ids": [item["action_id"] for item in existing["results"]],
+            }
+        action_ids = list(queued["action_ids"])
+        if chunk is not None:
+            records = self._bridge().follow_batch_status(batch_id, session_id=session_id)
+            wanted = {item["action_id"] for item in records["results"] if item.get("chunk") == chunk}
+            if not wanted:
+                raise StarterError("CHUNK_NOT_FOUND", f"Chunk {chunk} does not exist in this batch.")
+            action_ids = [item for item in action_ids if item in wanted]
+
+        results: list[dict[str, Any]] = []
+        started = time.monotonic()
+        browser = None
+        for _ in action_ids:
+            action = self._bridge().next_action(
+                lease_seconds=lease_seconds,
+                session_id=session_id,
+                batch_id=batch_id,
+                chunk=chunk,
+            )
+            if action is None:
+                break
+            browser = self._browser_for({"_mcp_session_id": session_id})
+            payload = action.get("payload") or {}
+            try:
+                verified = self._bridge().verify_claim(action["action_id"], action["claim_token"], session_id=session_id)
+                browser.authorize_x_action(
+                    action_id=action["action_id"],
+                    claim_token=action["claim_token"],
+                    lease_expires_epoch=verified["lease_expires_epoch"],
+                    action_type=action.get("type", ""),
+                )
+                result = browser.execute_x_action(
+                    action_type=action["type"],
+                    post_url=str(payload.get("profile_url")),
+                    author=str(payload.get("handle", "")),
+                    text=None,
+                    action_id=action["action_id"],
+                    claim_token=action["claim_token"],
+                    lease_expires_epoch=verified["lease_expires_epoch"],
+                )
+                completed = self._bridge().complete_action(
+                    action_id=action["action_id"],
+                    claim_token=action["claim_token"],
+                    outcome="succeeded",
+                    result=result,
+                    error=None,
+                    executor_context={"browser_family": "chromium", "host": "x.com", "mode": "browser", "page_kind": "x_profile"},
+                    locator_strategy=result.get("locator_strategy", "dom"),
+                    session_id=session_id,
+                )
+                results.append({"action_id": action["action_id"], "status": completed["status"], "result": completed.get("result")})
+            except (BridgeError, ExecutorError, StarterError) as exc:
+                error = {"code": getattr(exc, "code", "ACTION_UNCERTAIN"), "message": str(exc)}
+                try:
+                    self._bridge().complete_action(
+                        action_id=action["action_id"], claim_token=action["claim_token"], outcome="uncertain", result=None,
+                        error=error,
+                        executor_context={"browser_family": "chromium", "host": "x.com", "mode": "browser", "page_kind": "x_profile"},
+                        session_id=session_id,
+                    )
+                except BridgeError:
+                    pass
+                results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
+                if failure_policy == "stop":
+                    break
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        trace.append(_event("browser_executor", "follow_batch_executed", batch_id=batch_id, actions=len(results)))
+        return {
+            "batch_id": batch_id,
+            "planned": queued["operation_count"],
+            "processed": len(results),
+            "results": results,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+            "stopped_on_uncertainty": any(item["status"] == "uncertain" for item in results),
+            "continued_after_uncertainty": failure_policy == "continue" and any(item["status"] == "uncertain" for item in results),
+            "failure_policy": failure_policy,
+            "browser_closed": True,
+        }
+
+    def _x_follow_batch_status(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        batch_id = _required_string(arguments, "batch_id", max_length=80)
+        try:
+            result = self._bridge().follow_batch_status(batch_id, session_id=arguments.get("_mcp_session_id"))
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("browser_executor", "follow_batch_status_read", batch_id=batch_id, state=result["state"], remaining=result["remaining"]))
         return result
 
     def _require_connected(self) -> None:

@@ -13,7 +13,8 @@ The current headline experiment is documented in
 `docs/promotion/x-mcp-200-follow.mp4`. The headline is a measured question,
 not a completed claim: a small sample reached a 1.16-second follow click
 cycle, while an earlier 18-follow run independently confirmed 8 server-side
-follows. Do not advertise guaranteed 200-follow success yet.
+follows. The current build now includes mutual-follow candidate discovery and a
+confirmed follow-batch path, but a 200-follow live result is not verified.
 
 ## Give it to another tester
 
@@ -104,6 +105,7 @@ for progress and server-to-client requests.
 | Credential-free public reads | **Verified live** | `x_public_profile/timeline/post` read @guoz7777 and @NASA on 2026-10-22, no token |
 | Live X API reads (user context) | Implemented; needs an OAuth user token | No real token used in this run |
 | X API writes | Implemented behind OAuth and exact confirmation | No real API write used in this run |
+| Mutual-follow batch | Implemented behind browser confirmation | Candidate discovery and batch contract are verified; 200 live follows are not |
 | OAuth 2.0 PKCE browser flow | Implemented with local callback and host-owned store | Callback/token exchange not run with a real account |
 | AHAN endpoint | Placeholder only | No network call |
 

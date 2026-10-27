@@ -246,7 +246,7 @@ class InteractionBatchTests(unittest.TestCase):
 
     def test_visual_executor_grants_cover_all_interaction_types(self):
         browser = Browser()
-        for action_type in ("like_post", "repost_post", "reply_post"):
+        for action_type in ("like_post", "repost_post", "reply_post", "follow_profile"):
             browser.x_grant = None
             grant = browser.authorize_x_action(
                 action_id="act_" + action_type,

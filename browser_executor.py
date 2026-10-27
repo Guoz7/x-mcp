@@ -646,6 +646,91 @@ class Browser:
                 "ACTION_UNCERTAIN", "Typing failed; observe again before retrying."
             ) from exc
 
+    def read_follow_candidates(self, *, username: str, limit: int = 200) -> dict[str, Any]:
+        """Read visible follower rows that expose a mutual-follow signal."""
+
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", username or ""):
+            raise ExecutorError("INVALID_ARGUMENT", "username must be an X handle.")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise ExecutorError("INVALID_ARGUMENT", "limit must be from 1 to 200.")
+        return self._run_on_worker(
+            lambda: self._read_follow_candidates_impl(username, limit),
+            timeout=max(30.0, min(self.start_timeout + 30.0, 180.0)),
+        )
+
+    def _read_follow_candidates_impl(self, username: str, limit: int) -> dict[str, Any]:
+        source_url = f"https://x.com/{username}/followers"
+        self._open_impl(source_url)
+        targets: dict[str, dict[str, Any]] = {}
+        scrolls = 0
+        stagnant = 0
+        deadline = time.monotonic() + 15.0
+        while self.page.locator('[data-testid="UserCell"]').count() == 0 and time.monotonic() < deadline:
+            self.page.wait_for_timeout(250)
+        while len(targets) < limit and scrolls <= 20:
+            rows = self.page.locator('[data-testid="UserCell"]').evaluate_all(
+                """cells => cells.map(cell => {
+                    const text = (cell.innerText || '').trim();
+                    const hrefs = Array.from(cell.querySelectorAll('a[href]'))
+                        .map(a => a.getAttribute('href') || '')
+                        .filter(href => /^\\/[A-Za-z0-9_]{1,15}$/.test(href));
+                    const handle = hrefs.length ? hrefs[0].slice(1) : '';
+                    const buttons = Array.from(cell.querySelectorAll('button'))
+                        .map(button => (button.innerText || button.getAttribute('aria-label') || '').trim())
+                        .filter(Boolean);
+                    return {
+                        handle,
+                        text,
+                        follows_you: /\\bFollows you\\b/i.test(text),
+                        follow_back: buttons.some(value => /\\bFollow back\\b/i.test(value)),
+                        already_following: buttons.some(value => /^Following$/i.test(value)),
+                    };
+                })"""
+            )
+            before = len(targets)
+            for row in rows:
+                handle = str(row.get("handle", "")).strip()
+                if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle or ""):
+                    continue
+                targets.setdefault(
+                    handle.casefold(),
+                    {
+                        "handle": handle,
+                        "profile_url": f"https://x.com/{handle}",
+                        "mutual_verified": bool(row.get("follows_you") and row.get("follow_back")),
+                        "follows_you": bool(row.get("follows_you")),
+                        "state": (
+                            "already_following"
+                            if row.get("already_following")
+                            else "follow_back_available"
+                            if row.get("follows_you") and row.get("follow_back")
+                            else "not_following"
+                        ),
+                        "candidate_reason": "visible Follows you and Follow back" if row.get("follows_you") and row.get("follow_back") else "visible follower row",
+                    },
+                )
+            if len(targets) == before:
+                stagnant += 1
+            else:
+                stagnant = 0
+            if len(targets) >= limit or stagnant >= 2:
+                break
+            self.page.evaluate("window.scrollBy({top: 720, left: 0, behavior: 'instant'})")
+            self.page.wait_for_timeout(500)
+            scrolls += 1
+        ordered = list(targets.values())[:limit]
+        basis = json.dumps(ordered, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return {
+            "owner_username": username,
+            "source_url": source_url,
+            "targets": ordered,
+            "mutual_count": sum(1 for item in ordered if item["mutual_verified"]),
+            "visible_count": len(ordered),
+            "scrolls": scrolls,
+            "snapshot_sha256": hashlib.sha256(basis.encode("utf-8")).hexdigest(),
+            "locator_strategy": "dom",
+        }
+
     def _assert_observation(self, observation_id: str, fingerprint_sha256: str) -> None:
         if observation_id != self.observation_id or fingerprint_sha256 != self.fingerprint:
             raise ExecutorError("OBSERVATION_STALE", "The browser observation is stale.")
@@ -729,7 +814,10 @@ class Browser:
 
     # Only these claimed action types may touch a signed-in X page.
     X_TYPE_ACTIONS = frozenset({"publish_post", "reply_post"})
-    X_CLICK_ACTIONS = frozenset({"publish_post", "delete_post", "like_post", "repost_post", "reply_post"})
+    X_CLICK_ACTIONS = frozenset({
+        "publish_post", "delete_post", "like_post", "repost_post", "reply_post",
+        "follow_profile",
+    })
 
     def authorize_x_action(
         self,
@@ -895,7 +983,7 @@ class Browser:
         pages that need visual interpretation.
         """
 
-        if action_type not in {"like_post", "repost_post", "reply_post"}:
+        if action_type not in {"like_post", "repost_post", "reply_post", "follow_profile"}:
             raise ExecutorError("X_ACTION_NOT_A_WRITE", "The action is not a supported X interaction.")
         try:
             return self._run_on_worker(
@@ -933,6 +1021,11 @@ class Browser:
         lease_expires_epoch: float,
     ) -> dict[str, Any]:
         self._open_impl(post_url)
+        if action_type == "follow_profile":
+            return self._execute_follow_profile_impl(
+                profile_url=post_url,
+                handle=author,
+            )
         parsed = urlparse(post_url)
         status_path = parsed.path.rstrip("/")
         def find_target() -> Any:
@@ -1125,6 +1218,94 @@ class Browser:
             "text": text,
             "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             "verified": True,
+            "changed": True,
+            "locator_strategy": "dom",
+        }
+
+    def _execute_follow_profile_impl(self, *, profile_url: str, handle: str) -> dict[str, Any]:
+        """Follow one profile and verify the server-backed state after reload."""
+
+        parsed = urlparse(profile_url)
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if (
+            parsed.hostname not in _profile_hosts()
+            or len(path_parts) != 1
+            or not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle or "")
+            or path_parts[0].casefold() != handle.casefold()
+        ):
+            raise ExecutorError("TARGET_MISMATCH", "The follow profile does not match the target handle.")
+
+        def state() -> dict[str, Any]:
+            return self.page.evaluate(
+                """() => {
+                    const header = document.querySelector('[data-testid="UserName"]');
+                    let node = header;
+                    for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+                        const buttons = Array.from(node.querySelectorAll('button'));
+                        const follow = buttons.find(button => /-follow$/.test(button.getAttribute('data-testid') || ''));
+                        const unfollow = buttons.find(button => /-unfollow$/.test(button.getAttribute('data-testid') || ''));
+                        const pending = buttons.find(button => /pending/i.test(button.innerText || button.getAttribute('aria-label') || ''));
+                        if (follow || unfollow || pending) {
+                            return {
+                                follow_testid: follow ? follow.getAttribute('data-testid') : null,
+                                unfollow_testid: unfollow ? unfollow.getAttribute('data-testid') : null,
+                                pending: !!pending,
+                            };
+                        }
+                    }
+                    return {follow_testid: null, unfollow_testid: null, pending: false};
+                }"""
+            )
+
+        deadline = time.monotonic() + 12.0
+        current = state()
+        while not (current["follow_testid"] or current["unfollow_testid"] or current["pending"]) and time.monotonic() < deadline:
+            self.page.wait_for_timeout(200)
+            current = state()
+        if current["unfollow_testid"]:
+            return {
+                "handle": handle,
+                "profile_url": f"https://x.com/{handle}",
+                "verified": True,
+                "state": "following",
+                "changed": False,
+                "locator_strategy": "dom",
+            }
+        if current["pending"]:
+            raise ExecutorError("FOLLOW_PENDING", "The profile shows a pending follow request, not a verified follow.")
+        if not current["follow_testid"]:
+            self.page.screenshot(type="png", full_page=False)
+            raise ExecutorError("ACTION_UNCERTAIN", "The unique Follow control was not proven.")
+
+        self._consume_x_grant(self.X_CLICK_ACTIONS)
+        self.page.locator(f'[data-testid="{current["follow_testid"]}"]').click(timeout=8000)
+        self.page.wait_for_timeout(500)
+
+        after = state()
+        deadline = time.monotonic() + 8.0
+        while not after["unfollow_testid"] and not after["pending"] and time.monotonic() < deadline:
+            self.page.wait_for_timeout(250)
+            after = state()
+
+        # A visual state can be optimistic. Reload once, without clicking again,
+        # so the result reflects the account state X returns after navigation.
+        self.page.reload(wait_until="commit", timeout=15000)
+        self.page.wait_for_timeout(1000)
+        self._wait_for_initial_content(profile_url)
+        verified_state = state()
+        deadline = time.monotonic() + 8.0
+        while not verified_state["unfollow_testid"] and not verified_state["pending"] and time.monotonic() < deadline:
+            self.page.wait_for_timeout(250)
+            verified_state = state()
+        if not verified_state["unfollow_testid"]:
+            if verified_state["pending"]:
+                raise ExecutorError("FOLLOW_PENDING", "The profile shows a pending follow request after reload.")
+            raise ExecutorError("ACTION_UNCERTAIN", "The follow state was not proven after reload.")
+        return {
+            "handle": handle,
+            "profile_url": f"https://x.com/{handle}",
+            "verified": True,
+            "state": "following",
             "changed": True,
             "locator_strategy": "dom",
         }
