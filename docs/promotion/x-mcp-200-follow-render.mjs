@@ -14,7 +14,13 @@ const WORK = path.join(HERE, 'x-mcp-200-follow-work');
 const DURATIONS = path.join(WORK, 'durations.json');
 const OUT = path.join(HERE, 'x-mcp-200-follow.mp4');
 const PAUSE = 0.8;
-const require = createRequire('C:/Users/54736/.codex/skills/video-deck/scripts/package.json');
+// Use an explicit runtime when available, otherwise resolve the local Codex
+// skill from the current user's home directory. Do not commit a machine path.
+const videoRuntime = process.env.X_MCP_VIDEO_RUNTIME || path.join(
+  process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+  'skills', 'video-deck', 'scripts', 'package.json',
+);
+const require = createRequire(videoRuntime);
 const { chromium } = require('playwright-core');
 const ffmpeg = require('ffmpeg-static');
 
