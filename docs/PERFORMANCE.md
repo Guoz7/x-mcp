@@ -18,6 +18,8 @@ Real X writes during this benchmark: none.
 | Public X profile cold read | 1.31-1.59 s | No OAuth, cookie or API key |
 | Public X timeline under rapid pressure | HTTP 429 | External X rate limit observed |
 | Historical DSH/X bounded batch | 31 verified actions in 133 s | Internal owner-controlled run; not an SLA |
+| Real browser follow cycle | 1.16 s p50 | Five-target reversible sample; click cycle, not server-confirmed success |
+| Historical follow verification | 8 / 18 confirmed | 44.4%; separate small run with independent post-action verification |
 
 ## How to interpret it
 
@@ -26,6 +28,11 @@ network latency, X rate limits and model decisions dominate a real workflow.
 The HTTP figures are capacity signals for the local server. They are not X
 interaction rates. The browser figures prove the executor guards and geometry
 contract. They do not prove every X layout.
+
+The follow result needs special care. The 1.16-second number measures the
+browser click cycle. It does not prove that X accepted every write. In a
+separate 18-follow run, only 8 states survived independent verification. Do not
+convert the click-cycle number into a guaranteed 200-follow result.
 
 ## Cost boundary
 

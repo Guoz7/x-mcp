@@ -8,6 +8,24 @@ synthetic-account demo, copy for a short post, and the limits that must stay
 beside every number. The narrated video source is
 `docs/promotion/x-mcp-promo-story.json`.
 
+The current headline experiment is documented in
+`docs/promotion/x-mcp-200-follow-article.md` and its animation is
+`docs/promotion/x-mcp-200-follow.mp4`. The headline is a measured question,
+not a completed claim: a small sample reached a 1.16-second follow click
+cycle, while an earlier 18-follow run independently confirmed 8 server-side
+follows. Do not advertise guaranteed 200-follow success yet.
+
+## Give it to another tester
+
+- Repository: https://github.com/Guoz7/x-mcp
+- Download: https://github.com/Guoz7/x-mcp/archive/refs/heads/main.zip
+- Copy-paste tasks: https://raw.githubusercontent.com/Guoz7/x-mcp/main/docs/promotion/X-MCP-TESTER-LINKS.md
+- Agent prompts: https://raw.githubusercontent.com/Guoz7/x-mcp/main/PROMPTS.md
+
+The recommended first task is public read-only access. The tester must use a
+personal X account for signed-in tests. The repository contains no account
+session, Cookie, X API key, model key, or browser profile.
+
 ## Internal tester ZIP
 
 See `TESTING.md` for the current Windows tester workflow. Run `tester.cmd setup`,

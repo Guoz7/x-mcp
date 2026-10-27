@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920, initial-scale=1">
+<title>X MCP：10分钟关注200人？先看真实边界</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { height:100%; }
+body { background:#010409; color:#c9d1d9; overflow:hidden;
+  font-family:'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif; }
+.stage { position:absolute; left:50%; top:50%; width:1920px; height:1080px;
+  transform:translate(-50%,-50%); background:#0d1117;
+  box-shadow:0 0 90px rgba(0,0,0,.7); }
+.slide { position:absolute; inset:0; display:none; overflow:hidden;
+  flex-direction:column; padding:58px 84px 66px; background:#0d1117; }
+.slide.active { display:flex; }
+.slide.active, .slide.entering, .slide.leaving { display:flex; }
+.slide.entering { animation:pageEnter .45s cubic-bezier(.2,.7,.2,1) both; z-index:2; }
+.slide.leaving { animation:pageLeave .45s cubic-bezier(.2,.7,.2,1) both; z-index:1; }
+@keyframes pageEnter { from { opacity:0; transform:translateY(42px); } to { opacity:1; transform:translateY(0); } }
+@keyframes pageLeave { from { opacity:1; transform:translateY(0); } to { opacity:0; transform:translateY(-42px); } }
+.anim { opacity:0; transform:translateY(22px); }
+.anim.on { opacity:1; transform:translateY(0);
+  transition:opacity .45s ease, transform .45s cubic-bezier(.2,.7,.2,1);
+  transition-delay:calc(min(var(--step-idx, 0), 6) * 45ms); }
+.hl { border-color:#58a6ff !important;
+  box-shadow:0 0 0 3px rgba(88,166,255,.20), 0 0 26px rgba(88,166,255,.16); }
+.cards.hl, .stats.hl, .table-wrap.hl, .takeaway.hl {
+  outline:2px solid rgba(88,166,255,.45); outline-offset:8px; }
+.slide-head { display:flex; justify-content:space-between; align-items:center; flex:0 0 auto; }
+.kicker { color:#58a6ff; font-size:26px; letter-spacing:2px; }
+.brand { color:#8b949e; font-size:22px; display:flex; gap:18px; align-items:center; }
+.page { color:#6e7681; font-variant-numeric:tabular-nums; }
+.slide-title { margin-top:30px; flex:0 0 auto; font-size:64px; line-height:1.16;
+  color:#f0f6fc; max-width:1100px; }
+.lead { margin-top:18px; flex:0 0 auto; font-size:30px; line-height:1.5; color:#8b949e;
+  max-width:1400px; }
+.content { flex:1 1 auto; min-height:0; margin-top:30px; display:grid;
+  grid-template-columns:1fr; gap:22px; align-content:center; }
+.content.has-stats { grid-template-columns:minmax(0,1.45fr) minmax(0,.75fr); }
+.cards { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px; align-content:center; }
+.card { background:#161b22; border:1px solid #30363d; border-radius:8px;
+  padding:24px 26px; display:flex; flex-direction:column; gap:12px; min-height:150px; }
+.card-top { display:flex; align-items:center; gap:14px; }
+.card-mark { color:#0d1117; font-weight:700; font-size:20px; width:52px; height:52px;
+  border-radius:8px; display:flex; align-items:center; justify-content:center;
+  font-family:'Cascadia Code','Consolas',monospace; flex:0 0 auto; }
+.card-title { font-size:28px; line-height:1.3; }
+.card-body { font-size:24px; line-height:1.5; color:#c9d1d9; }
+.stats { display:grid; grid-template-rows:repeat(auto-fit,minmax(140px,1fr)); gap:22px; }
+.stat { background:#161b22; border:1px solid #30363d; border-radius:8px;
+  padding:26px 28px; display:flex; flex-direction:column; justify-content:center; gap:10px; }
+.stat-value { font-size:58px; line-height:1.1; color:#7ee787; font-weight:800;
+  font-family:'Cascadia Code','Consolas',monospace; }
+.stat-count { display:inline-block; font-variant-numeric:tabular-nums; }
+.stat:nth-child(2) .stat-value { color:#58a6ff; }
+.stat:nth-child(3) .stat-value { color:#ffa657; }
+.stat-label { font-size:23px; line-height:1.4; color:#8b949e; }
+.table-wrap { background:#161b22; border:1px solid #30363d; border-radius:8px;
+  overflow:hidden; align-self:center; width:100%; }
+table { width:100%; border-collapse:collapse; font-size:25px; }
+th { background:#1f6feb33; color:#58a6ff; text-align:left; padding:16px 22px; border-bottom:1px solid #30363d; }
+td { padding:14px 22px; border-bottom:1px solid #30363d; color:#c9d1d9; }
+tr:last-child td { border-bottom:none; }
+.takeaway { flex:0 0 auto; margin-top:26px; border-left:6px solid #58a6ff;
+  background:#161b22; border-radius:8px; padding:18px 24px; font-size:28px;
+  line-height:1.45; color:#e5e7eb; }
+.caption { display:none; }
+.controls { position:fixed; right:28px; bottom:24px; z-index:20; display:flex;
+  align-items:center; gap:12px; background:#161b22cc; border:1px solid #30363d;
+  border-radius:8px; padding:10px 14px; backdrop-filter:blur(6px); font-size:20px; }
+.controls button { width:44px; height:44px; border:1px solid #30363d; border-radius:8px;
+  background:#0d1117; color:#e5e7eb; font-size:22px; cursor:pointer; }
+.controls button:hover { border-color:#58a6ff; color:#58a6ff; }
+.dots { display:flex; gap:8px; margin-left:8px; }
+.dot { width:10px; height:10px; border-radius:50%; background:#30363d; }
+.dot.on { background:#58a6ff; }
+.c-blue{color:#58a6ff}.c-green{color:#7ee787}.c-orange{color:#ffa657}
+.c-purple{color:#d2a8ff}.c-red{color:#ff7b72}.c-gray{color:#8b949e}
+
+body.video-mode .controls { display:none; }
+body.video-mode .slide { padding-bottom:286px; }
+body.video-mode .caption { position:absolute; left:58px; right:58px; bottom:36px;
+  display:flex; gap:18px; align-items:flex-start; background:rgba(1,4,9,.82);
+  border:1px solid #30363d; border-radius:8px; padding:16px 22px; }
+body.video-mode .caption-label { flex:0 0 auto; color:#58a6ff; font-size:26px; font-weight:700; }
+body.video-mode .caption-text { font-size:29px; line-height:1.5; color:#e5e7eb;
+  display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+.video-progress { position:fixed; left:58px; right:58px; bottom:188px; height:6px;
+  background:#21262d; border-radius:3px; overflow:hidden; z-index:12; display:none; }
+body.video-mode .video-progress { display:block; }
+.video-progress i { display:block; width:0; height:100%;
+  background:linear-gradient(90deg,#58a6ff,#d2a8ff); }
+</style>
+</head>
+<body>
+<main class="stage" id="stage">
+<section class="slide" data-slide="0">
+  <header class="slide-head">
+    <span class="kicker">THE HOOK</span>
+    <span class="brand">VideoDeck<span class="page">1 / 6</span></span>
+  </header>
+  <h1 class="slide-title anim" data-step="1" style="--step-idx:0">10 分钟关注 200 人？</h1>
+  <p class="lead anim" data-step="2" style="--step-idx:1">这是一个很好的噱头，但不能把外推当成已验收事实。</p>
+  <div class="content has-stats">
+    <div class="cards">
+  <article class="card anim" data-step="3" style="--step-idx:2">
+  <div class="card-top"><span class="card-mark" style="background:#58a6ff">01</span><h3 class="card-title c-blue">点击速度</h3></div>
+  <p class="card-body">小样本实测关注周期 p50 约 1.16 秒。</p>
+</article>
+  <article class="card anim" data-step="4" style="--step-idx:3">
+  <div class="card-top"><span class="card-mark" style="background:#7ee787">02</span><h3 class="card-title c-green">真实成功</h3></div>
+  <p class="card-body">历史 18 次连续关注，服务端只确认 8 次。</p>
+</article>
+  <article class="card anim" data-step="5" style="--step-idx:4">
+  <div class="card-top"><span class="card-mark" style="background:#ffa657">03</span><h3 class="card-title c-orange">正确说法</h3></div>
+  <p class="card-body">我们展示速度，也公开静默丢弃和复核缺口。</p>
+</article>
+</div>
+    
+    <div class="stats">
+  <div class="stat anim" data-step="6" style="--step-idx:5">
+    <div class="stat-value"><span class="stat-count" data-count-value="1.16">1.16</span>s</div>
+    <div class="stat-label">关注周期 p50 · n=5</div>
+  </div>
+
+  <div class="stat anim" data-step="7" style="--step-idx:6">
+    <div class="stat-value"><span class="stat-count" data-count-value="44.4">44.4</span>%</div>
+    <div class="stat-label">历史 18 次服务端生效率</div>
+  </div>
+</div>
+  </div>
+  
+  <div class="caption"><span class="caption-label">口播</span><span class="caption-text">十分钟关注两百人，这是一个很抓眼球的产品噱头。但我们不能把点击速度直接说成成功率。真实小样本里，关注周期的中位数约为一点一六秒；另一轮十八次连续关注，按钮全部变成 Following，可是服务端最终确认的只有八次。这个视频会把速度和边界一起展示。</span></div>
+</section>
+
+<section class="slide" data-slide="1">
+  <header class="slide-head">
+    <span class="kicker">THE PRODUCT</span>
+    <span class="brand">VideoDeck<span class="page">2 / 6</span></span>
+  </header>
+  <h1 class="slide-title anim" data-step="1" style="--step-idx:0">我们做的不是脚本，而是一层 MCP</h1>
+  <p class="lead anim" data-step="2" style="--step-idx:1">Agent 负责理解任务，MCP 负责把动作变成可控、可恢复的工作单元。</p>
+  <div class="content">
+    <div class="cards">
+  <article class="card anim" data-step="3" style="--step-idx:2">
+  <div class="card-top"><span class="card-mark" style="background:#58a6ff">01</span><h3 class="card-title c-blue">Plan</h3></div>
+  <p class="card-body">把目标帖子和账号整理成有序操作。</p>
+</article>
+  <article class="card anim" data-step="4" style="--step-idx:3">
+  <div class="card-top"><span class="card-mark" style="background:#7ee787">02</span><h3 class="card-title c-green">Chunk</h3></div>
+  <p class="card-body">大任务拆成每块 20 个动作。</p>
+</article>
+  <article class="card anim" data-step="5" style="--step-idx:4">
+  <div class="card-top"><span class="card-mark" style="background:#ffa657">03</span><h3 class="card-title c-orange">Confirm</h3></div>
+  <p class="card-body">每个批次有独立确认短语和租约。</p>
+</article>
+  <article class="card anim" data-step="6" style="--step-idx:5">
+  <div class="card-top"><span class="card-mark" style="background:#d2a8ff">04</span><h3 class="card-title c-purple">Prove</h3></div>
+  <p class="card-body">每次动作都必须返回后置验证结果。</p>
+</article>
+</div>
+    <div class="table-wrap">
+  <table><thead class="anim" data-step="7" style="--step-idx:6"><tr><th>路径</th><th>执行者</th><th>接口</th></tr></thead><tbody><tr class="anim" data-step="8" style="--step-idx:7"><td>内置路径</td><td>MCP Chromium</td><td>x_interaction_batch_execute</td></tr><tr class="anim" data-step="9" style="--step-idx:8"><td>外部路径</td><td>任意 Agent / Computer Use</td><td>next_action → complete_action</td></tr></tbody></table>
+</div>
+    
+  </div>
+  
+  <div class="caption"><span class="caption-label">口播</span><span class="caption-text">我们的产品不是一段只会点击的脚本，而是一层 MCP。Agent 先理解任务，系统再把任务拆成有顺序的动作。大任务可以分块，每块独立确认。内置浏览器可以执行，外部 Agent 也可以领取一个动作、自己操作，再返回证据。两条路径共用同一套租约和后置验证。</span></div>
+</section>
+
+<section class="slide" data-slide="2">
+  <header class="slide-head">
+    <span class="kicker">MEASURED</span>
+    <span class="brand">VideoDeck<span class="page">3 / 6</span></span>
+  </header>
+  <h1 class="slide-title anim" data-step="1" style="--step-idx:0">数据：协议快，真实 X 慢</h1>
+  <p class="lead anim" data-step="2" style="--step-idx:1">瓶颈不在 MCP JSON-RPC，而在浏览器、网络、页面和 X 的服务端限流。</p>
+  <div class="content has-stats">
+    
+    <div class="table-wrap">
+  <table><thead class="anim" data-step="3" style="--step-idx:2"><tr><th>测试</th><th>结果</th><th>口径</th></tr></thead><tbody><tr class="anim" data-step="4" style="--step-idx:3"><td>视觉兜底</td><td>27/27</td><td>真实 Chromium 合成页面</td></tr><tr class="anim" data-step="5" style="--step-idx:4"><td>视口矩阵</td><td>42/42</td><td>DPR、语言、主题组合</td></tr><tr class="anim" data-step="6" style="--step-idx:5"><td>时间线压力读</td><td>HTTP 429</td><td>真实 X 外部限流</td></tr></tbody></table>
+</div>
+    <div class="stats">
+  <div class="stat anim" data-step="7" style="--step-idx:6">
+    <div class="stat-value"><span class="stat-count" data-count-value="994">994</span></div>
+    <div class="stat-label">RPS · 512 客户端本地 HTTP mock</div>
+  </div>
+
+  <div class="stat anim" data-step="8" style="--step-idx:7">
+    <div class="stat-value"><span class="stat-count" data-count-value="533">533</span></div>
+    <div class="stat-label">RPS · 2048 客户端极限观察</div>
+  </div>
+
+  <div class="stat anim" data-step="9" style="--step-idx:8">
+    <div class="stat-value"><span class="stat-count" data-count-value="1.31">1.31</span>–1.59s</div>
+    <div class="stat-label">真实 X profile 冷读</div>
+  </div>
+</div>
+  </div>
+  
+  <div class="caption"><span class="caption-label">口播</span><span class="caption-text">从数据看，协议层很快。五百一十二个本地客户端的 HTTP mock 达到九百九十四 RPS，二千零四十八客户端的极限观察仍然零错误，但吞吐降到五百三十三 RPS。真实 X profile 冷读约一点三到一点六秒，快速时间线读取则收到过四二九。真实工作流的瓶颈，是浏览器和外部服务，不是 MCP 消息本身。</span></div>
+</section>
+
+<section class="slide" data-slide="3">
+  <header class="slide-head">
+    <span class="kicker">COST</span>
+    <span class="brand">VideoDeck<span class="page">4 / 6</span></span>
+  </header>
+  <h1 class="slide-title anim" data-step="1" style="--step-idx:0">成本：浏览器路径不花 X API 费</h1>
+  <p class="lead anim" data-step="2" style="--step-idx:1">但模型、机器时间、网络和失败复核都是真实成本。</p>
+  <div class="content">
+    <div class="cards">
+  <article class="card anim" data-step="3" style="--step-idx:2">
+  <div class="card-top"><span class="card-mark" style="background:#58a6ff">01</span><h3 class="card-title c-blue">浏览器路径</h3></div>
+  <p class="card-body">本轮使用 0 美元 X API credits。</p>
+</article>
+  <article class="card anim" data-step="4" style="--step-idx:3">
+  <div class="card-top"><span class="card-mark" style="background:#7ee787">02</span><h3 class="card-title c-green">模型费用</h3></div>
+  <p class="card-body">取决于 Agent 的模型和上下文，未在浏览器探针中计费。</p>
+</article>
+  <article class="card anim" data-step="5" style="--step-idx:4">
+  <div class="card-top"><span class="card-mark" style="background:#ffa657">03</span><h3 class="card-title c-orange">官方 API 参考</h3></div>
+  <p class="card-body">若每次写入 0.015 美元的假设适用，200 次约 3 美元。</p>
+</article>
+  <article class="card anim" data-step="6" style="--step-idx:5">
+  <div class="card-top"><span class="card-mark" style="background:#d2a8ff">04</span><h3 class="card-title c-purple">隐藏成本</h3></div>
+  <p class="card-body">服务端复核、退避、截图和不确定状态处理。</p>
+</article>
+</div>
+    
+    
+  </div>
+  
+  <div class="caption"><span class="caption-label">口播</span><span class="caption-text">成本要分开算。浏览器路径没有使用 X API credits，但它消耗机器时间、浏览器资源和模型上下文。模型费用取决于 Agent 主机，本轮探针没有调用模型，所以没有虚报 token 成本。作为 API 参考，如果每次写入零点零一五美元的已知假设适用，二百次下限约三美元；实际还要加读取、重试和限流处理。</span></div>
+</section>
+
+<section class="slide" data-slide="4">
+  <header class="slide-head">
+    <span class="kicker">HONEST LIMITS</span>
+    <span class="brand">VideoDeck<span class="page">5 / 6</span></span>
+  </header>
+  <h1 class="slide-title anim" data-step="1" style="--step-idx:0">不能宣传的三句话</h1>
+  <p class="lead anim" data-step="2" style="--step-idx:1">边界不是削弱产品，而是让数据可信。</p>
+  <div class="content has-stats">
+    <div class="cards">
+  <article class="card anim" data-step="3" style="--step-idx:2">
+  <div class="card-top"><span class="card-mark" style="background:#58a6ff">01</span><h3 class="card-title c-blue">不能说</h3></div>
+  <p class="card-body">200 个关注已经在 10 分钟内真实完成。</p>
+</article>
+  <article class="card anim" data-step="4" style="--step-idx:3">
+  <div class="card-top"><span class="card-mark" style="background:#7ee787">02</span><h3 class="card-title c-green">不能说</h3></div>
+  <p class="card-body">每个按钮变 Following 就等于服务端成功。</p>
+</article>
+  <article class="card anim" data-step="5" style="--step-idx:4">
+  <div class="card-top"><span class="card-mark" style="background:#ffa657">03</span><h3 class="card-title c-orange">不能说</h3></div>
+  <p class="card-body">页面级并行一定更快。</p>
+</article>
+</div>
+    
+    <div class="stats">
+  <div class="stat anim" data-step="6" style="--step-idx:5">
+    <div class="stat-value"><span class="stat-count" data-count-value="410">410</span></div>
+    <div class="stat-label">大批次接口可规划的操作数</div>
+  </div>
+
+  <div class="stat anim" data-step="7" style="--step-idx:6">
+    <div class="stat-value"><span class="stat-count" data-count-value="21">21</span></div>
+    <div class="stat-label">默认 20 操作一块</div>
+  </div>
+</div>
+  </div>
+  
+  <div class="caption"><span class="caption-label">口播</span><span class="caption-text">所以宣传时有三句话不能说。不能说二百个关注已经在十分钟内真实完成；不能说按钮变成 Following 就等于服务端成功；也不能说页面级并行一定更快。现在我们已经把大批次接口做成四百一十个操作、默认每块二十个，但真实两百关注仍需要 follow 工具、服务端复核和分阶段验收。</span></div>
+</section>
+
+<section class="slide" data-slide="5">
+  <header class="slide-head">
+    <span class="kicker">CALL TO ACTION</span>
+    <span class="brand">VideoDeck<span class="page">6 / 6</span></span>
+  </header>
+  <h1 class="slide-title anim" data-step="1" style="--step-idx:0">把噱头变成可验证产品</h1>
+  <p class="lead anim" data-step="2" style="--step-idx:1">先让别人复现，再让他们把自己的 Agent 接进来。</p>
+  <div class="content has-stats">
+    <div class="cards">
+  <article class="card anim" data-step="3" style="--step-idx:2">
+  <div class="card-top"><span class="card-mark" style="background:#58a6ff">01</span><h3 class="card-title c-blue">第一步</h3></div>
+  <p class="card-body">运行无凭据 mock demo。</p>
+</article>
+  <article class="card anim" data-step="4" style="--step-idx:3">
+  <div class="card-top"><span class="card-mark" style="background:#7ee787">02</span><h3 class="card-title c-green">第二步</h3></div>
+  <p class="card-body">用自己的 Agent 领取一个分块动作。</p>
+</article>
+  <article class="card anim" data-step="5" style="--step-idx:4">
+  <div class="card-top"><span class="card-mark" style="background:#ffa657">03</span><h3 class="card-title c-orange">第三步</h3></div>
+  <p class="card-body">提交结果和证据，再扩大测试规模。</p>
+</article>
+</div>
+    
+    <div class="stats">
+  <div class="stat anim" data-step="6" style="--step-idx:5">
+    <div class="stat-value"><span class="stat-count" data-count-value="485">485</span></div>
+    <div class="stat-label">当前自动化测试通过</div>
+  </div>
+
+  <div class="stat anim" data-step="7" style="--step-idx:6">
+    <div class="stat-value"><span class="stat-count" data-count-value="0">0</span></div>
+    <div class="stat-label">测试包携带的凭据</div>
+  </div>
+</div>
+  </div>
+  
+  <div class="caption"><span class="caption-label">口播</span><span class="caption-text">这就是 X MCP 的核心价值：让 Agent 可以连接 X，但不把外部写入变成黑箱。先运行无凭据的本地 demo，再让自己的 Agent 领取一个分块动作，最后提交结果和证据。我们的宣传可以用十分钟关注两百人的问题吸引注意，但真正要卖的，是可分块、可确认、可验证、可恢复的 Agent 社交执行层。</span></div>
+</section>
+</main>
+<div class="video-progress" id="video-progress"><i></i></div>
+<div class="controls">
+  <button id="prev" aria-label="上一页">←</button>
+  <span id="page-label">1 / 6</span>
+  <button id="next" aria-label="下一页">→</button>
+  <span class="dots" id="dots"><span class="dot" data-dot="0"></span><span class="dot" data-dot="1"></span><span class="dot" data-dot="2"></span><span class="dot" data-dot="3"></span><span class="dot" data-dot="4"></span><span class="dot" data-dot="5"></span></span>
+</div>
+<script>
+const stage = document.getElementById('stage');
+const slides = [...document.querySelectorAll('.slide')];
+const dots = [...document.querySelectorAll('.dot')];
+const label = document.getElementById('page-label');
+const progress = document.getElementById('video-progress');
+const progressBar = progress ? progress.firstElementChild : null;
+let current = 0;
+let timers = [];
+let progressStart = 0;
+let progressDuration = 0;
+let progressRaf = 0;
+const countRafs = new Map();
+
+function resize() {
+  if (!stage) return;
+  const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080, 1);
+  stage.style.transform = 'translate(-50%, -50%) scale(' + scale + ')';
+}
+
+function clampIndex(value) {
+  return Math.max(0, Math.min(slides.length - 1, Math.floor(Number(value) || 0)));
+}
+
+function updateNav() {
+  dots.forEach((dot, i) => dot.classList.toggle('on', i === current));
+  label.textContent = (current + 1) + ' / ' + slides.length;
+}
+
+function clearTimers() {
+  timers.forEach((timer) => clearTimeout(timer));
+  timers = [];
+  if (progressRaf) cancelAnimationFrame(progressRaf);
+  progressRaf = 0;
+  countRafs.forEach((raf) => cancelAnimationFrame(raf));
+  countRafs.clear();
+}
+
+function resetSteps() {
+  slides.forEach((slide) => {
+    slide.querySelectorAll('.anim').forEach((el) => el.classList.remove('on', 'hl'));
+  });
+  document.querySelectorAll('.stat-count').forEach((el) => {
+    const initial = el.dataset.countValue;
+    if (initial !== undefined) el.textContent = initial;
+  });
+}
+
+function revealSelector(selector) {
+  const el = document.querySelector(selector);
+  if (el) el.classList.add('on');
+}
+
+function setHighlight(selector, on) {
+  const el = document.querySelector(selector);
+  if (!el) return;
+  el.classList.toggle('hl', Boolean(on));
+}
+
+function animateCount(selector, value, durationSeconds) {
+  const el = document.querySelector(selector);
+  if (!el) return;
+  if (countRafs.has(selector)) cancelAnimationFrame(countRafs.get(selector));
+  const numEl = el.querySelector('.stat-count') || el;
+  const target = Number(value) || 0;
+  const decimals = String(value || '').split('.')[1] ? String(value).split('.')[1].length : 0;
+  const duration = Math.max(0.2, Number(durationSeconds) || 0.5);
+  const start = performance.now();
+  const tick = (now) => {
+    const ratio = Math.min((now - start) / 1000 / duration, 1);
+    const eased = 1 - Math.pow(1 - ratio, 3);
+    numEl.textContent = (target * eased).toFixed(decimals);
+    if (ratio < 1) countRafs.set(selector, requestAnimationFrame(tick));
+    else countRafs.delete(selector);
+  };
+  countRafs.set(selector, requestAnimationFrame(tick));
+}
+
+function scheduleEvent(atSeconds, fn) {
+  timers.push(setTimeout(fn, Math.max(0, Number(atSeconds) || 0) * 1000));
+}
+
+function revealStep(slideIndex, step) {
+  const target = Math.max(1, Math.floor(Number(step) || 1));
+  const slide = slides[clampIndex(slideIndex)];
+  slide.querySelectorAll('.anim').forEach((el) => {
+    const elStep = Number(el.dataset.step) || 0;
+    el.classList.toggle('on', elStep > 0 && elStep <= target);
+  });
+}
+
+function showSlide(index, animate) {
+  const target = clampIndex(index);
+  if (target === current) {
+    updateNav();
+    return;
+  }
+  const from = slides[current];
+  from.querySelectorAll('.hl').forEach((el) => el.classList.remove('hl'));
+  current = target;
+  if (animate) {
+    from.classList.add('leaving');
+    slides[target].classList.add('entering', 'active');
+    timers.push(setTimeout(() => {
+      from.classList.remove('leaving', 'active');
+      slides[target].classList.remove('entering');
+    }, 480));
+  } else {
+    slides.forEach((slide) => slide.classList.remove('active', 'entering', 'leaving'));
+    slides[target].classList.add('active');
+  }
+  updateNav();
+}
+
+function go(index) {
+  const target = clampIndex(index);
+  if (target === current) {
+    revealStep(target, Number.MAX_SAFE_INTEGER);
+    updateNav();
+    return;
+  }
+  showSlide(target, true);
+  revealStep(target, Number.MAX_SAFE_INTEGER);
+}
+
+function restart(index) {
+  clearTimers();
+  current = clampIndex(index);
+  slides.forEach((slide) => slide.classList.remove('active', 'entering', 'leaving'));
+  resetSteps();
+  void document.body.offsetWidth;
+  slides[current].classList.add('active');
+  updateNav();
+  if (progressBar) progressBar.style.width = '0%';
+}
+
+function setProgress(durationSeconds) {
+  if (!progressBar) return;
+  cancelAnimationFrame(progressRaf);
+  progressStart = performance.now();
+  progressDuration = Math.max(0, Number(durationSeconds) || 0);
+  const tick = () => {
+    if (progressDuration <= 0) return;
+    const ratio = Math.min((performance.now() - progressStart) / 1000 / progressDuration, 1);
+    progressBar.style.width = (ratio * 100).toFixed(2) + '%';
+    if (ratio < 1) progressRaf = requestAnimationFrame(tick);
+  };
+  progressRaf = requestAnimationFrame(tick);
+}
+
+function runCueProgress(cues) {
+  if (!progressBar) return;
+  cancelAnimationFrame(progressRaf);
+  const bounds = new Map();
+  cues.forEach((cue) => {
+    const slide = clampIndex(cue.slide);
+    if (!bounds.has(slide)) {
+      bounds.set(slide, {
+        start: Math.max(0, Number(cue.pageStart) || 0),
+        end: Math.max(0, Number(cue.pageEnd) || Number(cue.end) || 0)
+      });
+    }
+  });
+  let lastEnd = 0;
+  bounds.forEach((bound) => { lastEnd = Math.max(lastEnd, bound.end); });
+  const playStart = performance.now();
+  const tick = () => {
+    const elapsed = (performance.now() - playStart) / 1000;
+    const bound = bounds.get(current);
+    if (bound && bound.end > bound.start) {
+      const ratio = Math.min(Math.max((elapsed - bound.start) / (bound.end - bound.start), 0), 1);
+      progressBar.style.width = (ratio * 100).toFixed(2) + '%';
+    }
+    if (elapsed <= lastEnd + 0.5) progressRaf = requestAnimationFrame(tick);
+  };
+  progressRaf = requestAnimationFrame(tick);
+}
+
+function stepTo(slideIndex, step, text) {
+  const index = clampIndex(slideIndex);
+  if (index !== current) showSlide(index, true);
+  revealStep(index, step);
+  if (typeof text === 'string' && text) {
+    const caption = slides[index].querySelector('.caption-text');
+    if (caption) caption.textContent = text;
+  }
+}
+
+function playCues(rawCues) {
+  clearTimers();
+  const cues = (rawCues || [])
+    .map((cue) => ({
+      slide: clampIndex(Number(cue.slide) || 0),
+      text: String(cue.text || ''),
+      duration: Math.max(0.1, Number(cue.duration) || 0.1),
+      start: Math.max(0, Number(cue.start) || 0),
+      end: Math.max(0, Number(cue.end) || 0),
+      holdEnd: Math.max(0, Number(cue.holdEnd) || 0),
+      pageStart: Math.max(0, Number(cue.pageStart) || 0),
+      pageEnd: Math.max(0, Number(cue.pageEnd) || 0),
+      baseReveals: Array.isArray(cue.baseReveals) ? cue.baseReveals : [],
+      reveals: Array.isArray(cue.reveals) ? cue.reveals : [],
+      highlights: Array.isArray(cue.highlights) ? cue.highlights : [],
+      groupHighlights: Array.isArray(cue.groupHighlights) ? cue.groupHighlights : [],
+      counts: Array.isArray(cue.counts) ? cue.counts : []
+    }))
+    .sort((a, b) => a.start - b.start);
+  restart(0);
+  if (cues.length === 0) return;
+  const pageShown = new Set();
+  cues.forEach((cue) => {
+    if (!pageShown.has(cue.slide)) {
+      pageShown.add(cue.slide);
+      const pageAt = cue.pageStart || cue.start;
+      scheduleEvent(pageAt, () => showSlide(cue.slide, true));
+    }
+    scheduleEvent(cue.start, () => {
+      const caption = slides[cue.slide].querySelector('.caption-text');
+      if (caption) caption.textContent = cue.text;
+    });
+    cue.baseReveals.forEach((event) => {
+      scheduleEvent(event.at, () => revealSelector(event.selector));
+    });
+    cue.reveals.forEach((event) => {
+      scheduleEvent(event.at, () => revealSelector(event.selector));
+    });
+    cue.highlights.forEach((event) => {
+      scheduleEvent(event.at, () => setHighlight(event.selector, true));
+      if (Number(event.end) > Number(event.at)) {
+        scheduleEvent(event.end, () => setHighlight(event.selector, false));
+      }
+    });
+    cue.groupHighlights.forEach((event) => {
+      scheduleEvent(event.at, () => setHighlight(event.selector, true));
+      if (Number(event.end) > Number(event.at)) {
+        scheduleEvent(event.end, () => setHighlight(event.selector, false));
+      }
+    });
+    cue.counts.forEach((event) => {
+      const duration = Math.max(0.2, Number(event.end) - Number(event.at) || 0.5);
+      scheduleEvent(event.at, () => animateCount(event.selector, event.value, duration));
+    });
+  });
+  runCueProgress(cues);
+}
+
+function play(durations, pause) {
+  clearTimers();
+  const pauseSeconds = Number(pause || 0.9);
+  restart(0);
+  if (durations.length === 0) return;
+  revealStep(0, Number.MAX_SAFE_INTEGER);
+  setProgress(Number(durations[0]) + pauseSeconds);
+  let cursor = Number(durations[0]) + pauseSeconds;
+  for (let i = 1; i < durations.length; i += 1) {
+    timers.push(setTimeout(() => {
+      go(i);
+      setProgress(Number(durations[i]) + pauseSeconds);
+    }, cursor * 1000));
+    cursor += Number(durations[i]) + pauseSeconds;
+  }
+}
+
+document.getElementById('prev').addEventListener('click', () => go(current - 1));
+document.getElementById('next').addEventListener('click', () => go(current + 1));
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowLeft' || event.key === 'PageUp') go(current - 1);
+  if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+    event.preventDefault();
+    go(current + 1);
+  }
+  if (event.key === 'Home') go(0);
+  if (event.key === 'End') go(slides.length - 1);
+});
+window.addEventListener('resize', resize);
+
+const params = new URLSearchParams(location.search);
+if (params.has('video')) {
+  document.body.classList.add('video-mode');
+}
+resize();
+if (!params.has('stage')) go(0);
+window.go = go;
+window.VideoDeck = {
+  go,
+  restart,
+  play,
+  playCues,
+  stepTo,
+  stop: clearTimers,
+  get current() { return current; }
+};
+</script>
+</body>
+</html>

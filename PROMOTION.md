@@ -9,6 +9,24 @@ X Starter lets an MCP-capable agent read X, prepare work, and ask the owner to
 confirm state-changing actions. It keeps browser credentials outside the MCP
 messages and records action evidence.
 
+## The headline experiment
+
+Use this question as the hook, not as a completed claim:
+
+> Can an agent help you follow 200 people in ten minutes?
+
+The measured answer has two parts. A small real-browser sample produced a
+1.16-second median follow cycle. A separate 18-follow run produced only 8
+server-confirmed follows after independent verification, or 44.4%. The safe
+headline is therefore: **the click path is fast, but server-side success still
+needs verification**.
+
+The public article and animation use this boundary explicitly:
+
+- `docs/promotion/x-mcp-200-follow-article.md`
+- `docs/promotion/x-mcp-200-follow.mp4`
+- `docs/promotion/x-mcp-200-follow-story.json`
+
 ## Explain it without jargon
 
 | What people ask | Plain answer | Current boundary |
@@ -30,12 +48,16 @@ messages and records action evidence.
 | 27/27 | "Three visual-fallback runs passed every guarded check." | Real Chromium on a synthetic page. |
 | 42/42 | "Six viewport, DPR, locale and theme cases passed." | Executor compatibility, not proof of every X layout. |
 | 31 / 133 s | "An internal DSH/X acceptance verified 31 actions in 133 seconds." | Historical owner-controlled run; not a one-minute SLA. |
+| 1.16 s | "The follow click cycle had a 1.16-second median in a five-target sample." | Real browser sample; click cycle, not server-confirmed success. |
+| 44.4% | "An earlier 18-follow run independently confirmed 8 server-side follows." | Historical small sample; not a general success rate. |
+| 200 / 10 / 200 | "The batch planner accepts 200 likes, 10 reposts and 200 replies, split into chunks." | Interface and contract validation; not 200 real writes. |
 | 0 credentials | "The tester package ships without account sessions or keys." | The tester signs in on its own machine. |
 
 ## What not to say
 
 - Do not say "works with every agent". Say "any MCP-capable client can use the protocol; visual interpretation depends on the client model."
-- Do not say "200 follows in ten minutes" or "500 replies per day". Those workloads are not accepted.
+- Do not say "200 follows in ten minutes" as a completed result. The speed extrapolation exists, but the server-confirmed success rate is not accepted.
+- Do not say "500 replies per day". That workload is not accepted.
 - Do not call local mock RPS an X action rate.
 - Do not present the synthetic `mock_creator` account as a real X account.
 - Do not publish a browser recording that shows a personal account, private messages, cookies, or an unredacted profile.

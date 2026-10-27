@@ -3,6 +3,13 @@
 这是 Windows 本地 MCP 测试版，不是免安装桌面应用。
 测试者使用自己的 agent 和自己的 X 账号。
 
+公开入口：
+
+- 源码：https://github.com/Guoz7/x-mcp
+- 下载 ZIP：https://github.com/Guoz7/x-mcp/archive/refs/heads/main.zip
+- 可复制提示词：https://raw.githubusercontent.com/Guoz7/x-mcp/main/PROMPTS.md
+- 任务清单：https://raw.githubusercontent.com/Guoz7/x-mcp/main/docs/promotion/X-MCP-TESTER-LINKS.md
+
 ## 准备条件
 
 - Windows 10/11、Python 3.11 或更新版本、Google Chrome。
@@ -64,14 +71,16 @@ DSH 与其他客户端使用同一组 MCP 工具。
 真实 X 登录读取、发布和删除仍需在测试者机器上单独验收。
 本包不承诺所有浏览器、分辨率或模型都可用。
 当前集成执行器为 Chrome/Chromium；不是完整桌面 Computer Use。
-点赞、关注和评论的辅助链接不等于已验证自动执行这些操作。
+点赞、关注和评论的辅助链接不等于已验证自动执行这些操作。当前没有 follow MCP 工具。
 公开网页读取也可能随 X 页面结构和网络变化而失败。
 
 ## 批量互动验收
 
-`x_interaction_batch_plan` 只做只读规划。默认目标是 20 个不同作者的帖子、1 次转发、10 条评论，共 31 个操作。
-它不会点击、输入、打开意图链接或改变 X。真实 DSH 已完成一次完整的 31 动作验收，动作窗口为 133 秒。
-这不代表已经达到 1 分钟目标，也不代表已经支持真正并行、200 次关注或 500 条评论每天。
+`x_interaction_batch_plan` 只做只读规划。它现在最多接受 200 个点赞、10 次转发和 200 条评论。
+默认 `chunk_size=20`，系统把大任务拆成编号块。它不会点击、输入、打开意图链接或改变 X。
+外部 Agent 可以用 `x_browser_next_action(batch_id, chunk)` 逐个领取动作，再用
+`x_browser_complete_action` 回报结果；内置浏览器可以用 `x_interaction_batch_execute` 执行指定块。
+这不代表已经完成真实 200 次关注，也不代表已经支持页面级并行或 500 条评论每天。
 长请求超时后不要再次执行。调用 `x_interaction_batch_status` 读取持久结果。
 如果时间线只返回少于 20 个不同作者，规划器会明确拒绝，不会补造目标。
 
