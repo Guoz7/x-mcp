@@ -22,6 +22,8 @@ confirmed follow-batch path, but a 200-follow live result is not verified.
 - Download: https://github.com/Guoz7/x-mcp/archive/refs/heads/main.zip
 - Copy-paste tasks: https://raw.githubusercontent.com/Guoz7/x-mcp/main/docs/promotion/X-MCP-TESTER-LINKS.md
 - Agent prompts: https://raw.githubusercontent.com/Guoz7/x-mcp/main/PROMPTS.md
+- One-click first task: https://raw.githubusercontent.com/Guoz7/x-mcp/main/ONE-CLICK-PROMPT.md
+- Product report: https://github.com/Guoz7/x-mcp/blob/main/docs/PRODUCT-REPORT.md
 
 The recommended first task is public read-only access. The tester must use a
 personal X account for signed-in tests. The repository contains no account
