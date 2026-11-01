@@ -4,6 +4,13 @@ This project is currently in the `0.10.x` pre-release line. Entries describe
 implemented repository changes, not a promise that every integration is ready
 for public hosted use.
 
+## Unreleased
+
+- Fixed `x_follow_batch_execute`: the success path referenced an undefined
+  `browser_family`, so every verified follow was recorded as `uncertain` and the
+  default `stop` policy ended the batch after the first target. Added a
+  regression test with a fake browser.
+
 ## 0.10.0 - mutual-follow batch foundation
 
 - Added visible mutual-follow candidate discovery without credential or storage access.

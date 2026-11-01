@@ -32,7 +32,8 @@ CHROME = find_chrome()
 ALLOWED_HOSTS = {
     item.strip().lower()
     for item in os.environ.get(
-        "X_BROWSER_EXECUTOR_ALLOWED_HOSTS", "google.com,www.google.com,x.com,www.x.com,twitter.com"
+        "X_BROWSER_EXECUTOR_ALLOWED_HOSTS",
+        "google.com,www.google.com,x.com,www.x.com,twitter.com,douyin.com,www.douyin.com,m.douyin.com",
     ).split(",")
     if item.strip()
 }
@@ -402,19 +403,30 @@ class Browser:
                         )
                     self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
                     self.page.goto(url, wait_until="commit", timeout=15000)
-                    self.page.wait_for_timeout(1200)
+                    # Content readiness is checked below. Do not add a fixed
+                    # one-second delay to every action in a long batch.
+                    self.page.wait_for_timeout(200)
                 except PlaywrightError as exc:
                     self.close()
                     raise ExecutorError("BROWSER_START_FAILED", str(exc)) from exc
             else:
                 self.page.goto(url, wait_until="commit", timeout=15000)
-                self.page.wait_for_timeout(1200)
+                self.page.wait_for_timeout(200)
             self._wait_for_initial_content(url)
             return self.observe()
 
     def _wait_for_initial_content(self, requested_url: str) -> None:
         """A committed SPA navigation does not mean the timeline has rendered."""
         parsed = urlparse(requested_url)
+        if parsed.hostname in {"douyin.com", "www.douyin.com", "m.douyin.com"}:
+            try:
+                self.page.wait_for_function(
+                    "() => !!document.body && (document.body.innerText || '').trim().length > 0",
+                    timeout=15000,
+                )
+            except Exception:
+                return
+            return
         if parsed.hostname not in _profile_hosts():
             return
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -422,7 +434,11 @@ class Browser:
         path = parsed.path.rstrip("/")
         is_status = bool(re.match(r"^/[^/]+/status/\d+$", path))
         is_home = path == "/home"
-        if not (is_home or is_status):
+        # Profile pages need the same wait: /<handle> otherwise returns an
+        # empty document body, and the follow guard then reports a false
+        # TARGET_MISMATCH against a page that had not rendered yet.
+        is_profile = bool(re.match(r"^/[A-Za-z0-9_]{1,15}$", path))
+        if not (is_home or is_status or is_profile):
             return
 
         ready_script = (
@@ -431,9 +447,21 @@ class Browser:
             "|| /Something went wrong|Try reloading/i.test(document.body?.innerText || '')"
         )
 
+        profile_script = (
+            "() => {"
+            "const main = document.querySelector('main');"
+            "const header = main && main.querySelector('[data-testid=\"UserName\"]');"
+            "const control = main && main.querySelector("
+            "'button[data-testid$=\"-follow\"], button[data-testid$=\"-unfollow\"]');"
+            "const login = document.querySelector("
+            "'a[href=\"/i/flow/login\"], a[href=\"/login\"]');"
+            "return !!(header && control) || !!login;"
+            "}"
+        )
+
         try:
             self.page.wait_for_function(
-                ready_script if is_status else (
+                profile_script if is_profile else ready_script if is_status else (
                     "() => location.pathname.replace(/\\/$/, '') !== '/home'"
                     " || !!document.querySelector('article a[href*=\"/status/\"]')"
                     " || !!document.querySelector('a[href=\"/i/flow/login\"], a[href=\"/login\"]')"
@@ -441,6 +469,10 @@ class Browser:
                 timeout=15000,
             )
         except PlaywrightTimeoutError:
+            if is_profile:
+                # Leave an unrendered profile observable so the action layer can
+                # report an unproven state instead of guessing.
+                return
             if not is_status:
                 # Leave empty home pages observable; the reader reports a typed
                 # failure rather than inventing posts or a successful login.
@@ -450,7 +482,7 @@ class Browser:
             # page observable so the action layer can stop on an unproven state.
             try:
                 self.page.reload(wait_until="commit", timeout=15000)
-                self.page.wait_for_timeout(1200)
+                self.page.wait_for_timeout(200)
                 self.page.wait_for_function(ready_script, timeout=15000)
             except PlaywrightTimeoutError:
                 return
@@ -812,12 +844,38 @@ class Browser:
                     return scoped
         raise ExecutorError("TARGET_NOT_UNIQUE", "The selector must match exactly one element.")
 
-    # Only these claimed action types may touch a signed-in X page.
-    X_TYPE_ACTIONS = frozenset({"publish_post", "reply_post"})
+    # These claimed action types may touch a signed-in social page.
+    X_TYPE_ACTIONS = frozenset({"publish_post", "reply_post", "douyin_comment_video"})
     X_CLICK_ACTIONS = frozenset({
         "publish_post", "delete_post", "like_post", "repost_post", "reply_post",
-        "follow_profile",
+        "follow_profile", "douyin_follow_profile", "douyin_like_video",
+        "douyin_comment_video", "douyin_favorite_video",
     })
+
+    def authorize_douyin_action(
+        self,
+        *,
+        action_id: str,
+        claim_token: str,
+        lease_expires_epoch: float,
+        action_type: str = "",
+    ) -> dict[str, Any]:
+        """Arm one claimed Douyin action using the same X bridge grant."""
+
+        if action_type not in {
+            "douyin_follow_profile", "douyin_like_video",
+            "douyin_comment_video", "douyin_favorite_video",
+        }:
+            raise ExecutorError(
+                "DOUYIN_ACTION_NOT_A_WRITE",
+                "Only a claimed confirmed Douyin action may touch the signed-in page.",
+            )
+        return self.authorize_x_action(
+            action_id=action_id,
+            claim_token=claim_token,
+            lease_expires_epoch=lease_expires_epoch,
+            action_type=action_type,
+        )
 
     def authorize_x_action(
         self,
@@ -1009,6 +1067,264 @@ class Browser:
                 "The X action executor failed before its postcondition was proven.",
             ) from exc
 
+    def execute_douyin_action(
+        self,
+        *,
+        action_type: str,
+        target_url: str,
+        target_id: str,
+        text: str | None,
+        action_id: str,
+        claim_token: str,
+        lease_expires_epoch: float,
+    ) -> dict[str, Any]:
+        """Execute one confirmed Douyin action in the bounded browser worker."""
+
+        supported = {
+            "douyin_follow_profile",
+            "douyin_like_video",
+            "douyin_comment_video",
+            "douyin_favorite_video",
+        }
+        if action_type not in supported:
+            raise ExecutorError("DOUYIN_ACTION_NOT_SUPPORTED", "The Douyin action is not supported.")
+        self.authorize_douyin_action(
+            action_id=action_id,
+            claim_token=claim_token,
+            lease_expires_epoch=lease_expires_epoch,
+            action_type=action_type,
+        )
+        try:
+            return self._run_on_worker(
+                lambda: self._execute_douyin_action_impl(
+                    action_type=action_type,
+                    target_url=target_url,
+                    target_id=target_id,
+                    text=text,
+                ),
+                timeout=max(30.0, min(self.start_timeout + 30.0, 180.0)),
+            )
+        except ExecutorError:
+            raise
+        except Exception as exc:
+            raise ExecutorError(
+                "ACTION_UNCERTAIN",
+                "The Douyin action failed before its postcondition was proven.",
+            ) from exc
+
+    def _execute_douyin_action_impl(
+        self,
+        *,
+        action_type: str,
+        target_url: str,
+        target_id: str,
+        text: str | None,
+    ) -> dict[str, Any]:
+        parsed = urlparse(target_url)
+        host = (parsed.hostname or "").lower()
+        if host not in {"douyin.com", "www.douyin.com", "m.douyin.com"}:
+            raise ExecutorError("TARGET_MISMATCH", "The Douyin target host is not allowed.")
+
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 2 or parts[0] not in {"user", "video", "note"}:
+            raise ExecutorError("TARGET_MISMATCH", "The Douyin target path is invalid.")
+        kind, url_id = parts
+        expected_kind = "user" if action_type == "douyin_follow_profile" else "video"
+        if kind != expected_kind and not (expected_kind == "video" and kind == "note"):
+            raise ExecutorError("TARGET_MISMATCH", "The Douyin target kind does not match the action.")
+        if url_id != str(target_id):
+            raise ExecutorError("TARGET_MISMATCH", "The Douyin target ID does not match the URL.")
+
+        self._open_impl(target_url)
+        if action_type == "douyin_follow_profile":
+            return self._execute_douyin_follow_impl(target_url, target_id)
+        if action_type == "douyin_like_video":
+            return self._execute_douyin_reaction_impl("like", target_url, target_id)
+        if action_type == "douyin_favorite_video":
+            return self._execute_douyin_reaction_impl("favorite", target_url, target_id)
+        if not isinstance(text, str) or not text:
+            raise ExecutorError("INVALID_ARGUMENT", "A Douyin comment needs confirmed text.")
+        return self._execute_douyin_comment_impl(target_url, target_id, text)
+
+    def _douyin_visible(self, selector: str) -> Any | None:
+        locator = self.page.locator(selector)
+        if locator.count() != 1:
+            return None
+        candidate = locator.first
+        if not candidate.is_visible():
+            return None
+        return candidate
+
+    def _execute_douyin_reaction_impl(
+        self, action: str, target_url: str, target_id: str
+    ) -> dict[str, Any]:
+        selector = (
+            '[data-e2e="video-player-digg"]'
+            if action == "like"
+            else '[data-e2e="video-player-collect"]'
+        )
+        control = self._douyin_visible(selector)
+        if control is None:
+            raise ExecutorError("ACTION_UNCERTAIN", "The Douyin reaction control was not uniquely exposed.")
+
+        state_before = str(control.get_attribute("data-e2e-state") or "").lower()
+        active_before = (
+            action == "like"
+            and "digged" in state_before
+            and "no-digged" not in state_before
+        ) or (
+            action == "favorite"
+            and "collect" in state_before
+            and "no-collect" not in state_before
+        )
+        if active_before:
+            return {
+                "target_url": target_url,
+                "target_id": target_id,
+                "verified": True,
+                "state": "liked" if action == "like" else "favorited",
+                "changed": False,
+                "locator_strategy": "dom",
+            }
+
+        self._consume_x_grant(self.X_CLICK_ACTIONS)
+        control.click(timeout=8000)
+        self.page.wait_for_timeout(500)
+        after = self._douyin_visible(selector)
+        state_after = str(after.get_attribute("data-e2e-state") or "").lower() if after else ""
+        active_after = (
+            action == "like"
+            and "digged" in state_after
+            and "no-digged" not in state_after
+        ) or (
+            action == "favorite"
+            and "collect" in state_after
+            and "no-collect" not in state_after
+        )
+        if not active_after:
+            raise ExecutorError("ACTION_UNCERTAIN", "The Douyin reaction state was not proven after the click.")
+        return {
+            "target_url": target_url,
+            "target_id": target_id,
+            "verified": True,
+            "state": "liked" if action == "like" else "favorited",
+            "changed": True,
+            "locator_strategy": "dom",
+        }
+
+    def _execute_douyin_follow_impl(self, target_url: str, target_id: str) -> dict[str, Any]:
+        selectors = [
+            '[data-e2e*="user-follow"]',
+            '[data-e2e="user-info-follow"]',
+            'button:has-text("关注")',
+            '[role="button"]:has-text("关注")',
+            'button:has-text("回关")',
+            '[role="button"]:has-text("回关")',
+            'button:has-text("已关注")',
+            '[role="button"]:has-text("已关注")',
+            'button:has-text("互相关注")',
+            '[role="button"]:has-text("互相关注")',
+        ]
+        control = None
+        for selector in selectors:
+            control = self._douyin_visible(selector)
+            if control is not None:
+                break
+        if control is None:
+            raise ExecutorError("ACTION_UNCERTAIN", "The Douyin follow control was not uniquely exposed.")
+
+        label = str(control.inner_text() or control.get_attribute("aria-label") or "").replace(" ", "")
+        if "已关注" in label or "互相关注" in label:
+            return {
+                "target_url": target_url,
+                "target_id": target_id,
+                "verified": True,
+                "state": "following",
+                "changed": False,
+                "locator_strategy": "dom",
+            }
+
+        self._consume_x_grant(self.X_CLICK_ACTIONS)
+        control.click(timeout=8000)
+        self.page.wait_for_timeout(700)
+        for _ in range(4):
+            for selector in selectors:
+                after = self._douyin_visible(selector)
+                if after is None:
+                    continue
+                after_label = str(after.inner_text() or after.get_attribute("aria-label") or "").replace(" ", "")
+                if "已关注" in after_label or "互相关注" in after_label:
+                    return {
+                        "target_url": target_url,
+                        "target_id": target_id,
+                        "verified": True,
+                        "state": "following",
+                        "changed": True,
+                        "locator_strategy": "dom",
+                    }
+            self.page.wait_for_timeout(300)
+        raise ExecutorError("ACTION_UNCERTAIN", "The Douyin follow state was not proven after the click.")
+
+    def _execute_douyin_comment_impl(
+        self, target_url: str, target_id: str, text: str
+    ) -> dict[str, Any]:
+        activation = self._douyin_visible("#comment-input-container") or self._douyin_visible(
+            ".comment-input-inner-container"
+        )
+        if activation is not None:
+            activation.click(timeout=5000)
+            self.page.wait_for_timeout(400)
+
+        composer = None
+        for selector in (
+            '#comment-input-container [contenteditable="true"]',
+            '[data-e2e="comment-input"]',
+            '[contenteditable="true"]',
+            'textarea[placeholder*="评论"]',
+            'input[placeholder*="评论"]',
+        ):
+            composer = self._douyin_visible(selector)
+            if composer is not None:
+                break
+        if composer is None:
+            raise ExecutorError("ACTION_UNCERTAIN", "The Douyin comment composer was not uniquely exposed.")
+
+        self._consume_x_grant(self.X_TYPE_ACTIONS)
+        if composer.get_attribute("contenteditable") == "true":
+            composer.press_sequentially(text, delay=20)
+        else:
+            composer.fill(text)
+        self.page.wait_for_timeout(300)
+
+        submit = None
+        for selector in (
+            '#comment-input-container button:has-text("发送")',
+            '#comment-input-container [role="button"]:has-text("发送")',
+            'button:has-text("发布")',
+            '[role="button"]:has-text("发布")',
+        ):
+            submit = self._douyin_visible(selector)
+            if submit is not None:
+                break
+        if submit is None:
+            raise ExecutorError("ACTION_UNCERTAIN", "The Douyin comment submit control was not uniquely exposed.")
+
+        self._consume_x_grant(self.X_CLICK_ACTIONS)
+        submit.click(timeout=5000)
+        self.page.wait_for_timeout(900)
+        if text not in (self.page.locator("body").inner_text() or ""):
+            raise ExecutorError("ACTION_UNCERTAIN", "The Douyin comment text was not proven after submit.")
+        return {
+            "target_url": target_url,
+            "target_id": target_id,
+            "text": text,
+            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "verified": True,
+            "state": "commented",
+            "changed": True,
+            "locator_strategy": "dom",
+        }
+
     def _execute_x_action_impl(
         self,
         *,
@@ -1110,7 +1426,7 @@ class Browser:
                 # prove a delayed server acknowledgement without retrying it.
                 try:
                     self.page.reload(wait_until="commit", timeout=15000)
-                    self.page.wait_for_timeout(1200)
+                    self.page.wait_for_timeout(200)
                     self._wait_for_initial_content(post_url)
                     target = find_target()
                     active_selector = (
@@ -1237,24 +1553,79 @@ class Browser:
 
         def state() -> dict[str, Any]:
             return self.page.evaluate(
-                """() => {
-                    const header = document.querySelector('[data-testid="UserName"]');
-                    let node = header;
-                    for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
-                        const buttons = Array.from(node.querySelectorAll('button'));
-                        const follow = buttons.find(button => /-follow$/.test(button.getAttribute('data-testid') || ''));
-                        const unfollow = buttons.find(button => /-unfollow$/.test(button.getAttribute('data-testid') || ''));
-                        const pending = buttons.find(button => /pending/i.test(button.innerText || button.getAttribute('aria-label') || ''));
-                        if (follow || unfollow || pending) {
-                            return {
-                                follow_testid: follow ? follow.getAttribute('data-testid') : null,
-                                unfollow_testid: unfollow ? unfollow.getAttribute('data-testid') : null,
-                                pending: !!pending,
-                            };
-                        }
+                """(expected) => {
+                    const normalize = value => (value || '').replace(/\\/+$/, '') || '/';
+                    const expectedPath = '/' + expected.handle;
+                    const currentPath = normalize(window.location.pathname);
+                    if (currentPath.toLowerCase() !== expectedPath.toLowerCase()) {
+                        return {
+                            follow_testid: null,
+                            unfollow_testid: null,
+                            pending: false,
+                            target_mismatch: true,
+                            reason: 'profile_url_mismatch',
+                        };
                     }
-                    return {follow_testid: null, unfollow_testid: null, pending: false};
-                }"""
+
+                    const main = document.querySelector('main');
+                    const header = main && main.querySelector('[data-testid="UserName"]');
+                    if (!main || !header) {
+                        return {
+                            follow_testid: null,
+                            unfollow_testid: null,
+                            pending: false,
+                            target_mismatch: false,
+                            reason: 'profile_header_missing',
+                        };
+                    }
+
+                    // X's profile header renders the handle as plain text
+                    // inside UserName, with no link around it. Reading the
+                    // visible @handle is the only reliable match.
+                    const headerText = header.innerText || '';
+                    const visibleHandles = Array.from(
+                        headerText.matchAll(/@([A-Za-z0-9_]{1,15})\\b/g)
+                    ).map(match => match[1].toLowerCase());
+                    if (!visibleHandles.includes(expected.handle.toLowerCase())) {
+                        return {
+                            follow_testid: null,
+                            unfollow_testid: null,
+                            pending: false,
+                            target_mismatch: true,
+                            reason: 'visible_handle_mismatch',
+                        };
+                    }
+
+                    const visible = element => {
+                        const style = window.getComputedStyle(element);
+                        const rect = element.getBoundingClientRect();
+                        return style.visibility !== 'hidden' && style.display !== 'none'
+                            && rect.width > 0 && rect.height > 0;
+                    };
+                    const controls = Array.from(main.querySelectorAll(
+                        'button[data-testid$="-follow"], button[data-testid$="-unfollow"]'
+                    )).filter(visible);
+                    const follow = controls.filter(button => /-follow$/.test(button.getAttribute('data-testid') || ''));
+                    const unfollow = controls.filter(button => /-unfollow$/.test(button.getAttribute('data-testid') || ''));
+                    const pending = controls.find(button => /pending/i.test(button.innerText || button.getAttribute('aria-label') || ''));
+                    if (follow.length + unfollow.length > 1) {
+                        return {
+                            follow_testid: null,
+                            unfollow_testid: null,
+                            pending: false,
+                            target_mismatch: false,
+                            reason: 'multiple_profile_controls',
+                        };
+                    }
+                    return {
+                        follow_testid: follow.length === 1 ? follow[0].getAttribute('data-testid') : null,
+                        unfollow_testid: unfollow.length === 1 ? unfollow[0].getAttribute('data-testid') : null,
+                        pending: !!pending,
+                        target_mismatch: false,
+                        reason: 'ok',
+                    };
+                }""",
+                {"handle": handle},
             )
 
         deadline = time.monotonic() + 12.0
@@ -1262,6 +1633,8 @@ class Browser:
         while not (current["follow_testid"] or current["unfollow_testid"] or current["pending"]) and time.monotonic() < deadline:
             self.page.wait_for_timeout(200)
             current = state()
+        if current.get("target_mismatch"):
+            raise ExecutorError("TARGET_MISMATCH", "The visible X profile does not match the requested handle.")
         if current["unfollow_testid"]:
             return {
                 "handle": handle,
@@ -1277,9 +1650,10 @@ class Browser:
             self.page.screenshot(type="png", full_page=False)
             raise ExecutorError("ACTION_UNCERTAIN", "The unique Follow control was not proven.")
 
+        started = time.monotonic()
         self._consume_x_grant(self.X_CLICK_ACTIONS)
         self.page.locator(f'[data-testid="{current["follow_testid"]}"]').click(timeout=8000)
-        self.page.wait_for_timeout(500)
+        self.page.wait_for_timeout(100)
 
         after = state()
         deadline = time.monotonic() + 8.0
@@ -1290,7 +1664,7 @@ class Browser:
         # A visual state can be optimistic. Reload once, without clicking again,
         # so the result reflects the account state X returns after navigation.
         self.page.reload(wait_until="commit", timeout=15000)
-        self.page.wait_for_timeout(1000)
+        self.page.wait_for_timeout(150)
         self._wait_for_initial_content(profile_url)
         verified_state = state()
         deadline = time.monotonic() + 8.0
@@ -1307,6 +1681,7 @@ class Browser:
             "verified": True,
             "state": "following",
             "changed": True,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
             "locator_strategy": "dom",
         }
 

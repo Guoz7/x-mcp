@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
+import douyin_bridge
+
 
 VIEWPORT_CLASSES = ("mobile", "tablet", "desktop")
 LOCATOR_STRATEGIES = (
@@ -208,9 +210,17 @@ def _compatibility_contract(
         "like_post": ["x_status"],
         "repost_post": ["x_status"],
         "reply_post": ["x_status"],
+        "douyin_follow_profile": ["douyin_profile"],
+        "douyin_like_video": ["douyin_video"],
+        "douyin_comment_video": ["douyin_video"],
+        "douyin_favorite_video": ["douyin_video"],
     }
     return {
-        "schema": "x-starter-browser-context/v1",
+        "schema": (
+            "douyin-browser-context/v1"
+            if action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values()
+            else "x-starter-browser-context/v1"
+        ),
         "viewport_classes": list(VIEWPORT_CLASSES),
         "allowed_browser_families": (
             [allowed_browser_family]
@@ -219,7 +229,9 @@ def _compatibility_contract(
         ),
         "page_kinds": page_kinds.get(action_type, ["x_unknown"]),
         "locator_priority": list(LOCATOR_STRATEGIES),
-        "allowed_hosts": ["x.com", "twitter.com"],
+        "allowed_hosts": [
+            "x.com", "twitter.com", "douyin.com", "www.douyin.com", "m.douyin.com"
+        ],
         "sensitive_fields_forbidden": sorted(_SENSITIVE_CONTEXT_KEYS),
     }
 
@@ -421,7 +433,10 @@ class BrowserBridge:
     @staticmethod
     def _scope_ok(record: dict[str, Any], session_id: str | None) -> bool:
         if session_id is None:
-            return True
+            # A scoped record must never become addressable through an
+            # unscoped stdio or helper call. Unscoped legacy records remain
+            # available only to unscoped callers.
+            return record.get("session_id") is None
         return record.get("session_id") in {None, session_id}
 
     def account_snapshot(self) -> dict[str, Any] | None:
@@ -985,6 +1000,129 @@ class BrowserBridge:
             "counts": {"follow": len(operations)},
         }
 
+    def prepare_douyin_batch(
+        self, plan: dict[str, Any], *, session_id: str | None = None, ttl_seconds: int = 600
+    ) -> dict[str, Any]:
+        """Create a confirmed Douyin batch without opening a browser."""
+
+        if not isinstance(plan, dict) or plan.get("platform") != "douyin" or plan.get("status") != "planned_not_executed":
+            raise BridgeError("INVALID_BATCH", "Prepare requires a Douyin planner result.")
+        operations = plan.get("operations")
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 500:
+            raise BridgeError("INVALID_BATCH", "The Douyin batch must contain from 1 to 500 operations.")
+        for operation in operations:
+            try:
+                douyin_bridge.action_contract(operation)
+            except Exception as exc:
+                raise BridgeError("INVALID_BATCH", str(exc)) from None
+        batch_id = "douyin_batch_" + uuid_hex()
+        phrase = "DOUYIN " + secrets.token_hex(3).upper()
+        now = self._now()
+        record = {
+            "batch_id": batch_id,
+            "kind": "douyin",
+            "state": "prepared",
+            "created_at": _now_iso(now),
+            "expires_epoch": now + max(60, min(int(ttl_seconds), 600)),
+            "confirmation_phrase": phrase,
+            "operations": operations,
+            "session_id": session_id,
+            "action_ids": [],
+        }
+        with self._lock:
+            data = self._read()
+            data.setdefault("batches", {})[batch_id] = record
+            self._append_evidence(data, "douyin_batch_prepared", batch_id, {"operation_count": len(operations)})
+            self._write(data)
+        return {
+            "batch_id": batch_id,
+            "state": "prepared",
+            "expires_at": _now_iso(record["expires_epoch"]),
+            "confirmation_phrase": phrase,
+            "operation_count": len(operations),
+            "counts": plan.get("counts", {}),
+        }
+
+    def queue_douyin_batch(
+        self, batch_id: str, confirmation: str, *, session_id: str | None = None
+    ) -> dict[str, Any]:
+        """Queue one independently leased browser action per Douyin operation."""
+
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if not isinstance(record, dict) or record.get("kind") != "douyin" or not self._scope_ok(record, session_id):
+                raise BridgeError("BATCH_NOT_FOUND", "The Douyin batch does not exist.")
+            if record.get("state") != "prepared":
+                raise BridgeError("BATCH_NOT_READY", "The Douyin batch is not prepared.")
+            if self._now() > float(record.get("expires_epoch", 0)):
+                record["state"] = "expired"
+                self._write(data)
+                raise BridgeError("BATCH_EXPIRED", "The Douyin batch confirmation expired.")
+            if not secrets.compare_digest(str(record.get("confirmation_phrase", "")), confirmation):
+                raise BridgeError("CONFIRMATION_MISMATCH", "The batch confirmation phrase does not match.")
+            action_ids: list[str] = []
+            for operation in record["operations"]:
+                action = self._new_action(
+                    data,
+                    action_type=douyin_bridge.ACTION_TYPES_BY_TOOL[str(operation["action"])],
+                    payload={**operation, "batch_id": batch_id},
+                    session_id=session_id,
+                    batch_id=batch_id,
+                )
+                action_ids.append(action["action_id"])
+            record["state"] = "queued"
+            record["action_ids"] = action_ids
+            self._append_evidence(data, "douyin_batch_queued", batch_id, {"action_count": len(action_ids)})
+            self._write(data)
+            return {"batch_id": batch_id, "state": "queued", "action_ids": action_ids, "operation_count": len(action_ids)}
+
+    def validate_douyin_batch_confirmation(
+        self, batch_id: str, confirmation: str, *, session_id: str | None = None
+    ) -> dict[str, Any]:
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if not isinstance(record, dict) or record.get("kind") != "douyin" or not self._scope_ok(record, session_id):
+                raise BridgeError("BATCH_NOT_FOUND", "The Douyin batch does not exist.")
+            if self._now() > float(record.get("expires_epoch", 0)):
+                record["state"] = "expired"
+                self._write(data)
+                raise BridgeError("BATCH_EXPIRED", "The Douyin batch confirmation expired.")
+            if not secrets.compare_digest(str(record.get("confirmation_phrase", "")), confirmation):
+                raise BridgeError("CONFIRMATION_MISMATCH", "The batch confirmation phrase does not match.")
+            if record.get("state") not in {"prepared", "queued", "partial"}:
+                raise BridgeError("BATCH_NOT_READY", "The Douyin batch is not ready for execution.", details={"state": record.get("state")})
+            return {"batch_id": batch_id, "state": record.get("state"), "operation_count": len(record.get("operations") or [])}
+
+    def douyin_batch_status(self, batch_id: str, *, session_id: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if not isinstance(record, dict) or record.get("kind") != "douyin" or not self._scope_ok(record, session_id):
+                raise BridgeError("BATCH_NOT_FOUND", "The Douyin batch does not exist.")
+            action_ids = [str(item) for item in record.get("action_ids") or []]
+            if not action_ids:
+                planned = len(record.get("operations") or [])
+                state = str(record.get("state", "prepared"))
+                return {
+                    "batch_id": batch_id,
+                    "state": state,
+                    "planned": planned,
+                    "counts": {
+                        "pending": planned if state == "queued" else 0,
+                        "claimed": 0,
+                        "completed": 0,
+                        "uncertain": 0,
+                        "failed": 0,
+                    },
+                    "changed": 0,
+                    "remaining": planned if state == "queued" else 0,
+                    "chunks": [],
+                    "results": [],
+                }
+        return self.interaction_batch_status(batch_id, session_id=session_id)
+
     def queue_follow_batch(
         self, batch_id: str, confirmation: str, *, session_id: str | None = None
     ) -> dict[str, Any]:
@@ -1033,6 +1171,43 @@ class BrowserBridge:
                 "state": "queued",
                 "action_ids": action_ids,
                 "operation_count": len(action_ids),
+            }
+
+    def validate_follow_batch_confirmation(
+        self, batch_id: str, confirmation: str, *, session_id: str | None = None
+    ) -> dict[str, Any]:
+        """Validate the confirmation for both first-run and resume paths.
+
+        The compact execute tool can resume a queued or partial batch. That
+        path must apply the same phrase and expiry checks as the queue path.
+        """
+
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if (
+                not isinstance(record, dict)
+                or record.get("kind") != "follow"
+                or not self._scope_ok(record, session_id)
+            ):
+                raise BridgeError("BATCH_NOT_FOUND", "The follow batch does not exist.")
+            if self._now() > float(record.get("expires_epoch", 0)):
+                if record.get("state") not in {"completed", "expired"}:
+                    record["state"] = "expired"
+                    self._write(data)
+                raise BridgeError("BATCH_EXPIRED", "The follow batch confirmation expired.")
+            if not secrets.compare_digest(str(record.get("confirmation_phrase", "")), confirmation):
+                raise BridgeError("CONFIRMATION_MISMATCH", "The batch confirmation phrase does not match.")
+            if record.get("state") not in {"prepared", "queued", "partial"}:
+                raise BridgeError(
+                    "BATCH_NOT_READY",
+                    "The follow batch is not ready for execution.",
+                    details={"state": record.get("state")},
+                )
+            return {
+                "batch_id": batch_id,
+                "state": record.get("state"),
+                "operation_count": len(record.get("operations") or []),
             }
 
     def follow_batch_status(
@@ -1502,6 +1677,12 @@ class BrowserBridge:
                 "state": str(result.get("state", "following")),
                 "changed": bool(result.get("changed", True)),
                 "mutual_verified": bool(payload.get("mutual_verified", False)),
+                "elapsed_seconds": (
+                    round(float(result["elapsed_seconds"]), 3)
+                    if isinstance(result.get("elapsed_seconds"), (int, float))
+                    and not isinstance(result.get("elapsed_seconds"), bool)
+                    else None
+                ),
             }
         if action_type == "reply_post":
             if result.get("verified") is not True:
@@ -1519,6 +1700,18 @@ class BrowserBridge:
                 "verified": True,
                 "changed": bool(result.get("changed", True)),
             }
+        if action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values():
+            action = next(
+                key for key, value in douyin_bridge.ACTION_TYPES_BY_TOOL.items()
+                if value == action_type
+            )
+            try:
+                validated = douyin_bridge.validate_result(
+                    {**payload, "action": action}, result
+                )
+            except douyin_bridge.DouyinBridgeError as exc:
+                raise BridgeError(exc.code, exc.message) from None
+            return validated
         raise BridgeError("INVALID_ACTION_TYPE", "Unknown action result type.")
 
     def public_write(self, record: dict[str, Any]) -> dict[str, Any]:
@@ -1852,6 +2045,39 @@ def _action_contract(action_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
                     "verified": {"type": "boolean"},
                     "changed": {"type": "boolean"},
                 },
+            },
+        )
+    if action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values():
+        action = next(
+            key for key, value in douyin_bridge.ACTION_TYPES_BY_TOOL.items()
+            if value == action_type
+        )
+        contract = douyin_bridge.compatibility_contract(action)
+        result_properties: dict[str, Any] = {
+            "target_url": {"type": "string"},
+            "target_id": {"type": "string"},
+            "verified": {"type": "boolean"},
+            "state": {"type": "string"},
+            "changed": {"type": "boolean"},
+        }
+        required = ["target_url", "target_id", "verified"]
+        if action == "comment":
+            result_properties.update({
+                "text": {"type": "string"},
+                "text_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            })
+            required.extend(["text", "text_sha256"])
+        return (
+            {
+                "executor": contract["executor"],
+                "steps": contract["steps"],
+                "unknown_result_policy": contract["unknown_result_policy"],
+                "untrusted_page_text": True,
+            },
+            {
+                "type": "object",
+                "required": required,
+                "properties": result_properties,
             },
         )
     raise BridgeError("INVALID_ACTION_TYPE", f"Unknown browser action type: {action_type}")

@@ -60,7 +60,7 @@ class BrowserCompatibilityContractTests(unittest.TestCase):
                 executor_context={"browser_family": "chromium"},
             )
         self.assertEqual(caught.exception.code, "INVALID_ACTION_RESULT")
-        stored = bridge.get_action(action["action_id"])
+        stored = bridge.get_action(action["action_id"], session_id=action["payload"].get("session_id"))
         self.assertEqual(stored["status"], "failed")
         self.assertNotEqual(stored.get("claim_token"), action["claim_token"])
         # The queue must stay usable after a rejection.
@@ -110,7 +110,7 @@ class BrowserCompatibilityContractTests(unittest.TestCase):
             ["visible handle matched"],
         )
 
-        reread = bridge.get_action(action["action_id"])
+        reread = bridge.get_action(action["action_id"], session_id="s1")
         self.assertEqual(reread["execution"], result["execution"])
 
     def test_sensitive_context_is_rejected(self) -> None:

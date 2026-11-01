@@ -485,10 +485,11 @@ class BrowserExecutorContractTests(unittest.TestCase):
                     "observation_id": "obs", "fingerprint_sha256": "a" * 64, "delta_y": 500,
                 }, session_id=session)["ok"])
                 self.assertTrue(app.call_tool("browser_close", {}, session_id=session)["ok"])
+                self.assertNotIn(session, app._browsers)
             self.assertEqual(factory.call_count, 2)
             app.close_browser_session("first")
             self.assertNotIn("first", app._browsers)
-            self.assertIn("second", app._browsers)
+            self.assertNotIn("second", app._browsers)
             app.close()
 
     def test_executor_capacity_is_bounded(self) -> None:

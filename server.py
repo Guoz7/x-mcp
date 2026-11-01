@@ -64,6 +64,8 @@ from write_store import WriteStore, WriteStoreError  # noqa: E402
 import composer  # noqa: E402
 import interaction_batch  # noqa: E402
 import follow_batch  # noqa: E402
+import douyin_batch  # noqa: E402
+import douyin_bridge  # noqa: E402
 
 
 class StarterError(Exception):
@@ -1438,7 +1440,8 @@ class XStarter:
                 "title": "Execute a confirmed mutual-follow batch",
                 "description": (
                     "Execute queued follows with one claim per target. The browser uses DOM locators first, "
-                    "reload verification, and an uncertain stop policy."
+                    "reload verification, and an uncertain stop policy. Optional clock and verified-success "
+                    "limits stop the run before claiming another action."
                 ),
                 "inputSchema": {
                     "type": "object",
@@ -1448,6 +1451,8 @@ class XStarter:
                         "lease_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 300},
                         "chunk": {"type": "integer", "minimum": 1, "maximum": 100},
                         "failure_policy": {"type": "string", "enum": ["stop", "continue"], "default": "stop"},
+                        "deadline_seconds": {"type": "integer", "minimum": 1, "maximum": 1200},
+                        "success_limit": {"type": "integer", "minimum": 1, "maximum": 200},
                     },
                     "required": ["batch_id", "confirmation"],
                     "additionalProperties": False,
@@ -1465,6 +1470,78 @@ class XStarter:
                     "additionalProperties": False,
                 },
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+            },
+            {
+                "name": "douyin_batch_plan",
+                "title": "Plan a bounded Douyin interaction batch",
+                "description": (
+                    "Plan up to 500 Douyin follows, likes, comments, or favorites from visible observations. "
+                    "Planning is read-only. Every action carries target evidence and a required postcondition check."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "targets": {"type": "array", "minItems": 1, "maxItems": 500, "items": {"type": "object"}},
+                        "chunk_size": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                        "budget_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 600},
+                        "allowed_actions": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["targets"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+            },
+            {
+                "name": "douyin_batch_prepare",
+                "title": "Prepare a Douyin interaction batch",
+                "description": "Create an expiring confirmation record for a Douyin plan. This does not open Douyin or write state.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"plan": {"type": "object"}, "ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 600}},
+                    "required": ["plan"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
+                "name": "douyin_batch_start",
+                "title": "Start a confirmed Douyin interaction batch",
+                "description": "Queue one leased action per Douyin target after exact confirmation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"batch_id": {"type": "string", "maxLength": 80}, "confirmation": {"type": "string", "maxLength": 40}},
+                    "required": ["batch_id", "confirmation"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+            },
+            {
+                "name": "douyin_batch_status",
+                "title": "Read Douyin interaction batch progress",
+                "description": "Return completed, uncertain, failed, and pending Douyin actions without retrying them.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"batch_id": {"type": "string", "maxLength": 80}},
+                    "required": ["batch_id"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
+            },
+            {
+                "name": "douyin_batch_execute",
+                "title": "Execute a confirmed Douyin interaction batch",
+                "description": "Execute leased Douyin actions with the built-in browser executor. Stop when the target or postcondition is uncertain; live logged-in Douyin validation is still required.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "batch_id": {"type": "string", "maxLength": 80},
+                        "confirmation": {"type": "string", "maxLength": 40},
+                        "failure_policy": {"type": "string", "enum": ["stop", "continue"], "default": "stop"},
+                    },
+                    "required": ["batch_id", "confirmation"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
             },
             {
                 "name": "account_summary",
@@ -1687,6 +1764,16 @@ class XStarter:
                 data = self._x_follow_batch_execute(scoped, trace)
             elif name == "x_follow_batch_status":
                 data = self._x_follow_batch_status(scoped, trace)
+            elif name == "douyin_batch_plan":
+                data = self._douyin_batch_plan(arguments, trace)
+            elif name == "douyin_batch_prepare":
+                data = self._douyin_batch_prepare(scoped, trace)
+            elif name == "douyin_batch_start":
+                data = self._douyin_batch_start(scoped, trace)
+            elif name == "douyin_batch_status":
+                data = self._douyin_batch_status(scoped, trace)
+            elif name == "douyin_batch_execute":
+                data = self._douyin_batch_execute(scoped, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -2206,7 +2293,11 @@ class XStarter:
 
     def _browser_close(self, arguments: dict[str, Any], trace: list[dict[str, Any]]) -> dict[str, Any]:
         self._bridge()
+        session_id = arguments.get("_mcp_session_id") or "stdio"
         self._browser_for(arguments).close()
+        # Closing the page must also release the exclusive owner profile.
+        # Otherwise the next DSH run creates a new MCP session and is refused.
+        self.close_browser_session(session_id)
         trace.append(_event("browser_executor", "browser_closed"))
         return {"closed": True}
 
@@ -2612,6 +2703,7 @@ class XStarter:
                     lease_expires_epoch=verified["lease_expires_epoch"],
                     action_type=action.get("type", ""),
                 )
+                browser_family = getattr(browser, "browser_family", "chromium")
                 result = browser.execute_x_action(
                     action_type=action["type"],
                     post_url=str(payload.get("post_url") or payload.get("url")),
@@ -2809,8 +2901,29 @@ class XStarter:
         chunk = arguments.get("chunk")
         if chunk is not None and (isinstance(chunk, bool) or not isinstance(chunk, int) or not 1 <= chunk <= 100):
             raise StarterError("INVALID_ARGUMENT", "chunk must be an integer from 1 to 100.")
+        deadline_seconds = arguments.get("deadline_seconds")
+        if deadline_seconds is not None:
+            if (
+                isinstance(deadline_seconds, bool)
+                or not isinstance(deadline_seconds, int)
+                or not 1 <= deadline_seconds <= 1200
+            ):
+                raise StarterError("INVALID_ARGUMENT", "deadline_seconds must be an integer from 1 to 1200.")
+        success_limit = arguments.get("success_limit")
+        if success_limit is not None:
+            if (
+                isinstance(success_limit, bool)
+                or not isinstance(success_limit, int)
+                or not 1 <= success_limit <= 200
+            ):
+                raise StarterError("INVALID_ARGUMENT", "success_limit must be an integer from 1 to 200.")
         session_id = arguments.get("_mcp_session_id")
         try:
+            # Resume calls must enforce the same confirmation and expiry gate
+            # as the initial queue call.
+            self._bridge().validate_follow_batch_confirmation(
+                batch_id, confirmation, session_id=session_id
+            )
             queued = self._bridge().queue_follow_batch(batch_id, confirmation, session_id=session_id)
         except BridgeError as exc:
             if exc.code != "BATCH_NOT_READY":
@@ -2835,8 +2948,18 @@ class XStarter:
 
         results: list[dict[str, Any]] = []
         started = time.monotonic()
+        deadline_at = started + deadline_seconds if deadline_seconds is not None else None
+        verified_changed = 0
+        deadline_reached = False
+        success_limit_reached = False
         browser = None
         for _ in action_ids:
+            if success_limit is not None and verified_changed >= success_limit:
+                success_limit_reached = True
+                break
+            if deadline_at is not None and time.monotonic() >= deadline_at:
+                deadline_reached = True
+                break
             action = self._bridge().next_action(
                 lease_seconds=lease_seconds,
                 session_id=session_id,
@@ -2855,6 +2978,7 @@ class XStarter:
                     lease_expires_epoch=verified["lease_expires_epoch"],
                     action_type=action.get("type", ""),
                 )
+                browser_family = getattr(browser, "browser_family", "chromium")
                 result = browser.execute_x_action(
                     action_type=action["type"],
                     post_url=str(payload.get("profile_url")),
@@ -2870,18 +2994,26 @@ class XStarter:
                     outcome="succeeded",
                     result=result,
                     error=None,
-                    executor_context={"browser_family": "chromium", "host": "x.com", "mode": "browser", "page_kind": "x_profile"},
+                    executor_context={"browser_family": browser_family, "host": "x.com", "mode": "browser", "page_kind": "x_profile"},
                     locator_strategy=result.get("locator_strategy", "dom"),
                     session_id=session_id,
                 )
                 results.append({"action_id": action["action_id"], "status": completed["status"], "result": completed.get("result")})
+                if (
+                    completed["status"] == "completed"
+                    and isinstance(completed.get("result"), dict)
+                    and completed["result"].get("changed") is True
+                    and completed["result"].get("verified") is True
+                    and completed["result"].get("state") == "following"
+                ):
+                    verified_changed += 1
             except (BridgeError, ExecutorError, StarterError) as exc:
                 error = {"code": getattr(exc, "code", "ACTION_UNCERTAIN"), "message": str(exc)}
                 try:
                     self._bridge().complete_action(
                         action_id=action["action_id"], claim_token=action["claim_token"], outcome="uncertain", result=None,
                         error=error,
-                        executor_context={"browser_family": "chromium", "host": "x.com", "mode": "browser", "page_kind": "x_profile"},
+                        executor_context={"browser_family": getattr(browser, "browser_family", "chromium"), "host": "x.com", "mode": "browser", "page_kind": "x_profile"},
                         session_id=session_id,
                     )
                 except BridgeError:
@@ -2905,6 +3037,11 @@ class XStarter:
             "continued_after_uncertainty": failure_policy == "continue" and any(item["status"] == "uncertain" for item in results),
             "failure_policy": failure_policy,
             "browser_closed": True,
+            "deadline_seconds": deadline_seconds,
+            "deadline_reached": deadline_reached,
+            "success_limit": success_limit,
+            "success_limit_reached": success_limit_reached,
+            "verified_changed": verified_changed,
         }
 
     def _x_follow_batch_status(
@@ -2917,6 +3054,134 @@ class XStarter:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
         trace.append(_event("browser_executor", "follow_batch_status_read", batch_id=batch_id, state=result["state"], remaining=result["remaining"]))
         return result
+
+    def _douyin_batch_plan(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        try:
+            result = douyin_batch.plan_batch(
+                arguments.get("targets"),
+                chunk_size=_bounded_int(arguments, "chunk_size", default=20, minimum=1, maximum=50),
+                budget_seconds=_bounded_int(arguments, "budget_seconds", default=600, minimum=1, maximum=600),
+                allowed_actions=arguments.get("allowed_actions"),
+            )
+        except douyin_batch.DouyinBatchPlanError as exc:
+            raise StarterError("INVALID_DOUYIN_BATCH", str(exc)) from None
+        trace.append(_event("douyin_adapter", "batch_planned", operations=result["operation_count"], external_call=False))
+        return result
+
+    def _douyin_batch_prepare(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        try:
+            result = self._bridge().prepare_douyin_batch(
+                arguments.get("plan"),
+                session_id=arguments.get("_mcp_session_id"),
+                ttl_seconds=_bounded_int(arguments, "ttl_seconds", default=600, minimum=60, maximum=600),
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("auth_boundary", "douyin_batch_prepared", batch_id=result["batch_id"], operation_count=result["operation_count"]))
+        return result
+
+    def _douyin_batch_start(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        batch_id = _required_string(arguments, "batch_id", max_length=80)
+        confirmation = _required_string(arguments, "confirmation", max_length=40)
+        try:
+            result = self._bridge().queue_douyin_batch(
+                batch_id, confirmation, session_id=arguments.get("_mcp_session_id")
+            )
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("auth_boundary", "douyin_batch_queued", batch_id=batch_id, operation_count=result["operation_count"]))
+        return result
+
+    def _douyin_batch_status(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        batch_id = _required_string(arguments, "batch_id", max_length=80)
+        try:
+            result = self._bridge().douyin_batch_status(batch_id, session_id=arguments.get("_mcp_session_id"))
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("browser_bridge", "douyin_batch_status_read", batch_id=batch_id, state=result["state"], remaining=result["remaining"]))
+        return result
+
+    def _douyin_batch_execute(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        batch_id = _required_string(arguments, "batch_id", max_length=80)
+        confirmation = _required_string(arguments, "confirmation", max_length=40)
+        failure_policy = arguments.get("failure_policy", "stop")
+        if failure_policy not in {"stop", "continue"}:
+            raise StarterError("INVALID_ARGUMENT", "failure_policy must be stop or continue.")
+        session_id = arguments.get("_mcp_session_id")
+        bridge = self._bridge()
+        try:
+            bridge.validate_douyin_batch_confirmation(batch_id, confirmation, session_id=session_id)
+            try:
+                queued = bridge.queue_douyin_batch(batch_id, confirmation, session_id=session_id)
+            except BridgeError as exc:
+                if exc.code != "BATCH_NOT_READY":
+                    raise
+                state = bridge.douyin_batch_status(batch_id, session_id=session_id)
+                if state.get("state") not in {"queued", "partial"}:
+                    raise
+                queued = {"batch_id": batch_id, "operation_count": state["planned"], "action_ids": [item["action_id"] for item in state["results"]]}
+        except BridgeError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+
+        results: list[dict[str, Any]] = []
+        started = time.monotonic()
+        for _ in queued["action_ids"]:
+            action = bridge.next_action(lease_seconds=300, session_id=session_id, batch_id=batch_id)
+            if action is None:
+                break
+            browser = self._browser_for(arguments)
+            payload = action.get("payload") or {}
+            try:
+                verified = bridge.verify_claim(action["action_id"], action["claim_token"], session_id=session_id)
+                browser.authorize_douyin_action(
+                    action_id=action["action_id"], claim_token=action["claim_token"],
+                    lease_expires_epoch=verified["lease_expires_epoch"], action_type=action["type"],
+                )
+                result = browser.execute_douyin_action(
+                    action_type=action["type"], target_url=str(payload.get("url")),
+                    target_id=str(payload.get("target_id")), text=payload.get("text"),
+                    action_id=action["action_id"], claim_token=action["claim_token"],
+                    lease_expires_epoch=verified["lease_expires_epoch"],
+                )
+                completed = bridge.complete_action(
+                    action_id=action["action_id"], claim_token=action["claim_token"],
+                    outcome="succeeded", result=result, error=None,
+                    executor_context={"browser_family": getattr(browser, "browser_family", "chromium"), "host": "douyin.com", "mode": "browser", "page_kind": "douyin_video"},
+                    locator_strategy=result.get("locator_strategy", "dom"), session_id=session_id,
+                )
+                results.append({"action_id": action["action_id"], "status": completed["status"], "result": completed.get("result")})
+            except (BridgeError, ExecutorError, StarterError) as exc:
+                error = {"code": getattr(exc, "code", "ACTION_UNCERTAIN"), "message": str(exc)}
+                try:
+                    bridge.complete_action(
+                        action_id=action["action_id"], claim_token=action["claim_token"],
+                        outcome="uncertain", result=None, error=error,
+                        executor_context={"browser_family": getattr(browser, "browser_family", "chromium"), "host": "douyin.com", "mode": "browser", "page_kind": "douyin_video"},
+                        session_id=session_id,
+                    )
+                except BridgeError:
+                    pass
+                results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
+                if failure_policy == "stop":
+                    break
+        trace.append(_event("browser_executor", "douyin_batch_executed", batch_id=batch_id, actions=len(results)))
+        return {
+            "batch_id": batch_id, "planned": queued["operation_count"], "processed": len(results),
+            "results": results, "elapsed_seconds": round(time.monotonic() - started, 3),
+            "stopped_on_uncertainty": any(item["status"] == "uncertain" for item in results),
+            "failure_policy": failure_policy, "browser_closed": False,
+            "disclosure": "The built-in Douyin executor is implemented but has not been validated against a live logged-in Douyin session. Each action still requires a fresh target check and a proven postcondition; otherwise it is recorded as uncertain.",
+        }
 
     def _require_connected(self) -> None:
         if not self.connected:

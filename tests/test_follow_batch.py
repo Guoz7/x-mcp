@@ -92,6 +92,27 @@ class FollowBatchTests(unittest.TestCase):
             status = bridge.follow_batch_status(queued["batch_id"], session_id="s1")
             self.assertEqual(status["counts"]["claimed"], 1)
 
+    def test_resume_confirmation_is_required_for_queued_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = BrowserBridge(directory, account_binding="owner-x")
+            prepared = bridge.prepare_follow_batch(plan_batch(targets(1)), session_id="s1")
+            queued = bridge.queue_follow_batch(
+                prepared["batch_id"], prepared["confirmation_phrase"], session_id="s1"
+            )
+            with self.assertRaises(BridgeError) as caught:
+                bridge.validate_follow_batch_confirmation(
+                    queued["batch_id"], "FOLLOW WRONG", session_id="s1"
+                )
+            self.assertEqual(caught.exception.code, "CONFIRMATION_MISMATCH")
+
+    def test_scoped_batch_is_not_visible_to_unscoped_caller(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = BrowserBridge(directory, account_binding="owner-x")
+            prepared = bridge.prepare_follow_batch(plan_batch(targets(1)), session_id="s1")
+            with self.assertRaises(BridgeError) as caught:
+                bridge.follow_batch_status(prepared["batch_id"])
+            self.assertEqual(caught.exception.code, "BATCH_NOT_FOUND")
+
     def test_follow_result_requires_exact_target_and_verified_state(self):
         with tempfile.TemporaryDirectory() as directory:
             bridge = BrowserBridge(directory)
@@ -115,6 +136,145 @@ class FollowBatchTests(unittest.TestCase):
                     session_id="s1",
                 )
             self.assertEqual(caught.exception.code, "ACCOUNT_MISMATCH")
+
+    def test_follow_result_keeps_browser_action_timing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = BrowserBridge(directory)
+            prepared = bridge.prepare_follow_batch(plan_batch(targets(1)), session_id="s1")
+            queued = bridge.queue_follow_batch(
+                prepared["batch_id"], prepared["confirmation_phrase"], session_id="s1"
+            )
+            action = bridge.next_action(
+                batch_id=queued["batch_id"], session_id="s1", lease_seconds=60
+            )
+            completed = bridge.complete_action(
+                action_id=action["action_id"],
+                claim_token=action["claim_token"],
+                outcome="succeeded",
+                result={
+                    "handle": "user0",
+                    "profile_url": "https://x.com/user0",
+                    "verified": True,
+                    "state": "following",
+                    "changed": True,
+                    "elapsed_seconds": 4.321,
+                },
+                error=None,
+                session_id="s1",
+            )
+            self.assertEqual(completed["result"]["elapsed_seconds"], 4.321)
+
+    def test_execute_tool_records_success_without_name_error(self):
+        # Regression: the success path referenced an undefined browser_family,
+        # so every verified follow was recorded as uncertain and the batch stopped.
+        from unittest.mock import patch
+
+        from server import XStarter
+
+        app = XStarter(mode="browser", environ={"X_STARTER_ENABLE_BROWSER": "1"})
+        try:
+            prepared = app._bridge().prepare_follow_batch(plan_batch(targets(2)), session_id="s1")
+
+            def follow(**kwargs):
+                handle = kwargs["author"]
+                return {
+                    "handle": handle,
+                    "profile_url": f"https://x.com/{handle}",
+                    "verified": True,
+                    "state": "following",
+                    "changed": True,
+                    "locator_strategy": "dom",
+                }
+
+            with patch.object(app, "_browser_for") as browser_for:
+                browser_for.return_value.browser_family = "chromium"
+                browser_for.return_value.execute_x_action.side_effect = follow
+                data = app._x_follow_batch_execute(
+                    {
+                        "batch_id": prepared["batch_id"],
+                        "confirmation": prepared["confirmation_phrase"],
+                        "_mcp_session_id": "s1",
+                    },
+                    [],
+                )
+            self.assertEqual(data["processed"], 2)
+            self.assertEqual([item["status"] for item in data["results"]], ["completed", "completed"])
+            self.assertFalse(data["stopped_on_uncertainty"])
+        finally:
+            app.close()
+
+    def test_execute_tool_stops_at_verified_success_limit(self):
+        from unittest.mock import patch
+
+        from server import XStarter
+
+        app = XStarter(mode="browser", environ={"X_STARTER_ENABLE_BROWSER": "1"})
+        try:
+            prepared = app._bridge().prepare_follow_batch(plan_batch(targets(5)), session_id="s1")
+
+            def follow(**kwargs):
+                handle = kwargs["author"]
+                return {
+                    "handle": handle,
+                    "profile_url": f"https://x.com/{handle}",
+                    "verified": True,
+                    "state": "following",
+                    "changed": True,
+                    "locator_strategy": "dom",
+                }
+
+            with patch.object(app, "_browser_for") as browser_for:
+                browser_for.return_value.browser_family = "chromium"
+                browser_for.return_value.execute_x_action.side_effect = follow
+                data = app._x_follow_batch_execute(
+                    {
+                        "batch_id": prepared["batch_id"],
+                        "confirmation": prepared["confirmation_phrase"],
+                        "failure_policy": "continue",
+                        "success_limit": 3,
+                        "_mcp_session_id": "s1",
+                    },
+                    [],
+                )
+            self.assertEqual(data["processed"], 3)
+            self.assertEqual(
+                [item["status"] for item in data["results"]],
+                ["completed", "completed", "completed"],
+            )
+            self.assertEqual(data["verified_changed"], 3)
+            self.assertTrue(data["success_limit_reached"])
+            self.assertFalse(data["deadline_reached"])
+        finally:
+            app.close()
+
+    def test_execute_tool_checks_deadline_before_claiming(self):
+        from unittest.mock import patch
+
+        from server import XStarter
+
+        app = XStarter(mode="browser", environ={"X_STARTER_ENABLE_BROWSER": "1"})
+        try:
+            prepared = app._bridge().prepare_follow_batch(plan_batch(targets(2)), session_id="s1")
+            clock = iter([0.0, 2.0])
+
+            def monotonic():
+                return next(clock, 2.0)
+
+            with patch("server.time.monotonic", side_effect=monotonic):
+                data = app._x_follow_batch_execute(
+                    {
+                        "batch_id": prepared["batch_id"],
+                        "confirmation": prepared["confirmation_phrase"],
+                        "deadline_seconds": 1,
+                        "_mcp_session_id": "s1",
+                    },
+                    [],
+                )
+            self.assertEqual(data["processed"], 0)
+            self.assertTrue(data["deadline_reached"])
+            self.assertFalse(data["success_limit_reached"])
+        finally:
+            app.close()
 
 
 if __name__ == "__main__":

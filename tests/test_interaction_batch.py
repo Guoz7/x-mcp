@@ -145,7 +145,7 @@ class InteractionBatchTests(unittest.TestCase):
             )
             self.assertEqual(started["operation_count"], 31)
             self.assertEqual(len(started["action_ids"]), 31)
-            action_types = [bridge.get_action(item)["type"] for item in started["action_ids"]]
+            action_types = [bridge.get_action(item, session_id="s1")["type"] for item in started["action_ids"]]
             self.assertEqual(action_types.count("like_post"), 20)
             self.assertEqual(action_types.count("repost_post"), 1)
             self.assertEqual(action_types.count("reply_post"), 10)
