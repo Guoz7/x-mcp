@@ -1685,7 +1685,9 @@ class Browser:
                     })();
                     const follow = scoped.filter(button => /-follow$/.test(button.getAttribute('data-testid') || '')
                         && !/-unfollow$/.test(button.getAttribute('data-testid') || ''));
-                    const unfollow = scoped.filter(button => /-unfollow$/.test(button.getAttribute('data-testid') || ''));
+                    const unfollow = scoped.filter(button => /-unfollow$/.test(button.getAttribute('data-testid') || '')
+                        || /^Following\\s+@/i.test((button.getAttribute('aria-label') || '').trim())
+                        || /^Following$/i.test((button.innerText || '').trim()));
                     const pending = scoped.find(button => /pending/i.test(button.innerText || button.getAttribute('aria-label') || ''));
                     if (scoped.length > 1) {
                         return {
@@ -1734,7 +1736,7 @@ class Browser:
         started = time.monotonic()
         self._consume_x_grant(self.X_CLICK_ACTIONS)
         self.page.locator(f'[data-testid="{current["follow_testid"]}"]').click(timeout=8000)
-        self.page.wait_for_timeout(100)
+        self.page.wait_for_timeout(350)
 
         after = state()
         deadline = time.monotonic() + 8.0
@@ -1745,17 +1747,32 @@ class Browser:
         # A visual state can be optimistic. Reload once, without clicking again,
         # so the result reflects the account state X returns after navigation.
         self.page.reload(wait_until="commit", timeout=15000)
-        self.page.wait_for_timeout(150)
+        self.page.wait_for_timeout(500)
         self._wait_for_initial_content(profile_url)
         verified_state = state()
-        deadline = time.monotonic() + 8.0
+        deadline = time.monotonic() + 12.0
         while not verified_state["unfollow_testid"] and not verified_state["pending"] and time.monotonic() < deadline:
             self.page.wait_for_timeout(250)
             verified_state = state()
+        # X can acknowledge the follow on the first SPA response but serve a
+        # stale profile payload on the first reload. A second read-only reload
+        # is safe because it never clicks the follow control again.
+        if not verified_state["unfollow_testid"] and not verified_state["pending"]:
+            self.page.reload(wait_until="commit", timeout=15000)
+            self.page.wait_for_timeout(500)
+            self._wait_for_initial_content(profile_url)
+            verified_state = state()
+            deadline = time.monotonic() + 12.0
+            while not verified_state["unfollow_testid"] and not verified_state["pending"] and time.monotonic() < deadline:
+                self.page.wait_for_timeout(250)
+                verified_state = state()
         if not verified_state["unfollow_testid"]:
             if verified_state["pending"]:
                 raise ExecutorError("FOLLOW_PENDING", "The profile shows a pending follow request after reload.")
-            raise ExecutorError("ACTION_UNCERTAIN", "The follow state was not proven after reload.")
+            raise self._visual_fallback_error(
+                "The follow state was not proven after reload; visual fallback is required.",
+                page_kind="x_profile",
+            )
         return {
             "handle": handle,
             "profile_url": f"https://x.com/{handle}",
