@@ -1,5 +1,8 @@
 # X MCP
 
+语言：English · [简体中文](README.zh-CN.md)
+
+
 让任何支持 MCP 的 Agent 读取 X、准备社交动作，并在确认后完成可复验的操作。
 
 X MCP 提供两条路径：
@@ -262,3 +265,5 @@ python -I -X utf8 firefox_only_e2e.py
 请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md)、[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) 和 [`LICENSE-DECISION.md`](LICENSE-DECISION.md)。
 
 GitHub：<https://github.com/Guoz7/x-mcp>
+
+
