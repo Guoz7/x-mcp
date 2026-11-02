@@ -489,7 +489,7 @@ class BrowserBridge:
 
     def record_timeline(self, posts: list[dict[str, Any]]) -> dict[str, Any]:
         cleaned: list[dict[str, Any]] = []
-        for post in posts[:50]:
+        for post in posts[:200]:
             if not isinstance(post, dict):
                 continue
             url = str(post.get("url", "")).strip()
@@ -816,9 +816,9 @@ class BrowserBridge:
         if not isinstance(plan, dict) or plan.get("status") != "planned_not_executed":
             raise BridgeError("INVALID_BATCH", "Prepare requires a planner result.")
         operations = plan.get("operations")
-        if not isinstance(operations, list) or not 1 <= len(operations) <= 410:
-            raise BridgeError("INVALID_BATCH", "The batch must contain from 1 to 410 operations.")
-        limits = {"like": 200, "repost": 10, "reply": 200}
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 500:
+            raise BridgeError("INVALID_BATCH", "The batch must contain from 1 to 500 operations.")
+        limits = {"like": 200, "repost": 100, "reply": 200}
         counts = {
             key: sum(1 for item in operations if isinstance(item, dict) and item.get("action") == key)
             for key in limits
@@ -1557,7 +1557,7 @@ class BrowserBridge:
             if not isinstance(posts, list):
                 raise BridgeError("INVALID_ACTION_RESULT", "posts must be an array.")
             cleaned: list[dict[str, Any]] = []
-            for post in posts[:50]:
+            for post in posts[:200]:
                 if not isinstance(post, dict):
                     raise BridgeError("INVALID_ACTION_RESULT", "Each post must be an object.")
                 try:

@@ -845,8 +845,8 @@ class XStarter:
                         "limit": {
                             "type": "integer",
                             "minimum": 1,
-                            "maximum": 50,
-                            "default": 20,
+                            "maximum": 200,
+                            "default": 50,
                         },
                     },
                     "additionalProperties": False,
@@ -1184,8 +1184,8 @@ class XStarter:
                         "limit": {
                             "type": "integer",
                             "minimum": 1,
-                            "maximum": 50,
-                            "default": 20,
+                            "maximum": 200,
+                            "default": 50,
                         },
                     },
                     "required": ["target"],
@@ -1225,7 +1225,7 @@ class XStarter:
                 "name": "x_interaction_batch_plan",
                 "title": "Plan a bounded X interaction batch",
                 "description": (
-                    "Select distinct timeline targets for up to 200 likes, up to 10 reposts, and up to 200 replies. "
+                    "Select distinct timeline targets for up to 200 likes, up to 100 reposts, and up to 200 replies. "
                     "Operations are split into numbered chunks so a caller can confirm and run one chunk at a time. "
                     "Planning is read-only and does not open X or perform an interaction. "
                     "The one-minute target remains unverified until a compatible executor passes live acceptance."
@@ -1250,7 +1250,7 @@ class XStarter:
                         },
                         "reply_texts": {"type": "array", "maxItems": 200, "items": {"type": "string", "minLength": 1, "maxLength": 280}},
                         "like_count": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
-                        "repost_count": {"type": "integer", "minimum": 0, "maximum": 10, "default": 1},
+                        "repost_count": {"type": "integer", "minimum": 0, "maximum": 100, "default": 1},
                         "reply_count": {"type": "integer", "minimum": 0, "maximum": 200, "default": 10},
                         "budget_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 60},
                         "chunk_size": {
@@ -1967,8 +1967,8 @@ class XStarter:
         session_id = arguments.get("_mcp_session_id")
         if not isinstance(refresh, bool):
             raise StarterError("INVALID_ARGUMENT", "refresh must be a boolean.")
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
-            raise StarterError("INVALID_ARGUMENT", "limit must be an integer from 1 to 50.")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            raise StarterError("INVALID_ARGUMENT", "limit must be an integer from 1 to 200.")
         if self.mode == "mock":
             self.connected = True
             return {
@@ -2447,7 +2447,7 @@ class XStarter:
         target = arguments.get("target")
         if target not in {"account", "timeline"}:
             raise StarterError("INVALID_ARGUMENT", "target must be account or timeline.")
-        limit = _bounded_int(arguments, "limit", default=20, minimum=1, maximum=50)
+        limit = _bounded_int(arguments, "limit", default=50, minimum=1, maximum=200)
         session_id = arguments.get("_mcp_session_id")
         bridge = self._bridge()
         action_type = "observe_account" if target == "account" else "observe_timeline"
@@ -2596,7 +2596,7 @@ class XStarter:
                 arguments.get("posts"),
                 reply_texts=arguments.get("reply_texts", []),
                 like_count=_bounded_int(arguments, "like_count", default=20, minimum=1, maximum=200),
-                repost_count=_bounded_int(arguments, "repost_count", default=1, minimum=0, maximum=10),
+                repost_count=_bounded_int(arguments, "repost_count", default=1, minimum=0, maximum=100),
                 reply_count=_bounded_int(arguments, "reply_count", default=10, minimum=0, maximum=200),
                 budget_seconds=_bounded_int(arguments, "budget_seconds", default=60, minimum=1, maximum=600),
                 chunk_size=_bounded_int(arguments, "chunk_size", default=20, minimum=1, maximum=50),

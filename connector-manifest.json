@@ -612,7 +612,7 @@
         "Set X_STARTER_BROWSER_FAMILY=firefox to enforce a Firefox-only controlled experiment.",
         "Completion accepts safe executor context, locator strategy, and pre/postcondition evidence; sensitive context is rejected.",
         "A page that cannot be proven is reported as uncertain, never retried.",
-        "The interaction batch queues 20 likes, 1 repost, and 10 replies as separate actions; live completion still needs a visual-capable executor.",
+            "The interaction batch queues bounded likes, up to 100 reposts, and replies as separate actions; live completion still needs a visual-capable executor.",
         "Follow batches re-check the profile after reload; pending or uncertain states are not counted as completed."
       ],
       "tool_mapping": {

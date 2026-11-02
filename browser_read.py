@@ -312,18 +312,24 @@ def read_timeline(
 
         # Keep the read bounded. If a mock or an older executor does not
         # expose observation-bound scrolling, return the evidence already seen.
-        if scrolls >= 20:
-            break
-        observation_id = home.get("observation_id")
-        fingerprint = home.get("fingerprint_sha256")
-        if not isinstance(observation_id, str) or not isinstance(fingerprint, str):
+        if scrolls >= 60:
             break
         try:
-            next_home = browser.scroll(
-                observation_id=observation_id,
-                fingerprint_sha256=fingerprint,
-                delta_y=900,
-            )
+            # Keep feed pagination inside the trusted browser reader. X can
+            # rerender between MCP turns, which makes caller-held fingerprints
+            # stale even though the page is still usable.
+            if hasattr(browser, "scroll_current"):
+                next_home = browser.scroll_current(delta_y=1200)
+            else:
+                observation_id = home.get("observation_id")
+                fingerprint = home.get("fingerprint_sha256")
+                if not isinstance(observation_id, str) or not isinstance(fingerprint, str):
+                    break
+                next_home = browser.scroll(
+                    observation_id=observation_id,
+                    fingerprint_sha256=fingerprint,
+                    delta_y=1200,
+                )
         except ExecutorError:
             break
         if not isinstance(next_home, dict):

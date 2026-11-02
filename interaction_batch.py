@@ -24,9 +24,9 @@ class BatchPlanError(ValueError):
 # Per-batch ceilings. A caller that wants more splits the work into several
 # confirmed batches; there is no silent truncation.
 MAX_LIKES = 200
-MAX_REPOSTS = 10
+MAX_REPOSTS = 100
 MAX_REPLIES = 200
-MAX_OPERATIONS = 410
+MAX_OPERATIONS = 500
 DEFAULT_CHUNK_SIZE = 20
 
 

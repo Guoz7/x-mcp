@@ -620,6 +620,36 @@ class Browser:
             lambda: self._scroll_impl(observation_id, fingerprint_sha256, delta_y)
         )
 
+    def scroll_current(self, *, delta_y: int) -> dict[str, Any]:
+        """Scroll a read-only feed from the executor's current page state.
+
+        Feed pages can rerender between an observation and the next MCP turn.
+        The server-side reader owns this call, so it can refresh the observation
+        immediately before scrolling instead of asking an agent to replay stale
+        fingerprints.
+        """
+        if isinstance(delta_y, bool) or not isinstance(delta_y, int) or not -2000 <= delta_y <= 2000:
+            raise ExecutorError("INVALID_ARGUMENT", "delta_y must be an integer between -2000 and 2000.")
+        return self._run_on_worker(lambda: self._scroll_current_impl(delta_y))
+
+    def _scroll_current_impl(self, delta_y: int) -> dict[str, Any]:
+        self._observe_impl()
+        self.observation_id = None
+        self.visual_observation_id = None
+        self.visual_digest = None
+        try:
+            self.page.evaluate(
+                "delta => window.scrollBy({top: delta, left: 0, behavior: 'instant'})",
+                delta_y,
+            )
+            self.page.wait_for_timeout(300)
+            return self._observe_impl()
+        except Exception as exc:
+            raise ExecutorError(
+                "ACTION_UNCERTAIN",
+                "Read-only feed scroll failed; observe again before continuing.",
+            ) from exc
+
     def _scroll_impl(self, observation_id: str, fingerprint_sha256: str,
                      delta_y: int) -> dict[str, Any]:
         self._assert_observation(observation_id, fingerprint_sha256)
