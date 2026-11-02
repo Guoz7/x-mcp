@@ -309,6 +309,9 @@ class XStarter:
         )
         self._owner_session: str | None = None
         self._browser_closed = False
+        # Keep planner output server-side so large batches do not need to be
+        # echoed through the model before confirmation.
+        self._follow_plans: dict[tuple[str | None, str], dict[str, Any]] = {}
 
     def _profile_root(self, state_dir: str) -> Path:
         """Keep disposable Chromium profiles off slow removable media.
@@ -1413,9 +1416,10 @@ class XStarter:
                     "type": "object",
                     "properties": {
                         "plan": {"type": "object"},
+                        "batch_id": {"type": "string", "maxLength": 80},
                         "ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 600},
                     },
-                    "required": ["plan"],
+                    "required": [],
                     "additionalProperties": False,
                 },
                 "annotations": {"readOnlyHint": True, "idempotentHint": False, "openWorldHint": False},
@@ -2863,14 +2867,30 @@ class XStarter:
             "x_adapter", "follow_batch_planned",
             operations=result["operation_count"], external_call=False,
         ))
+        self._follow_plans[(arguments.get("_mcp_session_id"), result["batch_id"])] = result
         return result
 
     def _x_follow_batch_prepare(
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]
     ) -> dict[str, Any]:
+        plan = arguments.get("plan")
+        if plan is None:
+            plan_id = _required_string(arguments, "batch_id", max_length=80)
+            plan = self._follow_plans.get((arguments.get("_mcp_session_id"), plan_id))
+            if plan is None:
+                # Some MCP clients open a fresh HTTP session for each request.
+                # The planner id is random and already scopes the exact plan,
+                # so allow prepare to recover it across transport sessions.
+                plan = next(
+                    (candidate for (stored_session, stored_id), candidate in self._follow_plans.items()
+                     if stored_id == plan_id),
+                    None,
+                )
+            if plan is None:
+                raise StarterError("INVALID_BATCH", "The follow planner result is missing.")
         try:
             result = self._bridge().prepare_follow_batch(
-                arguments.get("plan"),
+                plan,
                 session_id=arguments.get("_mcp_session_id"),
                 ttl_seconds=_bounded_int(arguments, "ttl_seconds", default=600, minimum=60, maximum=600),
             )
