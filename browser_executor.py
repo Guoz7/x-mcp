@@ -260,10 +260,11 @@ def _audit(event: dict[str, Any]) -> None:
 
 
 class ExecutorError(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = dict(details or {})
 
 
 def _json(value: Any) -> bytes:
@@ -1040,6 +1041,35 @@ class Browser:
             self.visual_observation_id = None
             raise ExecutorError("OBSERVATION_STALE", "Visible pixels changed; take a new observation and screenshot.")
 
+    def _visual_fallback_error(self, message: str, *, page_kind: str) -> ExecutorError:
+        """Tell the caller exactly how to continue without guessing a click."""
+
+        # The batch fast path has no vision model. Return a structured handoff
+        # so an MCP agent can inspect a fresh screenshot and use browser_click.
+        try:
+            image = self.page.screenshot(type="png", full_page=False)
+            digest = hashlib.sha256(image).hexdigest()
+            observation = self._observe_impl()
+            self.visual_observation_id = observation["observation_id"]
+            self.visual_digest = digest
+            fallback = {
+                "required": True,
+                "page_kind": page_kind,
+                "observation_id": observation["observation_id"],
+                "fingerprint_sha256": observation["fingerprint_sha256"],
+                "screenshot_sha256": digest,
+                "next_tools": ["browser_screenshot", "browser_click"],
+                "instruction": "Inspect the fresh screenshot. Click only the target control, then reload and verify.",
+            }
+        except Exception:
+            fallback = {
+                "required": True,
+                "page_kind": page_kind,
+                "next_tools": ["browser_observe", "browser_screenshot", "browser_click"],
+                "instruction": "Obtain a fresh observation and screenshot before any coordinate click.",
+            }
+        return ExecutorError("ACTION_UNCERTAIN", message, details={"visual_fallback": fallback})
+
     def _dispatch_click(
         self, selector: str | None, x_ratio: float | None, y_ratio: float | None
     ) -> dict[str, Any]:
@@ -1388,10 +1418,9 @@ class Browser:
             self.page.wait_for_timeout(250)
             target = find_target()
         if target.count() != 1:
-            self.page.screenshot(type="png", full_page=False)
-            raise ExecutorError(
-                "ACTION_UNCERTAIN",
+            raise self._visual_fallback_error(
                 "The exact X status article was not uniquely located; screenshot fallback is required.",
+                page_kind="x_status",
             )
 
         def one(selector: str) -> Any:
@@ -1428,10 +1457,9 @@ class Browser:
                     "locator_strategy": "dom",
                 }
             if control is None:
-                self.page.screenshot(type="png", full_page=False)
-                raise ExecutorError(
-                    "ACTION_UNCERTAIN",
+                raise self._visual_fallback_error(
                     "The X interaction control was not uniquely exposed; screenshot fallback is required.",
+                    page_kind="x_status",
                 )
             self._consume_x_grant(self.X_CLICK_ACTIONS)
             control.click(timeout=5000)
@@ -1698,8 +1726,10 @@ class Browser:
         if current["pending"]:
             raise ExecutorError("FOLLOW_PENDING", "The profile shows a pending follow request, not a verified follow.")
         if not current["follow_testid"]:
-            self.page.screenshot(type="png", full_page=False)
-            raise ExecutorError("ACTION_UNCERTAIN", "The unique Follow control was not proven.")
+            raise self._visual_fallback_error(
+                "The unique Follow control was not proven; screenshot fallback is required.",
+                page_kind="x_profile",
+            )
 
         started = time.monotonic()
         self._consume_x_grant(self.X_CLICK_ACTIONS)

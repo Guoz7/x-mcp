@@ -76,6 +76,13 @@ timeline state, screenshot metadata, scroll result, and every error.
 
 ## 2c. One reversible like test
 
+If a write result contains `details.visual_fallback.required=true`, do not count
+the action as failed and do not retry it. Use the returned observation id and
+fingerprint with `browser_screenshot` and inspect the image. If the target control
+is visually unique, call `browser_click` once with the same observation fingerprint,
+then observe or reload and verify the postcondition. If image input is unavailable,
+leave the action uncertain and report the fallback handoff details.
+
 ```text
 Use only xstarter MCP and the tester's own signed-in X account.
 First perform x_owner_read with target="timeline" and limit=10.

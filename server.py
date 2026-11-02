@@ -2730,7 +2730,11 @@ class XStarter:
                 )
                 results.append({"action_id": action["action_id"], "status": completed["status"], "result": completed.get("result")})
             except (BridgeError, ExecutorError, StarterError) as exc:
-                error = {"code": getattr(exc, "code", "ACTION_UNCERTAIN"), "message": str(exc)}
+                error = {
+                    "code": getattr(exc, "code", "ACTION_UNCERTAIN"),
+                    "message": str(exc),
+                    "details": getattr(exc, "details", {}),
+                }
                 try:
                     self._bridge().complete_action(
                         action_id=action["action_id"],
@@ -3008,7 +3012,11 @@ class XStarter:
                 ):
                     verified_changed += 1
             except (BridgeError, ExecutorError, StarterError) as exc:
-                error = {"code": getattr(exc, "code", "ACTION_UNCERTAIN"), "message": str(exc)}
+                error = {
+                    "code": getattr(exc, "code", "ACTION_UNCERTAIN"),
+                    "message": str(exc),
+                    "details": getattr(exc, "details", {}),
+                }
                 try:
                     self._bridge().complete_action(
                         action_id=action["action_id"], claim_token=action["claim_token"], outcome="uncertain", result=None,
@@ -3161,7 +3169,11 @@ class XStarter:
                 )
                 results.append({"action_id": action["action_id"], "status": completed["status"], "result": completed.get("result")})
             except (BridgeError, ExecutorError, StarterError) as exc:
-                error = {"code": getattr(exc, "code", "ACTION_UNCERTAIN"), "message": str(exc)}
+                error = {
+                    "code": getattr(exc, "code", "ACTION_UNCERTAIN"),
+                    "message": str(exc),
+                    "details": getattr(exc, "details", {}),
+                }
                 try:
                     bridge.complete_action(
                         action_id=action["action_id"], claim_token=action["claim_token"],
