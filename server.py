@@ -3064,9 +3064,15 @@ class XStarter:
                     break
         if browser is not None:
             try:
-                browser.close()
+                # Execute owns the session-scoped browser. Release the owner
+                # slot as well as closing Chromium so the next MCP session
+                # can resume a queued batch after this call returns.
+                self.close_browser_session(session_id or "stdio")
             except Exception:
-                pass
+                try:
+                    browser.close()
+                except Exception:
+                    pass
         trace.append(_event("browser_executor", "follow_batch_executed", batch_id=batch_id, actions=len(results)))
         return {
             "batch_id": batch_id,
