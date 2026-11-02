@@ -35,6 +35,31 @@ from server import SessionRegistry, XStarter, handle_message  # noqa: E402
 
 
 class BrowserExecutorContractTests(unittest.TestCase):
+    def test_follow_response_timeout_never_repeats_click(self) -> None:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        class ResponseWait:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                raise PlaywrightTimeoutError("response not observed")
+
+        browser = Browser()
+        browser.page = Mock()
+        before = {"follow_testid": "123-follow", "unfollow_testid": None, "pending": False}
+        after = {"follow_testid": None, "unfollow_testid": "123-unfollow", "pending": False}
+        browser.page.evaluate.side_effect = [before, after, after]
+        browser.page.expect_response.return_value = ResponseWait()
+        browser._consume_x_grant = Mock()
+        browser._wait_for_initial_content = Mock()
+        result = browser._execute_follow_profile_impl(
+            profile_url="https://x.com/user0", handle="user0"
+        )
+        self.assertTrue(result["verified"])
+        browser.page.locator.return_value.click.assert_called_once()
+        browser.page.reload.assert_called_once()
+
     def test_login_classifier_prefers_login_wall_url_over_visible_text(self) -> None:
         self.assertEqual(
             classify("https://x.com/i/jf/onboarding/web?redirect_after_login=%2Fhome&mode=login", ""),

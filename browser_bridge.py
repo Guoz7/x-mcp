@@ -1670,7 +1670,7 @@ class BrowserBridge:
                 raise BridgeError("TARGET_MISMATCH", "The followed profile URL changed.")
             if result.get("verified") is not True:
                 raise BridgeError("FOLLOW_NOT_VERIFIED", "The follow state was not verified.")
-            return {
+            normalized = {
                 "handle": handle,
                 "profile_url": f"https://x.com/{handle}",
                 "verified": True,
@@ -1684,6 +1684,18 @@ class BrowserBridge:
                     else None
                 ),
             }
+            api_response = result.get("api_response")
+            if isinstance(api_response, dict):
+                method = api_response.get("method")
+                status = api_response.get("status")
+                path = api_response.get("path")
+                if method == "POST" and path == "/i/api/1.1/friendships/create.json":
+                    normalized["api_response"] = {
+                        "method": method,
+                        "path": path,
+                        "status": int(status) if isinstance(status, int) and not isinstance(status, bool) else None,
+                    }
+            return normalized
         if action_type == "reply_post":
             if result.get("verified") is not True:
                 raise BridgeError("INTERACTION_NOT_VERIFIED", "The reply was not verified.")

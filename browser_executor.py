@@ -1740,6 +1740,7 @@ class Browser:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         api_response = None
+        click_started = False
         try:
             with self.page.expect_response(
                 lambda response: (
@@ -1748,6 +1749,7 @@ class Browser:
                 ),
                 timeout=10000,
             ) as response_info:
+                click_started = True
                 self.page.locator(f'[data-testid="{current["follow_testid"]}"]').click(timeout=8000)
             response = response_info.value
             api_response = {
@@ -1758,7 +1760,10 @@ class Browser:
         except PlaywrightTimeoutError:
             # Keep the existing DOM and reload verification as the source of
             # truth when X does not expose the write response to Playwright.
-            self.page.locator(f'[data-testid="{current["follow_testid"]}"]').click(timeout=8000)
+            # The click may already have sent the request before the response
+            # wait expired. Never click twice after an unknown write outcome.
+            if not click_started:
+                raise
         self.page.wait_for_timeout(350)
 
         after = state()

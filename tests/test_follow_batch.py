@@ -158,11 +158,19 @@ class FollowBatchTests(unittest.TestCase):
                     "state": "following",
                     "changed": True,
                     "elapsed_seconds": 4.321,
+                    "api_response": {
+                        "method": "POST",
+                        "path": "/i/api/1.1/friendships/create.json",
+                        "status": 200,
+                        "authorization": "must-not-survive",
+                    },
                 },
                 error=None,
                 session_id="s1",
             )
             self.assertEqual(completed["result"]["elapsed_seconds"], 4.321)
+            self.assertEqual(completed["result"]["api_response"]["status"], 200)
+            self.assertNotIn("authorization", completed["result"]["api_response"])
 
     def test_execute_tool_records_success_without_name_error(self):
         # Regression: the success path referenced an undefined browser_family,
