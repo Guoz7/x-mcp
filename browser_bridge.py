@@ -336,6 +336,7 @@ class BrowserBridge:
             "timeline": None,
             "writes": {},
             "batches": {},
+            "follow_plans": {},
             "actions": {},
             "evidence": [],
             "followers": None,
@@ -355,6 +356,29 @@ class BrowserBridge:
         if not isinstance(data, dict) or data.get("schema") != "x-starter-browser-bridge/v1":
             raise BridgeError("BRIDGE_STATE_INVALID", "Unsupported browser bridge state.")
         return data
+
+    def save_follow_plan(self, plan: dict[str, Any], *, session_id: str | None = None) -> None:
+        """Persist a planner result so prepare can survive an MCP restart."""
+
+        if not isinstance(plan, dict) or not isinstance(plan.get("batch_id"), str):
+            raise BridgeError("INVALID_BATCH", "The follow planner result is invalid.")
+        batch_id = str(plan["batch_id"])
+        stored = dict(plan)
+        stored["session_id"] = session_id
+        with self._lock:
+            data = self._read()
+            data.setdefault("follow_plans", {})[batch_id] = stored
+            self._write(data)
+
+    def get_follow_plan(self, batch_id: str, *, session_id: str | None = None) -> dict[str, Any] | None:
+        """Load a read-only plan; preparation binds it to the current session."""
+
+        with self._lock:
+            data = self._read()
+            plan = data.get("follow_plans", {}).get(batch_id)
+            if not isinstance(plan, dict):
+                return None
+            return dict(plan)
 
     def _write(self, data: dict[str, Any]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -984,6 +1008,7 @@ class BrowserBridge:
         with self._lock:
             data = self._read()
             data.setdefault("batches", {})[batch_id] = record
+            data.setdefault("follow_plans", {}).pop(str(plan.get("batch_id", "")), None)
             self._append_evidence(
                 data,
                 "follow_batch_prepared",

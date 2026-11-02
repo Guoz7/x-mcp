@@ -105,6 +105,19 @@ class FollowBatchTests(unittest.TestCase):
                 )
             self.assertEqual(caught.exception.code, "CONFIRMATION_MISMATCH")
 
+    def test_planned_batch_survives_bridge_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = BrowserBridge(directory, account_binding="owner-x")
+            plan = plan_batch(targets(2))
+            first.save_follow_plan(plan, session_id="s1")
+
+            reopened = BrowserBridge(directory, account_binding="owner-x")
+            loaded = reopened.get_follow_plan(plan["batch_id"], session_id="new-session")
+            self.assertIsNotNone(loaded)
+            prepared = reopened.prepare_follow_batch(loaded, session_id="s1")
+            self.assertEqual(prepared["operation_count"], 2)
+            self.assertIsNone(reopened.get_follow_plan(plan["batch_id"], session_id="s1"))
+
     def test_scoped_batch_is_not_visible_to_unscoped_caller(self):
         with tempfile.TemporaryDirectory() as directory:
             bridge = BrowserBridge(directory, account_binding="owner-x")

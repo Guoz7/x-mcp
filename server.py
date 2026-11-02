@@ -2869,6 +2869,9 @@ class XStarter:
             operations=result["operation_count"], external_call=False,
         ))
         self._follow_plans[(arguments.get("_mcp_session_id"), result["batch_id"])] = result
+        self._bridge().save_follow_plan(
+            result, session_id=arguments.get("_mcp_session_id")
+        )
         return result
 
     def _x_follow_batch_prepare(
@@ -2886,6 +2889,10 @@ class XStarter:
                     (candidate for (stored_session, stored_id), candidate in self._follow_plans.items()
                      if stored_id == plan_id),
                     None,
+                )
+            if plan is None:
+                plan = self._bridge().get_follow_plan(
+                    plan_id, session_id=arguments.get("_mcp_session_id")
                 )
             if plan is None:
                 raise StarterError("INVALID_BATCH", "The follow planner result is missing.")
