@@ -35,6 +35,16 @@ from server import SessionRegistry, XStarter, handle_message  # noqa: E402
 
 
 class BrowserExecutorContractTests(unittest.TestCase):
+    def test_security_interstitial_is_classified_before_profile_dom_lookup(self) -> None:
+        browser = Browser()
+        browser.page = Mock()
+        browser.page.evaluate.return_value = True
+        with self.assertRaises(ExecutorError) as caught:
+            browser._execute_follow_profile_impl(
+                profile_url="https://x.com/user0", handle="user0"
+            )
+        self.assertEqual(caught.exception.code, "X_SECURITY_INTERSTITIAL")
+
     def test_follow_response_timeout_never_repeats_click(self) -> None:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -49,7 +59,7 @@ class BrowserExecutorContractTests(unittest.TestCase):
         browser.page = Mock()
         before = {"follow_testid": "123-follow", "unfollow_testid": None, "pending": False}
         after = {"follow_testid": None, "unfollow_testid": "123-unfollow", "pending": False}
-        browser.page.evaluate.side_effect = [before, after, after]
+        browser.page.evaluate.side_effect = [False, before, after, after]
         browser.page.expect_response.return_value = ResponseWait()
         browser._consume_x_grant = Mock()
         browser._wait_for_initial_content = Mock()

@@ -488,6 +488,22 @@ class Browser:
             except PlaywrightTimeoutError:
                 return
 
+    def _security_interstitial(self) -> bool:
+        """Detect X's access-check page before treating it as an empty profile."""
+
+        if self.page is None:
+            return False
+        try:
+            return bool(self.page.evaluate(
+                """() => {
+                    const text = document.body?.innerText || '';
+                    return location.pathname === '/account/access'
+                        || /正在进行安全验证|security verification|Cloudflare/i.test(text);
+                }"""
+            ))
+        except Exception:
+            return False
+
     def observe(self) -> dict[str, Any]:
         return self._run_on_worker(self._observe_impl)
 
@@ -1608,6 +1624,13 @@ class Browser:
             or path_parts[0].casefold() != handle.casefold()
         ):
             raise ExecutorError("TARGET_MISMATCH", "The follow profile does not match the target handle.")
+
+        if self._security_interstitial():
+            raise ExecutorError(
+                "X_SECURITY_INTERSTITIAL",
+                "X presented a security verification page before the profile loaded.",
+                details={"recovery": "human_browser_verification_required"},
+            )
 
         def state() -> dict[str, Any]:
             return self.page.evaluate(
