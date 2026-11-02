@@ -1735,7 +1735,30 @@ class Browser:
 
         started = time.monotonic()
         self._consume_x_grant(self.X_CLICK_ACTIONS)
-        self.page.locator(f'[data-testid="{current["follow_testid"]}"]').click(timeout=8000)
+        # Observe the browser's authenticated write instead of replaying it
+        # outside the signed-in context. X rejects a bare copied request.
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        api_response = None
+        try:
+            with self.page.expect_response(
+                lambda response: (
+                    response.request.method == "POST"
+                    and "/i/api/1.1/friendships/create.json" in response.url
+                ),
+                timeout=10000,
+            ) as response_info:
+                self.page.locator(f'[data-testid="{current["follow_testid"]}"]').click(timeout=8000)
+            response = response_info.value
+            api_response = {
+                "method": response.request.method,
+                "status": response.status,
+                "path": "/i/api/1.1/friendships/create.json",
+            }
+        except PlaywrightTimeoutError:
+            # Keep the existing DOM and reload verification as the source of
+            # truth when X does not expose the write response to Playwright.
+            self.page.locator(f'[data-testid="{current["follow_testid"]}"]').click(timeout=8000)
         self.page.wait_for_timeout(350)
 
         after = state()
@@ -1773,7 +1796,7 @@ class Browser:
                 "The follow state was not proven after reload; visual fallback is required.",
                 page_kind="x_profile",
             )
-        return {
+        result = {
             "handle": handle,
             "profile_url": f"https://x.com/{handle}",
             "verified": True,
@@ -1782,6 +1805,9 @@ class Browser:
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "locator_strategy": "dom",
         }
+        if api_response is not None:
+            result["api_response"] = api_response
+        return result
 
     def close(self) -> None:
         if self.worker and self.worker.is_alive() and threading.get_ident() != self.worker_ident:
