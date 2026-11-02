@@ -1632,19 +1632,40 @@ class Browser:
                         return style.visibility !== 'hidden' && style.display !== 'none'
                             && rect.width > 0 && rect.height > 0;
                     };
+                    const escapedHandle = expected.handle.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&');
+                    const exactLabel = new RegExp(
+                        '^(?:Follow|Following)\\s+@' + escapedHandle + '$',
+                        'i'
+                    );
+                    // Recommendations also live under main and expose Follow buttons.
+                    // Match the profile button by its accessible target label first.
                     const controls = Array.from(main.querySelectorAll(
                         'button[data-testid$="-follow"], button[data-testid$="-unfollow"]'
-                    )).filter(visible);
-                    const follow = controls.filter(button => /-follow$/.test(button.getAttribute('data-testid') || ''));
-                    const unfollow = controls.filter(button => /-unfollow$/.test(button.getAttribute('data-testid') || ''));
-                    const pending = controls.find(button => /pending/i.test(button.innerText || button.getAttribute('aria-label') || ''));
-                    if (follow.length + unfollow.length > 1) {
+                    )).filter(button => visible(button));
+                    const exact = controls.filter(button => exactLabel.test(
+                        (button.getAttribute('aria-label') || '').trim()
+                    ));
+                    const scoped = exact.length ? exact : (() => {
+                        let node = header;
+                        for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+                            const found = Array.from(node.querySelectorAll(
+                                'button[data-testid$="-follow"], button[data-testid$="-unfollow"]'
+                            )).filter(button => visible(button));
+                            if (found.length === 1) return found;
+                        }
+                        return [];
+                    })();
+                    const follow = scoped.filter(button => /-follow$/.test(button.getAttribute('data-testid') || '')
+                        && !/-unfollow$/.test(button.getAttribute('data-testid') || ''));
+                    const unfollow = scoped.filter(button => /-unfollow$/.test(button.getAttribute('data-testid') || ''));
+                    const pending = scoped.find(button => /pending/i.test(button.innerText || button.getAttribute('aria-label') || ''));
+                    if (scoped.length > 1) {
                         return {
                             follow_testid: null,
                             unfollow_testid: null,
                             pending: false,
                             target_mismatch: false,
-                            reason: 'multiple_profile_controls',
+                            reason: 'multiple_target_controls',
                         };
                     }
                     return {
