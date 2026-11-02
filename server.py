@@ -1457,6 +1457,7 @@ class XStarter:
                         "failure_policy": {"type": "string", "enum": ["stop", "continue"], "default": "stop"},
                         "deadline_seconds": {"type": "integer", "minimum": 1, "maximum": 1200},
                         "success_limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        "action_limit": {"type": "integer", "minimum": 1, "maximum": 50},
                     },
                     "required": ["batch_id", "confirmation"],
                     "additionalProperties": False,
@@ -2941,6 +2942,14 @@ class XStarter:
                 or not 1 <= success_limit <= 200
             ):
                 raise StarterError("INVALID_ARGUMENT", "success_limit must be an integer from 1 to 200.")
+        action_limit = arguments.get("action_limit")
+        if action_limit is not None:
+            if (
+                isinstance(action_limit, bool)
+                or not isinstance(action_limit, int)
+                or not 1 <= action_limit <= 50
+            ):
+                raise StarterError("INVALID_ARGUMENT", "action_limit must be an integer from 1 to 50.")
         session_id = arguments.get("_mcp_session_id")
         try:
             # Resume calls must enforce the same confirmation and expiry gate
@@ -2976,8 +2985,12 @@ class XStarter:
         verified_changed = 0
         deadline_reached = False
         success_limit_reached = False
+        action_limit_reached = False
         browser = None
-        for _ in action_ids:
+        for index, _ in enumerate(action_ids):
+            if action_limit is not None and index >= action_limit:
+                action_limit_reached = True
+                break
             if success_limit is not None and verified_changed >= success_limit:
                 success_limit_reached = True
                 break
@@ -3069,6 +3082,8 @@ class XStarter:
             "deadline_reached": deadline_reached,
             "success_limit": success_limit,
             "success_limit_reached": success_limit_reached,
+            "action_limit": action_limit,
+            "action_limit_reached": action_limit_reached,
             "verified_changed": verified_changed,
         }
 
