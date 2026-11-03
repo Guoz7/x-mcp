@@ -64,6 +64,18 @@ class RateGateClockTests(unittest.TestCase):
             bridge._write(data)
             self.assertEqual(bridge.next_action(session_id="new-session")["action_id"], "new")
 
+    def test_conflicting_rate_headers_use_longer_window(self):
+        for reset, expected in ((1050, 59), (2000, 999)):
+            with self.subTest(reset=reset), tempfile.TemporaryDirectory() as directory:
+                bridge = BrowserBridge(directory, now=lambda: 1001)
+                self._seed(bridge, 60)
+                data = bridge._read()
+                data["actions"]["old"]["error"]["details"]["rate_limit"] = {"reset_epoch": reset}
+                bridge._write(data)
+                with self.assertRaises(BridgeError) as caught:
+                    bridge.next_action(session_id="new-session")
+                self.assertEqual(caught.exception.details["retry_after_seconds"], expected)
+
     def test_existing_claim_cannot_issue_write_grant_under_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             bridge = BrowserBridge(directory, now=lambda: 1010)

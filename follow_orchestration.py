@@ -48,7 +48,7 @@ def _valid_retry(value: Any) -> bool:
 
 def _epoch(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value) if math.isfinite(value) else None
+        return float(value) if math.isfinite(value) and value >= 0 else None
     if not isinstance(value, str):
         return None
     try:
@@ -57,7 +57,8 @@ def _epoch(value: Any) -> float | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
+    timestamp = parsed.timestamp()
+    return timestamp if timestamp >= 0 else None
 
 
 def initial_policy() -> dict[str, Any]:
@@ -99,7 +100,10 @@ def observe_event(
     if code == "X_RATE_LIMITED":
         next_state["stage_index"] = 0
         next_state["rate_limit_strength"] = rate_limit_strength or "hard_429"
-        if _valid_retry(recovery_until_epoch):
+        reset_valid = _valid_retry(recovery_until_epoch)
+        retry_valid = _valid_retry(retry_after_seconds) and _valid_retry(observed_at_epoch)
+        retry_until = observed_at_epoch + float(retry_after_seconds) if retry_valid else None
+        if reset_valid and (retry_until is None or recovery_until_epoch >= retry_until):
             next_state.update(
                 mode="cooldown",
                 cooldown_until_epoch=float(recovery_until_epoch),
@@ -107,10 +111,10 @@ def observe_event(
                 recovery_source="x-rate-limit-reset",
             )
             return next_state
-        if _valid_retry(retry_after_seconds):
+        if retry_valid:
             next_state.update(
                 mode="cooldown",
-                cooldown_until_epoch=observed_at_epoch + float(retry_after_seconds),
+                cooldown_until_epoch=retry_until,
                 reason="x_rate_limited_retry_after",
                 recovery_source="retry-after",
             )

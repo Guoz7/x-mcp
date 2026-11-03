@@ -110,7 +110,7 @@ class FollowOrchestrationTests(unittest.TestCase):
                 self.assertFalse(next_decision(policy, now_epoch=100, fresh_target_available=True)["allow_write"])
 
     def test_relative_recovery_without_valid_timestamp_fails_closed(self):
-        for timestamp in (None, "invalid", float("nan"), float("inf")):
+        for timestamp in (None, "invalid", float("nan"), float("inf"), -1, "1969-12-31T23:59:59Z"):
             with self.subTest(timestamp=timestamp):
                 policy = derive_from_ledger({"actions": {"rate": {
                     "type": "follow_profile", "completed_at": timestamp,
@@ -135,6 +135,14 @@ class FollowOrchestrationTests(unittest.TestCase):
             for i, until in enumerate((2000, 1000))
         }})
         self.assertEqual(policy["cooldown_until_epoch"], 2000)
+
+    def test_conflicting_headers_use_longer_window(self):
+        for reset, expected in ((100, 4600), (5000, 5000)):
+            policy = observe_event(initial_policy(), code="X_RATE_LIMITED",
+                                   observed_at_epoch=1000, retry_after_seconds=3600,
+                                   recovery_until_epoch=reset)
+            self.assertEqual(policy["cooldown_until_epoch"], expected)
+            self.assertFalse(next_decision(policy, now_epoch=1001, fresh_target_available=True)["allow_write"])
 
     def test_unchanged_results_do_not_ramp_wave(self):
         policy = derive_from_ledger({"actions": {

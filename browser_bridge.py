@@ -1393,9 +1393,17 @@ class BrowserBridge:
                     remaining = max(remaining, math.ceil(float(reset_epoch) - now))
                     continue
                 completed = datetime.fromisoformat(record["completed_at"].replace("Z", "+00:00"))
-                if completed.tzinfo is None:
-                    raise ValueError("missing timezone")
+                if completed.tzinfo is None or completed.timestamp() < 0:
+                    raise ValueError("invalid observation time")
                 remaining = max(remaining, math.ceil(completed.timestamp() + retry - now))
+                reset_epoch = (details.get("rate_limit") or {}).get("reset_epoch")
+                if (
+                    not isinstance(reset_epoch, bool)
+                    and isinstance(reset_epoch, (int, float))
+                    and math.isfinite(reset_epoch)
+                    and reset_epoch >= 0
+                ):
+                    remaining = max(remaining, math.ceil(float(reset_epoch) - now))
             except (KeyError, TypeError, ValueError, OverflowError):
                 raise BridgeError(
                     "X_RATE_LIMITED", "A recorded X rate limit has no established recovery time; no write claimed.",

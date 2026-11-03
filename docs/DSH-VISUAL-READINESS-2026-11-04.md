@@ -99,3 +99,21 @@ No project `/code-review` entry was found. Main-agent diff review and a
 separate read-only policy review were used instead. The six new fixture tests
 cover the identified failure cases; these reviews do not replace live recovery
 or daily-capacity acceptance.
+
+The second review found two more clock boundaries: negative observation
+timestamps and conflicting reset/Retry-After headers. Negative timestamps
+now fail closed. Both the policy and claim gate use the longer valid window.
+The policy intentionally permits later verified fresh-target successes to
+raise a target-local uncertainty reduction; it does not retry that target.
+
+Final integrated focused check:
+
+```powershell
+python -X utf8 -m unittest tests.test_follow_orchestration tests.test_daily_action_budget tests.test_rate_gate_clock tests.test_follow_stop_policy tests.test_interaction_stop_policy -v
+```
+
+Exit 0, 46 fixture tests, 1.086 seconds, `OK`. Log: parent workspace
+`releases/demos/policy-rate-final-20261104-001607/tests.log`.
+This supersedes the 30-test intermediate check, not an additional 46 live
+actions. The parent project's documentation checker still reports its same
+six pre-existing stale-index errors; those unrelated indexes were not changed.
