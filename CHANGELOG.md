@@ -6,6 +6,11 @@ for public hosted use.
 
 ## Unreleased
 
+- Added a read-only follow evidence audit with strict unique counts,
+  hash-chain comparisons, explicit timing sources and visual-handoff gaps.
+  A real DSH screenshot check exposed route-level image admission blocking;
+  see [audit evidence](docs/FOLLOW-EVIDENCE-AUDIT-2026-11-03.md).
+
 - Added separate daily verified-action accounting for follows, likes, reposts
   and replies (target 200 each), without installing a recurring job.
 - Interaction batches now stop on observed 429/security/global faults, bound
