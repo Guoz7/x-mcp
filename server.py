@@ -3002,6 +3002,13 @@ class XStarter:
         deadline_reached = False
         success_limit_reached = False
         action_limit_reached = False
+        stop_reason = None
+        global_stop_codes = {
+            "X_SECURITY_INTERSTITIAL", "X_RATE_LIMITED",
+            "BROWSER_RUNTIME_MISSING", "BROWSER_BINARY_MISSING",
+            "BROWSER_START_FAILED", "BROWSER_EXECUTOR_TIMEOUT",
+            "BROWSER_EXECUTOR_STUCK", "BROWSER_SESSION_BUSY", "BROWSER_OWNER_EXCLUSIVE",
+        }
         browser = None
         for index, _ in enumerate(action_ids):
             if action_limit is not None and index >= action_limit:
@@ -3021,9 +3028,10 @@ class XStarter:
             )
             if action is None:
                 break
-            browser = self._browser_for({"_mcp_session_id": session_id})
             payload = action.get("payload") or {}
+            action_started = time.monotonic()
             try:
+                browser = self._browser_for({"_mcp_session_id": session_id})
                 verified = self._bridge().verify_claim(action["action_id"], action["claim_token"], session_id=session_id)
                 browser.authorize_x_action(
                     action_id=action["action_id"],
@@ -3064,7 +3072,10 @@ class XStarter:
                 error = {
                     "code": getattr(exc, "code", "ACTION_UNCERTAIN"),
                     "message": str(exc),
-                    "details": getattr(exc, "details", {}),
+                    "details": {
+                        **(getattr(exc, "details", {}) or {}),
+                        "attempt_elapsed_seconds": round(time.monotonic() - action_started, 3),
+                    },
                 }
                 try:
                     self._bridge().complete_action(
@@ -3076,6 +3087,9 @@ class XStarter:
                 except BridgeError:
                     pass
                 results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
+                if error["code"] in global_stop_codes:
+                    stop_reason = error["code"]
+                    break
                 if failure_policy == "stop":
                     break
         if browser is not None:
@@ -3097,8 +3111,9 @@ class XStarter:
             "results": results,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "stopped_on_uncertainty": any(item["status"] == "uncertain" for item in results),
-            "continued_after_uncertainty": failure_policy == "continue" and any(item["status"] == "uncertain" for item in results),
+            "continued_after_uncertainty": any(item["status"] == "uncertain" for item in results[:-1]),
             "failure_policy": failure_policy,
+            "stop_reason": stop_reason,
             "browser_closed": True,
             "deadline_seconds": deadline_seconds,
             "deadline_reached": deadline_reached,

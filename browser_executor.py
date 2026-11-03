@@ -1787,6 +1787,19 @@ class Browser:
             # wait expired. Never click twice after an unknown write outcome.
             if not click_started:
                 raise
+        if api_response is not None and api_response["status"] == 429:
+            details = {
+                "api_response": api_response,
+                "write_dispatched": click_started,
+                "attempt_elapsed_seconds": round(time.monotonic() - started, 3),
+            }
+            try:
+                retry_after = response.header_value("retry-after")
+                if isinstance(retry_after, str) and retry_after.isdigit():
+                    details["retry_after_seconds"] = int(retry_after)
+            except Exception:
+                pass
+            raise ExecutorError("X_RATE_LIMITED", "X returned HTTP 429; stop this batch.", details=details)
         self.page.wait_for_timeout(350)
 
         after = state()
@@ -1818,12 +1831,33 @@ class Browser:
                 self.page.wait_for_timeout(250)
                 verified_state = state()
         if not verified_state["unfollow_testid"]:
+            if self._security_interstitial():
+                raise ExecutorError(
+                    "X_SECURITY_INTERSTITIAL",
+                    "X presented a security verification page after the write; do not retry.",
+                    details={
+                        "write_dispatched": click_started,
+                        "attempt_elapsed_seconds": round(time.monotonic() - started, 3),
+                        "api_response": api_response,
+                    },
+                )
             if verified_state["pending"]:
                 raise ExecutorError("FOLLOW_PENDING", "The profile shows a pending follow request after reload.")
-            raise self._visual_fallback_error(
+            error = self._visual_fallback_error(
                 "The follow state was not proven after reload; visual fallback is required.",
                 page_kind="x_profile",
             )
+            # A dispatched write permits read-only reconciliation, never another click.
+            error.details.update({
+                "write_dispatched": click_started,
+                "api_response": api_response,
+                "attempt_elapsed_seconds": round(time.monotonic() - started, 3),
+            })
+            error.details["visual_fallback"].update({
+                "next_tools": ["browser_observe", "browser_screenshot"],
+                "instruction": "Read the target state only. The write may have happened; do not click again.",
+            })
+            raise error
         result = {
             "handle": handle,
             "profile_url": f"https://x.com/{handle}",

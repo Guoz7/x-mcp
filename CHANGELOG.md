@@ -6,6 +6,12 @@ for public hosted use.
 
 ## Unreleased
 
+- Follow batches now stop on global browser/security/rate-limit errors even
+  under the continue policy. Error records retain attempt timing.
+  See [focused and partial live evidence](docs/FOLLOW-GUARDS-2026-11-03.md).
+- HTTP 429 responses halt the batch and preserve numeric Retry-After values.
+  Post-write visual handoffs are read-only and preserve sanitized API evidence;
+  they never instruct another follow click after an unknown write outcome.
 - Fixed `x_follow_batch_execute`: the success path referenced an undefined
   `browser_family`, so every verified follow was recorded as `uncertain` and the
   default `stop` policy ended the batch after the first target. Added a

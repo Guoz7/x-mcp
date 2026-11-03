@@ -35,6 +35,55 @@ from server import SessionRegistry, XStarter, handle_message  # noqa: E402
 
 
 class BrowserExecutorContractTests(unittest.TestCase):
+    def test_follow_rate_limit_stops_without_reload_or_second_click(self) -> None:
+        response = Mock(status=429)
+        response.request.method = "POST"
+        response.header_value.return_value = "60"
+        browser = Browser()
+        browser.page = Mock()
+        browser.page.evaluate.side_effect = [False, {
+            "follow_testid": "123-follow", "unfollow_testid": None, "pending": False,
+        }]
+        wait = Mock()
+        wait.value = response
+        from unittest.mock import MagicMock
+        browser.page.expect_response.return_value = MagicMock(__enter__=Mock(return_value=wait))
+        browser._consume_x_grant = Mock()
+        with self.assertRaises(ExecutorError) as caught:
+            browser._execute_follow_profile_impl(profile_url="https://x.com/user0", handle="user0")
+        self.assertEqual(caught.exception.code, "X_RATE_LIMITED")
+        self.assertEqual(caught.exception.details["retry_after_seconds"], 60)
+        self.assertTrue(caught.exception.details["write_dispatched"])
+        browser.page.locator.return_value.click.assert_called_once()
+        browser.page.reload.assert_not_called()
+
+    def test_dispatched_follow_visual_handoff_forbids_second_click(self) -> None:
+        browser = Browser()
+        browser.page = Mock()
+        before = {"follow_testid": "123-follow", "unfollow_testid": None, "pending": False}
+        browser.page.evaluate.return_value = before
+        browser._security_interstitial = Mock(return_value=False)
+        browser._consume_x_grant = Mock()
+        browser._wait_for_initial_content = Mock()
+        browser._visual_fallback_error = Mock(return_value=ExecutorError(
+            "ACTION_UNCERTAIN", "unverified", details={"visual_fallback": {"required": True}},
+        ))
+        from unittest.mock import MagicMock
+        wait = Mock()
+        wait.value.status = 200
+        wait.value.request.method = "POST"
+        browser.page.expect_response.return_value = MagicMock(__enter__=Mock(return_value=wait))
+        # Advance the bounded polling loops without sleeping.
+        clock = iter(range(0, 1000, 20))
+        with patch("browser_executor.time.monotonic", side_effect=lambda: next(clock)):
+            with self.assertRaises(ExecutorError) as caught:
+                browser._execute_follow_profile_impl(profile_url="https://x.com/user0", handle="user0")
+        details = caught.exception.details
+        self.assertTrue(details["write_dispatched"])
+        self.assertEqual(details["api_response"]["status"], 200)
+        self.assertNotIn("browser_click", details["visual_fallback"]["next_tools"])
+        browser.page.locator.return_value.click.assert_called_once()
+
     def test_security_interstitial_is_classified_before_profile_dom_lookup(self) -> None:
         browser = Browser()
         browser.page = Mock()
