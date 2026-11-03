@@ -1252,7 +1252,7 @@ class XStarter:
                             },
                         },
                         "reply_texts": {"type": "array", "maxItems": 200, "items": {"type": "string", "minLength": 1, "maxLength": 280}},
-                        "like_count": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+                        "like_count": {"type": "integer", "minimum": 0, "maximum": 200, "default": 20},
                         "repost_count": {"type": "integer", "minimum": 0, "maximum": 100, "default": 1},
                         "reply_count": {"type": "integer", "minimum": 0, "maximum": 200, "default": 10},
                         "budget_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 60},
@@ -2602,7 +2602,7 @@ class XStarter:
             result = interaction_batch.plan_batch(
                 arguments.get("posts"),
                 reply_texts=arguments.get("reply_texts", []),
-                like_count=_bounded_int(arguments, "like_count", default=20, minimum=1, maximum=200),
+                like_count=_bounded_int(arguments, "like_count", default=20, minimum=0, maximum=200),
                 repost_count=_bounded_int(arguments, "repost_count", default=1, minimum=0, maximum=100),
                 reply_count=_bounded_int(arguments, "reply_count", default=10, minimum=0, maximum=200),
                 budget_seconds=_bounded_int(arguments, "budget_seconds", default=60, minimum=1, maximum=600),

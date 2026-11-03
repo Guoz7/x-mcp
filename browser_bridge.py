@@ -851,7 +851,7 @@ class BrowserBridge:
         }
         if any(counts[key] > limits[key] for key in limits):
             raise BridgeError("INVALID_BATCH", "The batch exceeds the interaction limits.")
-        if sum(counts.values()) != len(operations) or counts["like"] < 1:
+        if sum(counts.values()) != len(operations):
             raise BridgeError("INVALID_BATCH", "The batch contains an unsupported or empty operation.")
         batch_id = "batch_" + uuid_hex()
         phrase = "INTERACT " + secrets.token_hex(3).upper()

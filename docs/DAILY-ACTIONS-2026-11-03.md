@@ -75,3 +75,45 @@ prove write recovery. No calibration write occurred in this change.
 A missing/mismatched write endpoint can time out without identifying a 429.
 That outcome remains unknown; it is not proof of rate recovery. This change
 does not claim all X response variants or daily throughput have been tested.
+
+## 2026-11-04 independent-wave correction
+
+The planner, MCP schema and preparation previously required at least one
+like even for a repost-only or reply-only wave. Reposts also recycled the
+like list: requesting one like and ten reposts planned the same repost ten
+times. Both defects are fixed. Nonempty zero-like waves are supported;
+reposts use distinct observed target URLs. Existing per-batch ceilings stay
+unchanged. A daily goal of 200 reposts requires separate bounded batches,
+not raising the per-batch ceiling.
+
+Focused command, from this repository:
+
+```powershell
+python -X utf8 -m unittest tests.test_interaction_independent_waves tests.test_interaction_batch tests.test_interaction_stop_policy tests.test_daily_action_budget tests.test_rate_gate_clock -v
+```
+
+Result: 44 tests, OK, exit 0; unittest elapsed 1.154 seconds. Log in parent
+workspace: `releases/demos/independent-waves-20261104-0100/tests.log`.
+One new fixture plans 200 likes, 200 reposts and 200 replies in independent
+ten-action waves. This is 600 planned fixture operations, **zero real writes**.
+The MCP execution fixtures verify all three interaction types stop before
+browser acquisition under a recorded headerless 429.
+
+The legacy local interaction runner was found using a new state directory
+for each demo. It now reads the original ledger before starting DSH/server
+or reading model credentials, and refuses batches exceeding remaining daily
+goals or the policy wave. It is not a daily dispatcher. The original follow
+runner and corrected interaction runner both exit 2 at the real preflight.
+The authoritative state SHA-256 remained
+`c31fbeaad22e9346f6332ae5f8560d471bf5ad5e2fb5b6d00c2bdd76d59268a7`.
+
+At 2026-11-04 00:56 Asia/Shanghai the original ledger reports 0 verified
+actions in each of four categories today. Yesterday's 104 follows are not
+today's count. The same headerless 429 remains unresolved: no automated
+calibration, like, repost, reply or follow was dispatched in this change.
+An independently confirmed recovery condition is still required. Reading
+pages, admitting screenshots or reaching midnight cannot supply it.
+
+Daily execution dispatch, runtime quota reservation and automatic visual
+reconciliation remain integration gaps. No schedule was created and no
+200-per-category sustainable daily throughput has been measured.

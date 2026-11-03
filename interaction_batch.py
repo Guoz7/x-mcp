@@ -57,11 +57,13 @@ def plan_batch(
     if not isinstance(posts, list):
         raise BatchPlanError("posts must be an array.")
     if (
-        not 1 <= like_count <= MAX_LIKES
+        not 0 <= like_count <= MAX_LIKES
         or not 0 <= repost_count <= MAX_REPOSTS
         or not 0 <= reply_count <= MAX_REPLIES
     ):
         raise BatchPlanError("Counts exceed the bounded batch limits.")
+    if like_count + repost_count + reply_count == 0:
+        raise BatchPlanError("At least one interaction is required.")
     if like_count + repost_count + reply_count > MAX_OPERATIONS:
         raise BatchPlanError("The batch exceeds the operation limit.")
     if not 1 <= chunk_size <= 50:
@@ -94,6 +96,8 @@ def plan_batch(
     like_targets: list[dict[str, str]] = []
     seen_authors: set[str] = set()
     for target in targets:
+        if len(like_targets) == like_count:
+            break
         if target["author"].casefold() in seen_authors:
             continue
         like_targets.append(target)
@@ -107,10 +111,9 @@ def plan_batch(
         {"sequence": index + 1, "action": "like", "url": target["url"], "author": target["author"]}
         for index, target in enumerate(like_targets)
     ]
-    # Reposts may target selected posts; the likes already require distinct
-    # authors, so a repost does not need a 201st target.
+    # An independent repost wave must not require an incidental like.
     for index in range(repost_count):
-        target = like_targets[index % len(like_targets)]
+        target = targets[index]
         operations.append(
             {
                 "sequence": len(operations) + 1,

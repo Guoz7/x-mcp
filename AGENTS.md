@@ -35,3 +35,10 @@
 - Ledger-derived policy must retain unresolved global stops and every rate
   gate. Never substitute epoch zero for an unknown rate timestamp or ramp
   waves on unchanged results. Midnight does not erase account-level gates.
+- Independent repost/reply waves must allow zero likes across planner, MCP
+  schema and preparation. Do not add an incidental like to make a wave valid.
+  Repost targets must stay unique even when fewer likes were requested.
+- Legacy demo runners must use the original account ledger and preflight
+  before launching a server or reading credentials. A new output directory
+  must never imply a fresh account state. Offline wave counts are not live
+  daily capacity evidence.

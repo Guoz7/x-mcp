@@ -6,6 +6,12 @@ for public hosted use.
 
 ## Unreleased
 
+- Independent repost/reply waves no longer require a like. Reposts no longer
+  repeat liked targets when the requested repost count exceeds the like count.
+  MCP validation and bridge preparation support zero-like nonempty waves.
+  Forty-four focused offline checks pass; live daily targets remain blocked
+  by the original headerless 429. See [daily evidence](docs/DAILY-ACTIONS-2026-11-03.md).
+
 - Added a read-only visual-diagnosis result validator. A real uncertain-profile
   check found a Follow button without retrying the write. The initial model
   eligibility hallucination is preserved as a failed task, despite exit 0.
