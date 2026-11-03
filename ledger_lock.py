@@ -6,8 +6,10 @@ import time
 
 
 class LedgerLock:
-    def __init__(self, path):
+    def __init__(self, path, *, on_timeout=None, timeout_seconds=10):
         self.path = path
+        self.on_timeout = on_timeout
+        self.timeout_seconds = timeout_seconds
         self.local = threading.RLock()
         self.depth = 0
         self.file = None
@@ -20,7 +22,7 @@ class LedgerLock:
                 if os.fstat(self.file.fileno()).st_size == 0:
                     self.file.write(b"0")
                     self.file.flush()
-                deadline = time.monotonic() + 10
+                deadline = time.monotonic() + self.timeout_seconds
                 while True:
                     try:
                         self.file.seek(0)
@@ -33,6 +35,8 @@ class LedgerLock:
                         break
                     except OSError:
                         if time.monotonic() >= deadline:
+                            if self.on_timeout is not None:
+                                raise self.on_timeout()
                             raise TimeoutError("Browser ledger is busy")
                         time.sleep(0.05)
             self.depth += 1

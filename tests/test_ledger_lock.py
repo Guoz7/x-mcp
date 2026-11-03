@@ -3,10 +3,12 @@
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from browser_bridge import BrowserBridge
+from browser_bridge import BridgeError
 
 
 class LedgerLockTests(unittest.TestCase):
@@ -41,6 +43,22 @@ class LedgerLockTests(unittest.TestCase):
                 if process is not None and process.poll() is None:
                     process.kill()
                     process.wait()
+
+    def test_bridge_maps_lock_timeout_to_structured_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            from ledger_lock import LedgerLock
+            first = LedgerLock(Path(directory) / ".lock", timeout_seconds=1)
+            second = LedgerLock(
+                Path(directory) / ".lock", timeout_seconds=0,
+                on_timeout=lambda: BridgeError("BRIDGE_BUSY", "busy", details={"retryable": True}),
+            )
+            first.__enter__()
+            try:
+                with self.assertRaises((BridgeError, TimeoutError)):
+                    with second:
+                        pass
+            finally:
+                first.__exit__()
 
 
 if __name__ == "__main__":

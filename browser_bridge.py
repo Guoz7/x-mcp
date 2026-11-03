@@ -316,7 +316,14 @@ class BrowserBridge:
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "state.json"
         from ledger_lock import LedgerLock
-        self._lock = LedgerLock(self.root / ".ledger.lock")
+        self._lock = LedgerLock(
+            self.root / ".ledger.lock",
+            on_timeout=lambda: BridgeError(
+                "BRIDGE_BUSY",
+                "The browser ledger is busy in another process.",
+                details={"retryable": True, "retry_after_seconds": 1},
+            ),
+        )
         self._now = now
         self.allowed_browser_family = (
             allowed_browser_family.strip().lower()
