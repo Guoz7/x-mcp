@@ -118,6 +118,35 @@ class FollowBatchTests(unittest.TestCase):
             self.assertEqual(prepared["operation_count"], 2)
             self.assertIsNone(reopened.get_follow_plan(plan["batch_id"], session_id="s1"))
 
+    def test_compact_plan_summary_recovers_persisted_operations(self):
+        from server import XStarter
+
+        with tempfile.TemporaryDirectory() as directory:
+            app = XStarter(
+                mode="browser",
+                environ={
+                    "X_STARTER_ENABLE_BROWSER": "1",
+                    "X_STARTER_STATE_DIR": directory,
+                },
+            )
+            try:
+                plan = plan_batch(targets(2))
+                app._bridge().save_follow_plan(plan, session_id="s1")
+                prepared = app._x_follow_batch_prepare(
+                    {
+                        "plan": {
+                            "batch_id": plan["batch_id"],
+                            "status": "planned_not_executed",
+                            "operation_count": 2,
+                        },
+                        "_mcp_session_id": "s1",
+                    },
+                    [],
+                )
+                self.assertEqual(prepared["operation_count"], 2)
+            finally:
+                app.close()
+
     def test_scoped_batch_is_not_visible_to_unscoped_caller(self):
         with tempfile.TemporaryDirectory() as directory:
             bridge = BrowserBridge(directory, account_binding="owner-x")

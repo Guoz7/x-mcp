@@ -2878,6 +2878,15 @@ class XStarter:
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]
     ) -> dict[str, Any]:
         plan = arguments.get("plan")
+        # Some MCP clients compact large objects to a summary before sending
+        # them back. Recover the authoritative persisted plan instead of
+        # passing that summary to the bridge as if it were executable.
+        if isinstance(plan, dict) and not isinstance(plan.get("operations"), list):
+            compact_id = plan.get("batch_id")
+            if isinstance(compact_id, str) and compact_id:
+                plan = self._bridge().get_follow_plan(
+                    compact_id, session_id=arguments.get("_mcp_session_id")
+                )
         if plan is None:
             plan_id = _required_string(arguments, "batch_id", max_length=80)
             plan = self._follow_plans.get((arguments.get("_mcp_session_id"), plan_id))
