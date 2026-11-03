@@ -1366,7 +1366,17 @@ class BrowserBridge:
             retry = details.get("retry_after_seconds")
             try:
                 if isinstance(retry, bool) or not isinstance(retry, (int, float)) or not math.isfinite(retry) or retry < 0:
-                    raise ValueError("no known recovery time")
+                    rate_limit = details.get("rate_limit") or {}
+                    reset_epoch = rate_limit.get("reset_epoch")
+                    if (
+                        isinstance(reset_epoch, bool)
+                        or not isinstance(reset_epoch, (int, float))
+                        or not math.isfinite(reset_epoch)
+                        or reset_epoch < 0
+                    ):
+                        raise ValueError("no known recovery time")
+                    remaining = max(remaining, math.ceil(float(reset_epoch) - now))
+                    continue
                 completed = datetime.fromisoformat(record["completed_at"].replace("Z", "+00:00"))
                 if completed.tzinfo is None:
                     raise ValueError("missing timezone")

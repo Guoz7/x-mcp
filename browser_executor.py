@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -1793,12 +1794,13 @@ class Browser:
                 "write_dispatched": click_started,
                 "attempt_elapsed_seconds": round(time.monotonic() - started, 3),
             }
-            try:
-                retry_after = response.header_value("retry-after")
-                if isinstance(retry_after, str) and retry_after.isdigit():
-                    details["retry_after_seconds"] = int(retry_after)
-            except Exception:
-                pass
+            rate_limit = self._read_rate_limit_headers(response)
+            if rate_limit:
+                details["rate_limit"] = rate_limit
+            retry_after = rate_limit.get("retry_after_seconds") if rate_limit else None
+            if retry_after is not None:
+                details["retry_after_seconds"] = retry_after
+            details["rate_limit_strength"] = "hard_429"
             raise ExecutorError("X_RATE_LIMITED", "X returned HTTP 429; stop this batch.", details=details)
         self.page.wait_for_timeout(350)
 
@@ -1870,6 +1872,41 @@ class Browser:
         if api_response is not None:
             result["api_response"] = api_response
         return result
+
+    @staticmethod
+    def _read_rate_limit_headers(response: Any) -> dict[str, Any]:
+        """Keep only non-sensitive rate-limit headers from a browser response."""
+
+        names = {
+            "limit": "x-rate-limit-limit",
+            "remaining": "x-rate-limit-remaining",
+            "reset_epoch": "x-rate-limit-reset",
+            "retry_after_seconds": "retry-after",
+        }
+        values: dict[str, Any] = {}
+        for key, header in names.items():
+            try:
+                raw = response.header_value(header)
+            except Exception:
+                raw = None
+            if raw is None or str(raw).strip() == "":
+                continue
+            try:
+                number = float(str(raw).strip())
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(number) or number < 0:
+                continue
+            values[key] = int(number) if number.is_integer() else number
+        reset = values.get("reset_epoch")
+        if "retry_after_seconds" not in values and isinstance(reset, (int, float)):
+            remaining = math.ceil(float(reset) - time.time())
+            if remaining > 0:
+                values["retry_after_seconds"] = remaining
+                values["recovery_source"] = "x-rate-limit-reset"
+        elif "retry_after_seconds" in values:
+            values["recovery_source"] = "retry-after"
+        return values
 
     def close(self) -> None:
         if self.worker and self.worker.is_alive() and threading.get_ident() != self.worker_ident:
@@ -1958,6 +1995,7 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
             "id": request_id,
             "error": {"code": -32601, "message": "Method not found: server/discover"},
         }
+
     elif method == "resources/list":
         result = {"resources": []}
     elif method == "prompts/list":

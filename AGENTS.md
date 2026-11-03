@@ -15,3 +15,7 @@
   same account-bound ledger. Enforce them before claim and grant issuance.
   Unknown recovery times require a confirmed recovery condition, not an
   invented timer, cleared ledger, changed candidate or repeated probe.
+- Use evidence-driven wave sizes `1 -> 3 -> 5 -> 10` only after verified
+  calibration successes. After cooldown expiry, allow one fresh-target
+  calibration action. A missing recovery time means manual recovery, not a
+  guessed wait.

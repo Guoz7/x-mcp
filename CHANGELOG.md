@@ -9,6 +9,8 @@ for public hosted use.
 - Recorded X rate limits now block subsequent write claims and grants across
   batches/sessions/restarts in the same account ledger. A known Retry-After
   expires by its recorded completion time; missing recovery times fail closed.
+- Added a pure evidence-driven wave policy for cooldown, calibration, reset and
+  manual recovery decisions. It does not send requests or retry actions.
 - Follow batches now stop on global browser/security/rate-limit errors even
   under the continue policy. Error records retain attempt timing.
   See [focused and partial live evidence](docs/FOLLOW-GUARDS-2026-11-03.md).

@@ -35,6 +35,20 @@ from server import SessionRegistry, XStarter, handle_message  # noqa: E402
 
 
 class BrowserExecutorContractTests(unittest.TestCase):
+    def test_follow_rate_limit_keeps_safe_reset_headers(self) -> None:
+        response = Mock()
+        response.header_value.side_effect = {
+            "x-rate-limit-limit": "15",
+            "x-rate-limit-remaining": "0",
+            "x-rate-limit-reset": "4102444860",
+            "retry-after": None,
+        }.get
+        details = Browser._read_rate_limit_headers(response)
+        self.assertEqual(details["limit"], 15)
+        self.assertEqual(details["remaining"], 0)
+        self.assertEqual(details["reset_epoch"], 4102444860)
+        self.assertEqual(details["recovery_source"], "x-rate-limit-reset")
+
     def test_follow_rate_limit_stops_without_reload_or_second_click(self) -> None:
         response = Mock(status=429)
         response.request.method = "POST"
