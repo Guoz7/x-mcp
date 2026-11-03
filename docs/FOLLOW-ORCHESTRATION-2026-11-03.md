@@ -53,14 +53,14 @@ recovery.
 python -X utf8 -m unittest tests.test_follow_orchestration -v
 ```
 
-Result: 35 focused tests passed, exit code 0. The tests cover known cooldown expiry,
+Result: 37 focused tests passed, exit code 0. The tests cover known cooldown expiry,
 unknown recovery, ramp-up, reset after a new 429, local uncertainty, no fresh
 target, ledger-derived manual recovery, reset-header recovery, durable gate
 checks, follow stop policy, batch execution, and safe 429 header capture.
 
 The live orchestration preflight was also run against the current account
 ledger. It selected no target, made no DSH call, claimed no action, and wrote
-`releases/demos/dsh-follow-orchestration-preflight-check-20261103-191254/orchestration-preflight.json`.
+`releases/demos/dsh-follow-orchestration-preflight-final-20261103-191254/orchestration-preflight.json`.
 The reason was the existing 429 without a recovery time.
 
 The policy does not claim that the X limit has recovered. It only makes the
