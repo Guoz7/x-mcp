@@ -40,6 +40,16 @@ def _observation(url: str, **overrides) -> dict:
 
 
 class VisibleProjectionTests(unittest.TestCase):
+    def test_account_display_name_never_uses_body_tooltip(self) -> None:
+        browser = Mock()
+        browser.open.side_effect = [
+            _observation("https://x.com/home", nav_profile_href="/owner"),
+            _observation("https://x.com/owner", text="To view keyboard shortcuts, press question mark",
+                         profile={"user_id": "1", "screen_name": "owner"},
+                         profile_display_name="Owner Name"),
+        ]
+        self.assertEqual(read_account(browser)["display_name"], "Owner Name")
+
     def test_links_drop_queries_fragments_and_foreign_hosts(self) -> None:
         links = _visible_links([
             "https://x.com/guoz7777/status/123?s=20",

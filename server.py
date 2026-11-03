@@ -1320,6 +1320,8 @@ class XStarter:
                         "batch_id": {"type": "string", "maxLength": 64},
                         "confirmation": {"type": "string", "maxLength": 40},
                         "lease_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 300},
+                        "deadline_seconds": {"type": "integer", "minimum": 1, "maximum": 1155, "default": 1155},
+                        "action_limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
                         "chunk": {
                             "type": "integer",
                             "minimum": 1,
@@ -2650,6 +2652,8 @@ class XStarter:
         batch_id = _required_string(arguments, "batch_id", max_length=64)
         confirmation = _required_string(arguments, "confirmation", max_length=40)
         lease_seconds = _bounded_int(arguments, "lease_seconds", default=300, minimum=60, maximum=600)
+        deadline_seconds = _bounded_int(arguments, "deadline_seconds", default=1155, minimum=1, maximum=1155)
+        action_limit = _bounded_int(arguments, "action_limit", default=10, minimum=1, maximum=50)
         failure_policy = arguments.get("failure_policy", "stop")
         if failure_policy not in {"stop", "continue"}:
             raise StarterError("INVALID_ARGUMENT", "failure_policy must be stop or continue.")
@@ -2659,11 +2663,20 @@ class XStarter:
                 raise StarterError("INVALID_ARGUMENT", "chunk must be an integer from 1 to 100.")
         session_id = arguments.get("_mcp_session_id")
         try:
+            self._bridge().validate_interaction_batch_confirmation(batch_id, confirmation, session_id=session_id)
             queued = self._bridge().queue_interaction_batch(
                 batch_id, confirmation, session_id=session_id
             )
         except BridgeError as exc:
-            raise StarterError(exc.code, exc.message, details=exc.details) from None
+            if exc.code != "BATCH_NOT_READY":
+                raise StarterError(exc.code, exc.message, details=exc.details) from None
+            existing = self._bridge().interaction_batch_status(batch_id, session_id=session_id)
+            if existing.get("state") not in {"queued", "partial"}:
+                raise StarterError(exc.code, exc.message, details=exc.details) from None
+            queued = {
+                "batch_id": batch_id, "operation_count": existing["planned"],
+                "action_ids": [item["action_id"] for item in existing["results"]],
+            }
 
         target_ids = [
             str(item)
@@ -2687,18 +2700,36 @@ class XStarter:
 
         results: list[dict[str, Any]] = []
         started = time.monotonic()
-        for _ in target_ids:
-            action = self._bridge().next_action(
-                lease_seconds=lease_seconds,
-                session_id=session_id,
-                batch_id=batch_id,
-                chunk=chunk,
-            )
+        stop_reason = None
+        stop_details = None
+        browser = None
+        from follow_orchestration import GLOBAL_STOP_CODES
+
+        for index, _ in enumerate(target_ids):
+            if index >= action_limit:
+                stop_reason = "ACTION_LIMIT_REACHED"
+                break
+            if time.monotonic() - started >= deadline_seconds:
+                stop_reason = "DEADLINE_REACHED"
+                break
+            try:
+                action = self._bridge().next_action(
+                    lease_seconds=lease_seconds,
+                    session_id=session_id,
+                    batch_id=batch_id,
+                    chunk=chunk,
+                )
+            except BridgeError as exc:
+                if exc.code != "X_RATE_LIMITED":
+                    raise
+                stop_reason, stop_details = exc.code, exc.details
+                break
             if action is None:
                 break
-            browser = self._browser_for({"_mcp_session_id": session_id})
             payload = action.get("payload") or {}
+            action_started = time.monotonic()
             try:
+                browser = self._browser_for({"_mcp_session_id": session_id})
                 verified = self._bridge().verify_claim(
                     action["action_id"], action["claim_token"], session_id=session_id
                 )
@@ -2738,7 +2769,10 @@ class XStarter:
                 error = {
                     "code": getattr(exc, "code", "ACTION_UNCERTAIN"),
                     "message": str(exc),
-                    "details": getattr(exc, "details", {}),
+                    "details": {
+                        **(getattr(exc, "details", {}) or {}),
+                        "attempt_elapsed_seconds": round(time.monotonic() - action_started, 3),
+                    },
                 }
                 try:
                     self._bridge().complete_action(
@@ -2753,13 +2787,17 @@ class XStarter:
                 except BridgeError:
                     pass
                 results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
+                if error["code"] == "X_RATE_LIMITED" or error["code"] in GLOBAL_STOP_CODES:
+                    stop_reason, stop_details = error["code"], error["details"]
+                    break
                 if failure_policy == "stop":
                     break
 
-        try:
-            browser.close()
-        except Exception:
-            pass
+        if browser is not None:
+            try:
+                self.close_browser_session(session_id or "stdio")
+            except Exception:
+                browser.close()
         trace.append(_event("browser_executor", "interaction_batch_executed", batch_id=batch_id, actions=len(results)))
         return {
             "batch_id": batch_id,
@@ -2768,10 +2806,12 @@ class XStarter:
             "results": results,
             "elapsed_seconds": round(time.monotonic() - started, 3),
             "stopped_on_uncertainty": any(item["status"] == "uncertain" for item in results),
-            "continued_after_uncertainty": failure_policy == "continue" and any(
-                item["status"] == "uncertain" for item in results
-            ),
+            "continued_after_uncertainty": any(item["status"] == "uncertain" for item in results[:-1]),
             "failure_policy": failure_policy,
+            "stop_reason": stop_reason,
+            "stop_details": stop_details,
+            "deadline_seconds": deadline_seconds,
+            "action_limit": action_limit,
             "browser_closed": True,
         }
 

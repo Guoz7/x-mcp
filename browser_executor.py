@@ -532,6 +532,10 @@ class Browser:
                 const link = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
                 return link ? link.getAttribute('href') : null;
             })(),
+            profile_display_name: (() => {
+                const header = document.querySelector('main [data-testid="UserName"]');
+                return header ? (header.innerText || '').split('\\n')[0].trim().slice(0, 80) : null;
+            })(),
             articles: Array.from(document.querySelectorAll('article'))
                 .slice(0, 40)
                 .map(node => ({
@@ -1419,6 +1423,8 @@ class Browser:
                 profile_url=post_url,
                 handle=author,
             )
+        if self._security_interstitial():
+            raise ExecutorError("X_SECURITY_INTERSTITIAL", "X requires owner verification; stop all writes.")
         parsed = urlparse(post_url)
         status_path = parsed.path.rstrip("/")
         def find_target() -> Any:
@@ -1479,7 +1485,10 @@ class Browser:
                     page_kind="x_status",
                 )
             self._consume_x_grant(self.X_CLICK_ACTIONS)
-            control.click(timeout=5000)
+            if action_type == "like_post":
+                self._click_x_write_once(control, "like_post")
+            else:
+                control.click(timeout=5000)
             self.page.wait_for_timeout(350)
             if action_type == "repost_post":
                 confirm = self.page.locator('[data-testid="retweetConfirm"]')
@@ -1489,31 +1498,35 @@ class Browser:
                     self.page.screenshot(type="png", full_page=False)
                     raise ExecutorError("ACTION_UNCERTAIN", "The repost confirmation control was not proven.")
                 self._consume_x_grant(self.X_CLICK_ACTIONS)
-                confirm.click(timeout=5000)
+                self._click_x_write_once(confirm, "repost_post")
                 self.page.wait_for_timeout(500)
                 verified = wait_for_count(target.locator('[data-testid="unretweet"]'))
             else:
                 # X can acknowledge the click after the page has returned.
                 # Wait for the state transition, but never click again.
                 verified = wait_for_count(target.locator('[data-testid="unlike"]'))
-            if not verified:
-                # The click is already consumed. A single read-only reload can
-                # prove a delayed server acknowledgement without retrying it.
-                try:
-                    self.page.reload(wait_until="commit", timeout=15000)
-                    self.page.wait_for_timeout(200)
-                    self._wait_for_initial_content(post_url)
-                    target = find_target()
-                    active_selector = (
-                        '[data-testid="unretweet"]'
-                        if action_type == "repost_post"
-                        else '[data-testid="unlike"]'
-                    )
-                    verified = target.count() == 1 and wait_for_count(
-                        target.locator(active_selector), timeout_ms=8000
-                    )
-                except Exception:
-                    verified = False
+            # The click is already consumed. A single read-only reload can
+            # prove a delayed server acknowledgement without retrying it.
+            try:
+                self.page.reload(wait_until="commit", timeout=15000)
+                self.page.wait_for_timeout(200)
+                self._wait_for_initial_content(post_url)
+                target = find_target()
+                active_selector = (
+                    '[data-testid="unretweet"]'
+                    if action_type == "repost_post"
+                    else '[data-testid="unlike"]'
+                )
+                verified = target.count() == 1 and wait_for_count(
+                    target.locator(active_selector), timeout_ms=8000
+                )
+            except Exception:
+                verified = False
+            if self._security_interstitial():
+                raise ExecutorError(
+                    "X_SECURITY_INTERSTITIAL", "X requires owner verification after the write; do not repeat it.",
+                    details={"write_dispatched": True},
+                )
             if not verified:
                 raise ExecutorError("ACTION_UNCERTAIN", "The X interaction postcondition was not proven.")
             return {
@@ -1563,7 +1576,7 @@ class Browser:
             self.page.screenshot(type="png", full_page=False)
             raise ExecutorError("ACTION_UNCERTAIN", "The reply submit control was not uniquely located.")
         self._consume_x_grant(self.X_CLICK_ACTIONS)
-        submit.click(timeout=5000)
+        self._click_x_write_once(submit, "reply_post")
         self.page.wait_for_timeout(650)
         reply_url = ""
 
@@ -1872,6 +1885,45 @@ class Browser:
         if api_response is not None:
             result["api_response"] = api_response
         return result
+
+    def _click_x_write_once(self, control: Any, action_type: str) -> None:
+        """Observe one browser write; timeout never authorizes another click."""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        endpoints = {
+            "like_post": ("/FavoriteTweet", "/favorites/create.json"),
+            "repost_post": ("/CreateRetweet", "/statuses/retweet/"),
+            "reply_post": ("/CreateTweet", "/statuses/update.json"),
+        }
+        started = time.monotonic()
+        dispatched = False
+        try:
+            with self.page.expect_response(
+                lambda response: (
+                    response.request.method == "POST"
+                    and any(path in response.url for path in endpoints[action_type])
+                ),
+                timeout=10000,
+            ) as pending:
+                dispatched = True
+                control.click(timeout=5000)
+            response = pending.value
+        except PlaywrightTimeoutError:
+            if not dispatched:
+                raise
+            return
+        if response.status == 429:
+            rate = self._read_rate_limit_headers(response)
+            details = {
+                "write_dispatched": True,
+                "attempt_elapsed_seconds": round(time.monotonic() - started, 3),
+                "api_response": {"method": "POST", "status": 429, "action_type": action_type},
+                "rate_limit": rate,
+                "rate_limit_strength": "hard_429",
+            }
+            if "retry_after_seconds" in rate:
+                details["retry_after_seconds"] = rate["retry_after_seconds"]
+            raise ExecutorError("X_RATE_LIMITED", "X returned HTTP 429; stop all write actions.", details=details)
 
     @staticmethod
     def _read_rate_limit_headers(response: Any) -> dict[str, Any]:

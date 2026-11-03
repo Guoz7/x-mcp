@@ -6,6 +6,14 @@ for public hosted use.
 
 ## Unreleased
 
+- Added separate daily verified-action accounting for follows, likes, reposts
+  and replies (target 200 each), without installing a recurring job.
+- Interaction batches now stop on observed 429/security/global faults, bound
+  action counts, and validate scoped confirmations on resume. Likes/reposts
+  verify after reload. See [evidence and limits](docs/DAILY-ACTIONS-2026-11-03.md).
+- Fixed owner display-name parsing to use the profile header instead of a
+  keyboard-shortcut tooltip at the start of page text.
+
 - Recorded X rate limits now block subsequent write claims and grants across
   batches/sessions/restarts in the same account ledger. A known Retry-After
   expires by its recorded completion time; missing recovery times fail closed.

@@ -908,6 +908,21 @@ class BrowserBridge:
             self._write(data)
             return {"batch_id": batch_id, "state": "queued", "action_ids": action_ids, "operation_count": len(action_ids)}
 
+    def validate_interaction_batch_confirmation(
+        self, batch_id: str, confirmation: str, *, session_id: str | None = None
+    ) -> None:
+        """Resume only the same scoped, unexpired, confirmed interaction batch."""
+        with self._lock:
+            record = self._read().get("batches", {}).get(batch_id)
+            if not isinstance(record, dict) or record.get("kind") is not None or not self._scope_ok(record, session_id):
+                raise BridgeError("BATCH_NOT_FOUND", "The interaction batch does not exist.")
+            if self._now() > float(record.get("expires_epoch", 0)):
+                raise BridgeError("BATCH_EXPIRED", "The interaction batch confirmation expired.")
+            if not secrets.compare_digest(str(record.get("confirmation_phrase", "")), confirmation):
+                raise BridgeError("CONFIRMATION_MISMATCH", "The batch confirmation phrase does not match.")
+            if record.get("state") not in {"prepared", "queued", "partial"}:
+                raise BridgeError("BATCH_NOT_READY", "The interaction batch is not ready.")
+
     def interaction_batch_status(
         self, batch_id: str, *, session_id: str | None = None
     ) -> dict[str, Any]:

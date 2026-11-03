@@ -19,3 +19,9 @@
   calibration successes. After cooldown expiry, allow one fresh-target
   calibration action. A missing recovery time means manual recovery, not a
   guessed wait.
+- Apply global stop and response observation to likes, reposts and replies too.
+  A follow-only guard does not protect interaction batches. Resume must verify
+  the original session, expiry and confirmation, and only claim pending rows.
+- Report daily counts in Asia/Shanghai separately per action type. Missing
+  account identity means unattributed evidence, not zero observed actions or
+  permission to create a fresh ledger. Targets are goals, not proven capacity.
