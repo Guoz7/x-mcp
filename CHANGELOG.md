@@ -6,6 +6,11 @@ for public hosted use.
 
 ## Unreleased
 
+- Browser ledger transactions now use a reentrant cross-process file lock.
+  Initialization uses the same lock, and the internal test archive includes
+  the lock module. This does not clear historical rate stops or establish
+  daily action capacity. See [verification](docs/LEDGER-LOCK-2026-11-04.md).
+
 - Independent repost/reply waves no longer require a like. Reposts no longer
   repeat liked targets when the requested repost count exceeds the like count.
   MCP validation and bridge preparation support zero-like nonempty waves.

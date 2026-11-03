@@ -315,7 +315,8 @@ class BrowserBridge:
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "state.json"
-        self._lock = threading.RLock()
+        from ledger_lock import LedgerLock
+        self._lock = LedgerLock(self.root / ".ledger.lock")
         self._now = now
         self.allowed_browser_family = (
             allowed_browser_family.strip().lower()
@@ -326,8 +327,9 @@ class BrowserBridge:
         # snapshot observed for one profile must never authorize a write for a
         # different one; without this, leftover test state could act as owner.
         self.account_binding = (account_binding or "").strip() or None
-        if not self.path.exists():
-            self._write(self._empty())
+        with self._lock:
+            if not self.path.exists():
+                self._write(self._empty())
 
     @staticmethod
     def _empty() -> dict[str, Any]:
