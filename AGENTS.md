@@ -11,3 +11,7 @@
   record is not evidence that visual recovery actually executed.
 - Use isolated temporary state and a mock browser for policy tests. Keep live
   DSH/DeepSeek test evidence separate and enforce the 20-minute host deadline.
+- Account rate limits survive new batches, sessions and MCP restarts in the
+  same account-bound ledger. Enforce them before claim and grant issuance.
+  Unknown recovery times require a confirmed recovery condition, not an
+  invented timer, cleared ledger, changed candidate or repeated probe.

@@ -12,12 +12,14 @@ service and binds no network port.
 from __future__ import annotations
 
 import hashlib
+import math
 import json
 import os
 import re
 import secrets
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
@@ -1301,6 +1303,11 @@ class BrowserBridge:
                 if chunk is not None and (action.get("payload") or {}).get("chunk") != chunk:
                     continue
                 if action["status"] == "pending":
+                    if action.get("type") in {
+                        "follow_profile", "like_post", "repost_post", "reply_post",
+                        "publish_post", "delete_post",
+                    }:
+                        self._assert_x_rate_gate(data, now)
                     action["status"] = "claimed"
                     action["claim_token"] = secrets.token_urlsafe(24)
                     if session_id is not None:
@@ -1346,6 +1353,34 @@ class BrowserBridge:
                     self._write(data)
                     return self.public_action(action, include_claim=False)
         return None
+
+    @staticmethod
+    def _assert_x_rate_gate(data: dict[str, Any], now: float) -> None:
+        """A new batch or session cannot erase a recorded account rate limit."""
+        remaining = 0
+        for record in data.get("actions", {}).values():
+            error = record.get("error") or {}
+            if error.get("code") != "X_RATE_LIMITED":
+                continue
+            details = error.get("details") or {}
+            retry = details.get("retry_after_seconds")
+            try:
+                if isinstance(retry, bool) or not isinstance(retry, (int, float)) or not math.isfinite(retry) or retry < 0:
+                    raise ValueError("no known recovery time")
+                completed = datetime.fromisoformat(record["completed_at"].replace("Z", "+00:00"))
+                if completed.tzinfo is None:
+                    raise ValueError("missing timezone")
+                remaining = max(remaining, math.ceil(completed.timestamp() + retry - now))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                raise BridgeError(
+                    "X_RATE_LIMITED", "A recorded X rate limit has no established recovery time; no write claimed.",
+                    details={"recovery": "manual_recovery_required"},
+                ) from None
+        if remaining > 0:
+            raise BridgeError(
+                "X_RATE_LIMITED", "The recorded X Retry-After window is still active; no write claimed.",
+                details={"recovery": "wait_until_retry_after", "retry_after_seconds": remaining},
+            )
 
     def complete_action(
         self,
@@ -1474,7 +1509,8 @@ class BrowserBridge:
         """Prove that a caller holds a live claim before granting UI access."""
 
         with self._lock:
-            action = self._read()["actions"].get(action_id)
+            data = self._read()
+            action = data["actions"].get(action_id)
             if not isinstance(action, dict) or not self._scope_ok(action, session_id):
                 raise BridgeError("ACTION_NOT_FOUND", "The browser action does not exist.")
             if action["status"] != "claimed":
@@ -1485,6 +1521,11 @@ class BrowserBridge:
                 )
             if not secrets.compare_digest(str(action.get("claim_token", "")), claim_token):
                 raise BridgeError("CLAIM_TOKEN_MISMATCH", "The action claim token is invalid.")
+            if action.get("type") in {
+                "follow_profile", "like_post", "repost_post", "reply_post",
+                "publish_post", "delete_post",
+            }:
+                self._assert_x_rate_gate(data, self._now())
             return {
                 "action": self.public_action(action, include_claim=False),
                 "lease_expires_epoch": float(action.get("lease_expires_epoch", 0)),

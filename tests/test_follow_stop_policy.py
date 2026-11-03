@@ -73,6 +73,27 @@ def fake_playwright():
 
 
 class FollowStopPolicyTests(unittest.TestCase):
+    def test_durable_gate_stops_before_claim_or_browser_acquisition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = self._app(directory)
+            first = self._prepared_batch(app)
+            with patch.object(app, "_browser_for") as browser_for:
+                browser_for.return_value.browser_family = "chromium"
+                browser_for.return_value.execute_x_action.side_effect = ExecutorError(
+                    "X_RATE_LIMITED", "mock 429"
+                )
+                self._execute(app, first, "continue")
+            second = self._prepared_batch(app)
+            with patch.object(app, "_browser_for") as browser_for:
+                data = self._execute(app, second, "continue")
+                browser_for.assert_not_called()
+            self.assertEqual(data["processed"], 0)
+            self.assertEqual(data["stop_reason"], "X_RATE_LIMITED")
+            self.assertEqual(data["stop_details"]["recovery"], "manual_recovery_required")
+            status = app._bridge().follow_batch_status(second["batch_id"], session_id="s1")
+            self.assertEqual(status["counts"]["pending"], 3)
+            self.assertEqual(status["counts"]["claimed"], 0)
+
     def _app(self, directory):
         app = XStarter(
             mode="browser",

@@ -3003,6 +3003,7 @@ class XStarter:
         success_limit_reached = False
         action_limit_reached = False
         stop_reason = None
+        stop_details = None
         global_stop_codes = {
             "X_SECURITY_INTERSTITIAL", "X_RATE_LIMITED",
             "BROWSER_RUNTIME_MISSING", "BROWSER_BINARY_MISSING",
@@ -3020,12 +3021,19 @@ class XStarter:
             if deadline_at is not None and time.monotonic() >= deadline_at:
                 deadline_reached = True
                 break
-            action = self._bridge().next_action(
-                lease_seconds=lease_seconds,
-                session_id=session_id,
-                batch_id=batch_id,
-                chunk=chunk,
-            )
+            try:
+                action = self._bridge().next_action(
+                    lease_seconds=lease_seconds,
+                    session_id=session_id,
+                    batch_id=batch_id,
+                    chunk=chunk,
+                )
+            except BridgeError as exc:
+                if exc.code != "X_RATE_LIMITED":
+                    raise
+                stop_reason = exc.code
+                stop_details = exc.details
+                break
             if action is None:
                 break
             payload = action.get("payload") or {}
@@ -3089,6 +3097,7 @@ class XStarter:
                 results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
                 if error["code"] in global_stop_codes:
                     stop_reason = error["code"]
+                    stop_details = error["details"]
                     break
                 if failure_policy == "stop":
                     break
@@ -3114,6 +3123,7 @@ class XStarter:
             "continued_after_uncertainty": any(item["status"] == "uncertain" for item in results[:-1]),
             "failure_policy": failure_policy,
             "stop_reason": stop_reason,
+            "stop_details": stop_details,
             "browser_closed": True,
             "deadline_seconds": deadline_seconds,
             "deadline_reached": deadline_reached,
