@@ -6,6 +6,11 @@ for public hosted use.
 
 ## Unreleased
 
+- Added a read-only visual-diagnosis result validator. A real uncertain-profile
+  check found a Follow button without retrying the write. The initial model
+  eligibility hallucination is preserved as a failed task, despite exit 0.
+  See [evidence](docs/VISUAL-RECONCILIATION-2026-11-04.md).
+
 - Corrected ledger-derived pacing for global stops, undated rate records,
   overlapping/conflicting cooldowns, uncertainty and unchanged results. Forty-six focused
   offline checks pass. Real DSH image admission and pixel inspection now work

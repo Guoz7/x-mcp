@@ -28,6 +28,10 @@
 - Screenshot capture is not pixel delivery. Probe the actual model route
   before declaring image support, verify attachment admission and inspect
   the image output. Readable pixels do not prove write-rate recovery.
+- A DSH exit code of zero is not task success. Validate the requested output
+  contract and retain truncated tool evidence. Visual classification must
+  not invent eligibility rules or require Follows-you when only advertised
+  mutual-follow text was requested. Keep diagnosis separate from writes.
 - Ledger-derived policy must retain unresolved global stops and every rate
   gate. Never substitute epoch zero for an unknown rate timestamp or ramp
   waves on unchanged results. Midnight does not erase account-level gates.

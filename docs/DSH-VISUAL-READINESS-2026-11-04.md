@@ -1,5 +1,9 @@
 # DSH image admission: real route and browser checks
 
+Follow-up: [read-only uncertain-follow diagnosis](VISUAL-RECONCILIATION-2026-11-04.md)
+records a real model task failure, its corrected run and a reusable output
+validator. This did not authorize or perform additional follows.
+
 ## Finding and fix
 
 Capturing a screenshot is not the same as delivering pixels to the model.
