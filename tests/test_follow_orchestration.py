@@ -98,5 +98,65 @@ class FollowOrchestrationTests(unittest.TestCase):
         self.assertFalse(decision["allow_write"])
         self.assertEqual(decision["reason"], "invalid_cooldown_deadline")
 
+    def test_global_stop_survives_later_success(self):
+        for code in ("X_SECURITY_INTERSTITIAL", "BROWSER_OWNER_EXCLUSIVE"):
+            with self.subTest(code=code):
+                policy = derive_from_ledger({"actions": {
+                    "stop": {"type": "follow_profile", "status": "uncertain",
+                             "error": {"code": code}},
+                    "success": {"type": "like_post", "status": "completed",
+                                "result": {"verified": True, "changed": True}},
+                }})
+                self.assertFalse(next_decision(policy, now_epoch=100, fresh_target_available=True)["allow_write"])
+
+    def test_relative_recovery_without_valid_timestamp_fails_closed(self):
+        for timestamp in (None, "invalid", float("nan"), float("inf")):
+            with self.subTest(timestamp=timestamp):
+                policy = derive_from_ledger({"actions": {"rate": {
+                    "type": "follow_profile", "completed_at": timestamp,
+                    "error": {"code": "X_RATE_LIMITED", "details": {"retry_after_seconds": 60}},
+                }}})
+                self.assertEqual(policy["mode"], "manual_recovery")
+
+    def test_newer_known_rate_does_not_erase_older_unknown_gate(self):
+        policy = derive_from_ledger({"actions": {
+            "old": {"type": "follow_profile", "completed_at": "1970-01-01T00:10:00Z",
+                    "error": {"code": "X_RATE_LIMITED", "details": {}}},
+            "new": {"type": "like_post", "completed_at": "1970-01-01T00:20:00Z",
+                    "error": {"code": "X_RATE_LIMITED", "details": {"retry_after_seconds": 60}}},
+        }})
+        self.assertEqual(policy["mode"], "manual_recovery")
+
+    def test_longest_recorded_rate_window_wins(self):
+        policy = derive_from_ledger({"actions": {
+            str(i): {"type": "follow_profile", "completed_at": "1970-01-01T00:10:00Z",
+                     "error": {"code": "X_RATE_LIMITED", "details": {
+                         "rate_limit": {"reset_epoch": until}}}}
+            for i, until in enumerate((2000, 1000))
+        }})
+        self.assertEqual(policy["cooldown_until_epoch"], 2000)
+
+    def test_unchanged_results_do_not_ramp_wave(self):
+        policy = derive_from_ledger({"actions": {
+            str(i): {"type": "follow_profile", "status": "completed",
+                     "result": {"verified": True, "changed": False}}
+            for i in range(4)
+        }})
+        self.assertEqual(policy["stage_index"], 0)
+
+    def test_later_uncertainty_reduces_wave(self):
+        actions = {
+            str(i): {"type": "follow_profile", "status": "completed",
+                     "completed_at": f"1970-01-01T00:0{i}:00Z",
+                     "result": {"verified": True, "changed": True}}
+            for i in range(3)
+        }
+        actions["unknown"] = {"type": "follow_profile", "status": "uncertain",
+                              "completed_at": "1970-01-01T00:05:00Z",
+                              "error": {"code": "ACTION_UNCERTAIN"}}
+        policy = derive_from_ledger({"actions": actions})
+        self.assertEqual(policy["stage_index"], 1)
+        self.assertEqual(policy["mode"], "calibrating")
+
 if __name__ == "__main__":
     unittest.main()

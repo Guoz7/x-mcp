@@ -1,5 +1,10 @@
 # Follow evidence and visual readiness audit
 
+Follow-up: the image capability probe and task-local declaration fix passed
+on 2026-11-04. See [DSH visual readiness](DSH-VISUAL-READINESS-2026-11-04.md).
+The diagnostic below is historical; it no longer describes the tested local
+DSH route. No historical uncertain outcome was promoted.
+
 ## Actual results
 
 Read-only audit of the original ledger found 104 unique completed, changed,

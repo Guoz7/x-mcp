@@ -1,5 +1,9 @@
 # Daily action target and bounded verification
 
+2026-11-04 follow-up: [visual readiness and policy corrections](DSH-VISUAL-READINESS-2026-11-04.md).
+The tested DSH route now admits images. Today's counts start at zero; the
+104 verified follows below belong to 2026-11-03, not the new accounting day.
+
 ## Target, not a capacity claim
 
 The requested daily target is 200 new verified actions each for follows,

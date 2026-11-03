@@ -25,3 +25,9 @@
 - Report daily counts in Asia/Shanghai separately per action type. Missing
   account identity means unattributed evidence, not zero observed actions or
   permission to create a fresh ledger. Targets are goals, not proven capacity.
+- Screenshot capture is not pixel delivery. Probe the actual model route
+  before declaring image support, verify attachment admission and inspect
+  the image output. Readable pixels do not prove write-rate recovery.
+- Ledger-derived policy must retain unresolved global stops and every rate
+  gate. Never substitute epoch zero for an unknown rate timestamp or ramp
+  waves on unchanged results. Midnight does not erase account-level gates.

@@ -48,7 +48,7 @@ def _valid_retry(value: Any) -> bool:
 
 def _epoch(value: Any) -> float | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
+        return float(value) if math.isfinite(value) else None
     if not isinstance(value, str):
         return None
     try:
@@ -212,36 +212,58 @@ def derive_from_ledger(ledger: dict[str, Any]) -> dict[str, Any]:
     """Derive policy from the durable action ledger without exposing targets."""
 
     records = []
-    for action in (ledger.get("actions") or {}).values():
+    actions = ledger.get("actions") or {}
+    if not isinstance(actions, dict):
+        raise ValueError("actions must be an object")
+    for action in actions.values():
+        if not isinstance(action, dict):
+            raise ValueError("action must be an object")
         if action.get("type") not in WRITE_TYPES:
             continue
         records.append(action)
     records.sort(key=lambda item: _epoch(item.get("completed_at")) or 0)
-    latest_rate = next(
-        (item for item in reversed(records) if (item.get("error") or {}).get("code") == "X_RATE_LIMITED"),
-        None,
-    )
     state = initial_policy()
-    if latest_rate is not None:
-        error = latest_rate.get("error") or {}
+    rates = []
+    for record in records:
+        error = record.get("error") or {}
+        if error.get("code") != "X_RATE_LIMITED":
+            continue
         details = error.get("details") or {}
-        observed = _epoch(latest_rate.get("completed_at")) or 0
+        observed = _epoch(record.get("completed_at"))
         rate_limit = details.get("rate_limit") or {}
         reset_epoch = rate_limit.get("reset_epoch")
-        return observe_event(
+        # A relative wait without an observed time cannot establish recovery.
+        retry = details.get("retry_after_seconds") if observed is not None else None
+        rate_state = observe_event(
             state,
             code="X_RATE_LIMITED",
-            observed_at_epoch=observed,
-            retry_after_seconds=details.get("retry_after_seconds"),
+            observed_at_epoch=observed if observed is not None else 0,
+            retry_after_seconds=retry,
             recovery_until_epoch=reset_epoch,
             rate_limit_strength=details.get("rate_limit_strength") or "hard_429",
         )
-    successes = [
-        item for item in records
-        if item.get("status") == "completed"
-        and (item.get("result") or {}).get("verified") is True
-    ]
-    for _ in range(min(len(successes), len(WAVE_SIZES) - 1)):
-        state = observe_event(state, code="verified_success", observed_at_epoch=0)
+        if rate_state["mode"] == "manual_recovery":
+            return rate_state
+        rates.append(rate_state)
+    # Match the bridge: a newer rate record cannot erase an older gate.
+    if rates:
+        state = max(rates, key=lambda item: item["cooldown_until_epoch"])
+    for record in records:
+        code = (record.get("error") or {}).get("code")
+        if code in GLOBAL_STOP_CODES:
+            return observe_event(state, code=code, observed_at_epoch=0)
+    if rates:
+        return state
+    for record in records:
+        result = record.get("result") or {}
+        code = (record.get("error") or {}).get("code")
+        if code in {"ACTION_UNCERTAIN", "FOLLOW_PENDING"} or record.get("status") == "uncertain":
+            state = observe_event(state, code=code or "ACTION_UNCERTAIN", observed_at_epoch=0)
+        elif (
+            record.get("status") == "completed"
+            and result.get("verified") is True
+            and result.get("changed") is True
+        ):
+            state = observe_event(state, code="verified_success", observed_at_epoch=0)
     return state
 

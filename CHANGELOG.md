@@ -6,6 +6,12 @@ for public hosted use.
 
 ## Unreleased
 
+- Corrected ledger-derived pacing for global stops, undated rate records,
+  overlapping cooldowns, uncertainty and unchanged results. Thirty focused
+  offline checks pass. Real DSH image admission and pixel inspection now work
+  on the tested local route; no daily 200-per-category capacity claim is made.
+  See [evidence](docs/DSH-VISUAL-READINESS-2026-11-04.md).
+
 - Added a read-only follow evidence audit with strict unique counts,
   hash-chain comparisons, explicit timing sources and visual-handoff gaps.
   A real DSH screenshot check exposed route-level image admission blocking;
