@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 WAVE_SIZES = (1, 3, 5, 10)
+VALID_MODES = frozenset({"calibrating", "stable", "cooldown", "manual_recovery"})
 WRITE_TYPES = frozenset(
     {
         "follow_profile",
@@ -74,7 +75,10 @@ def _normalise(state: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(stage, int) or isinstance(stage, bool):
         stage = 0
     source["stage_index"] = max(0, min(stage, len(WAVE_SIZES) - 1))
-    source["mode"] = source.get("mode") or "calibrating"
+    mode = source.get("mode")
+    source["mode"] = mode if mode in VALID_MODES else "manual_recovery"
+    if mode not in VALID_MODES:
+        source["reason"] = "invalid_policy_state"
     source.setdefault("cooldown_until_epoch", None)
     source.setdefault("reason", "resume")
     return source
@@ -170,6 +174,14 @@ def next_decision(
             "calibration_required": True,
         }
     until = current.get("cooldown_until_epoch")
+    if current["mode"] == "cooldown" and not _valid_retry(until):
+        return {
+            "allow_write": False,
+            "wave_size": 0,
+            "wait_until_epoch": None,
+            "reason": "invalid_cooldown_deadline",
+            "calibration_required": True,
+        }
     if current["mode"] == "cooldown" and isinstance(until, (int, float)) and now_epoch < until:
         return {
             "allow_write": False,

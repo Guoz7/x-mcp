@@ -80,6 +80,23 @@ class FollowOrchestrationTests(unittest.TestCase):
         self.assertEqual(next_decision(state, now_epoch=1099, fresh_target_available=True)["reason"], "cooldown_active")
         self.assertEqual(next_decision(state, now_epoch=1100, fresh_target_available=True)["wave_size"], 1)
 
+    def test_invalid_policy_state_fails_closed(self):
+        decision = next_decision(
+            {"mode": "cooldwn", "stage_index": 3},
+            now_epoch=0,
+            fresh_target_available=True,
+        )
+        self.assertFalse(decision["allow_write"])
+        self.assertEqual(decision["reason"], "invalid_policy_state")
+
+    def test_cooldown_without_deadline_fails_closed(self):
+        decision = next_decision(
+            {"mode": "cooldown", "cooldown_until_epoch": None},
+            now_epoch=100,
+            fresh_target_available=True,
+        )
+        self.assertFalse(decision["allow_write"])
+        self.assertEqual(decision["reason"], "invalid_cooldown_deadline")
 
 if __name__ == "__main__":
     unittest.main()
