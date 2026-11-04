@@ -6,6 +6,11 @@ for public hosted use.
 
 ## Unreleased
 
+- Added a bounded owner-authorized follow window and a single-target
+  calibration permit. They keep historical rate-limit evidence and revoke on
+  a newer 429 or security interstitial. Sixty focused offline checks pass.
+  See [operator window](docs/OPERATOR-WINDOW-2026-11-05.md).
+
 - Browser ledger transactions now use a reentrant cross-process file lock.
   Initialization uses the same lock, and the internal test archive includes
   the lock module. This does not clear historical rate stops or establish

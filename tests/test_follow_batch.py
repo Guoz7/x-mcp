@@ -299,6 +299,7 @@ class FollowBatchTests(unittest.TestCase):
 
     def test_execute_tool_checks_deadline_before_claiming(self):
         from unittest.mock import patch
+        from types import SimpleNamespace
 
         from server import XStarter
 
@@ -310,7 +311,10 @@ class FollowBatchTests(unittest.TestCase):
             def monotonic():
                 return next(clock, 2.0)
 
-            with patch("server.time.monotonic", side_effect=monotonic):
+            # Replace only server's module reference. Patching the shared
+            # time module would also freeze the ledger lock's wait clock.
+            fake_time = SimpleNamespace(monotonic=monotonic)
+            with patch("server.time", fake_time):
                 data = app._x_follow_batch_execute(
                     {
                         "batch_id": prepared["batch_id"],

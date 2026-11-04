@@ -42,3 +42,8 @@
   before launching a server or reading credentials. A new output directory
   must never imply a fresh account state. Offline wave counts are not live
   daily capacity evidence.
+- Report security challenges with their observed time, URL path and browser
+  context. A background /account/access interstitial is not proof the owner's
+  visible browser currently requires a CAPTCHA. Never equate a historical
+  429 or local ledger block with a currently observed X restriction. A user
+  reporting no challenge corrects the visible-state claim, not write recovery.

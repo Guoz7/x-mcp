@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 from browser_executor import Browser, ExecutorError
@@ -142,7 +143,9 @@ class InteractionStopPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             app, prepared = self._app_and_batch(directory)
             with patch.object(app, "_browser_for") as browser_for:
-                with patch("server.time.monotonic", side_effect=[0, 2, 2]):
+                clock = iter([0, 2, 2])
+                fake_time = SimpleNamespace(monotonic=lambda: next(clock, 2))
+                with patch("server.time", fake_time):
                     data = self._execute(app, prepared, deadline_seconds=1)
                 browser_for.assert_not_called()
             self.assertEqual(data["processed"], 0)

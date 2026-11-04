@@ -1331,13 +1331,22 @@ class BrowserBridge:
                         "follow_profile", "like_post", "repost_post", "reply_post",
                         "publish_post", "delete_post",
                     }:
-                        self._assert_x_rate_gate(data, now)
+                        self._assert_x_rate_gate(data, now, action)
                     action["status"] = "claimed"
                     action["claim_token"] = secrets.token_urlsafe(24)
                     if session_id is not None:
                         action["session_id"] = session_id
                     action["claimed_at"] = _now_iso(now)
                     action["lease_expires_epoch"] = now + lease_seconds
+                    recovery = data.get("operator_recovery")
+                    if (action.get("type") == "follow_profile" and isinstance(recovery, dict)
+                            and recovery.get("target_handle") == str((action.get("payload") or {}).get("handle", "")).casefold()
+                            and recovery.get("consumed") is not True):
+                        recovery["consumed"] = True
+                        recovery["consumed_action_id"] = action["action_id"]
+                    if (action.get("type") == "follow_profile" and isinstance(recovery, dict)
+                            and recovery.get("mode") == "bounded_follow_run"):
+                        recovery["used_actions"] = int(recovery.get("used_actions", 0)) + 1
                     self._append_evidence(
                         data,
                         "action_claimed",
@@ -1379,8 +1388,19 @@ class BrowserBridge:
         return None
 
     @staticmethod
-    def _assert_x_rate_gate(data: dict[str, Any], now: float) -> None:
+    def _assert_x_rate_gate(data: dict[str, Any], now: float, action: dict[str, Any] | None = None) -> None:
         """A new batch or session cannot erase a recorded account rate limit."""
+        recovery = data.get("operator_recovery")
+        if BrowserBridge._operator_window_allows(data, now, action):
+            return
+        if isinstance(recovery, dict) and recovery.get("allow_one_calibration") is True:
+            if recovery.get("account_binding") == data.get("account_binding"):
+                expires = recovery.get("expires_epoch")
+                target = str((action or {}).get("payload", {}).get("handle", "")).casefold()
+                if (isinstance(expires, (int, float)) and now < expires
+                        and target and target == recovery.get("target_handle")
+                        and recovery.get("consumed") is not True):
+                    return
         remaining = 0
         for record in data.get("actions", {}).values():
             error = record.get("error") or {}
@@ -1423,6 +1443,55 @@ class BrowserBridge:
                 "X_RATE_LIMITED", "The recorded X Retry-After window is still active; no write claimed.",
                 details={"recovery": "wait_until_retry_after", "retry_after_seconds": remaining},
             )
+
+    @staticmethod
+    def _operator_window_allows(
+        data: dict[str, Any], now: float, action: dict[str, Any] | None
+    ) -> bool:
+        """A time-boxed, count-boxed operator window for explicit real runs.
+
+        The historical rate-limit record is never modified. The window is
+        revoked by any newer stop event, so one fresh rate limit or security
+        interstitial closes it before another action is claimed.
+        """
+
+        window = data.get("operator_recovery")
+        if not isinstance(window, dict) or window.get("mode") != "bounded_follow_run":
+            return False
+        if window.get("revoked_reason"):
+            return False
+        if not data.get("account_binding") or window.get("account_binding") != data["account_binding"]:
+            return False
+        expires = window.get("expires_epoch")
+        if isinstance(expires, bool) or not isinstance(expires, (int, float)):
+            return False
+        if not math.isfinite(expires) or now >= float(expires):
+            return False
+        limit = window.get("max_actions")
+        used = window.get("used_actions", 0)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            return False
+        if isinstance(used, bool) or not isinstance(used, int) or used >= limit:
+            return False
+        started = window.get("authorized_epoch")
+        if isinstance(started, bool) or not isinstance(started, (int, float)):
+            return False
+        if (action or {}).get("type") != "follow_profile":
+            return False
+        for record in data.get("actions", {}).values():
+            code = (record.get("error") or {}).get("code")
+            if code not in {"X_RATE_LIMITED", "X_SECURITY_INTERSTITIAL"}:
+                continue
+            stamp = record.get("completed_at")
+            if not isinstance(stamp, str):
+                continue
+            try:
+                parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if parsed > float(started):
+                return False
+        return True
 
     def complete_action(
         self,
@@ -1567,7 +1636,7 @@ class BrowserBridge:
                 "follow_profile", "like_post", "repost_post", "reply_post",
                 "publish_post", "delete_post",
             }:
-                self._assert_x_rate_gate(data, self._now())
+                self._assert_x_rate_gate(data, self._now(), action)
             return {
                 "action": self.public_action(action, include_claim=False),
                 "lease_expires_epoch": float(action.get("lease_expires_epoch", 0)),
