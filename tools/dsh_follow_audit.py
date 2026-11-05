@@ -55,6 +55,12 @@ def main() -> None:
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--runs", required=True)
     parser.add_argument("--require-model", default="deepseek")
+    parser.add_argument(
+        "--export-actions",
+        default=None,
+        help="Write one JSON line per finished action to this path. "
+             "The file contains handles, so keep it out of version control.",
+    )
     args = parser.parse_args()
 
     ledger = json.loads((pathlib.Path(args.state_dir) / "state.json").read_text(encoding="utf-8"))
@@ -139,6 +145,36 @@ def main() -> None:
                                            for a in unique.values())),
     }
     print(json.dumps(summary, indent=2, ensure_ascii=False))
+
+    if args.export_actions:
+        target = pathlib.Path(args.export_actions)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", encoding="utf-8") as out:
+            for action in sorted(rows, key=lambda a: a.get("completed_at") or a.get("created_at") or ""):
+                if action.get("status") not in ("completed", "uncertain", "failed"):
+                    continue
+                result = action.get("result") or {}
+                error = action.get("error") or {}
+                details = error.get("details") or {}
+                start, end = stamp(action.get("claimed_at")), stamp(action.get("completed_at"))
+                out.write(json.dumps({
+                    "action_id": action.get("action_id"),
+                    "batch_id": action.get("batch_id"),
+                    "run": batch_run.get(action.get("batch_id")),
+                    "handle": result.get("handle") or (action.get("payload") or {}).get("handle"),
+                    "status": action.get("status"),
+                    "verified": result.get("verified"),
+                    "changed": result.get("changed"),
+                    "state": result.get("state"),
+                    "error_code": error.get("code"),
+                    "had_429": (details.get("api_response") or {}).get("status") == 429,
+                    "visual_fallback": "visual_fallback" in json.dumps(error, ensure_ascii=False),
+                    "elapsed_seconds": result.get("elapsed_seconds"),
+                    "derived_seconds": round(end - start, 3) if (start is not None and end is not None) else None,
+                    "claimed_at": action.get("claimed_at"),
+                    "completed_at": action.get("completed_at"),
+                }, ensure_ascii=False) + "\n")
+        print("\nwrote %s" % target)
 
 
 if __name__ == "__main__":
