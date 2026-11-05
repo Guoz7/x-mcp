@@ -1347,6 +1347,12 @@ class BrowserBridge:
                     if (action.get("type") == "follow_profile" and isinstance(recovery, dict)
                             and recovery.get("mode") == "bounded_follow_run"):
                         recovery["used_actions"] = int(recovery.get("used_actions", 0)) + 1
+                        counted = recovery.get("used_action_ids")
+                        if not isinstance(counted, list):
+                            counted = []
+                            recovery["used_action_ids"] = counted
+                        if action["action_id"] not in counted:
+                            counted.append(action["action_id"])
                     self._append_evidence(
                         data,
                         "action_claimed",
@@ -1471,8 +1477,15 @@ class BrowserBridge:
         used = window.get("used_actions", 0)
         if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
             return False
-        if isinstance(used, bool) or not isinstance(used, int) or used >= limit:
+        if isinstance(used, bool) or not isinstance(used, int):
             return False
+        if used >= limit:
+            # The claim that consumed the last slot must still pass its own
+            # verify_claim re-check. Any other action stays blocked.
+            counted = window.get("used_action_ids")
+            action_id = (action or {}).get("action_id")
+            if not (isinstance(counted, list) and action_id and action_id in counted):
+                return False
         started = window.get("authorized_epoch")
         if isinstance(started, bool) or not isinstance(started, (int, float)):
             return False

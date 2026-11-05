@@ -52,6 +52,23 @@ account binding.
 - It does not exempt visual clicks from the account quota. The browser still
   calls the same `friendships/create` endpoint.
 
+## Last-slot defect and fix
+
+The claim path spent a slot before the action ran: `next_action()` raised
+`used_actions` to 15, then `verify_claim()` re-checked the same window and
+rejected the action for being at the limit. The last action of every window
+failed against our own counter, not against X.
+
+The window now records every claimed `action_id` in `used_action_ids`. When
+`used_actions` reaches `max_actions`, only an action already in that list may
+pass its own re-check. A different action still gets rejected, so the limit
+keeps its meaning.
+
+Regression test: `tests/test_rate_gate_clock.py::test_last_slot_claim_survives_its_own_verify_recheck`.
+
+Live check on 2026-11-05 17:53: waves of 15 and 14 targets both completed with
+the final action verified, which the earlier code could not do.
+
 ## Verification
 
 ```powershell

@@ -107,6 +107,36 @@ class RateGateClockTests(unittest.TestCase):
             self.assertEqual(bridge.next_action(session_id="new-session")["action_id"], "new")
             self.assertEqual(bridge._read()["operator_recovery"]["used_actions"], 1)
 
+    def test_last_slot_claim_survives_its_own_verify_recheck(self):
+        """The claim that spends the final slot must still verify itself.
+
+        next_action() increments used_actions first. verify_claim() then runs
+        the same gate against the updated ledger. Without an explicit record
+        of which action spent the slot, the last action of every window is
+        blocked by its own increment.
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = self._bounded(directory, max_actions=1)
+            claimed = bridge.next_action(session_id="new-session")
+            self.assertEqual(claimed["action_id"], "new")
+            self.assertEqual(bridge._read()["operator_recovery"]["used_actions"], 1)
+            verified = bridge.verify_claim(
+                claimed["action_id"], claimed["claim_token"], session_id="new-session"
+            )
+            self.assertEqual(verified["action"]["action_id"], "new")
+
+            data = bridge._read()
+            data["actions"]["other"] = {
+                "action_id": "other",
+                "type": "follow_profile",
+                "status": "pending",
+                "payload": {"handle": "other"},
+            }
+            bridge._write(data)
+            with self.assertRaises(BridgeError):
+                bridge.next_action(session_id="new-session")
+
     def test_bounded_window_stops_at_expiry_or_limit(self):
         cases = (
             {"expires_epoch": 1005},

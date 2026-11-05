@@ -6,6 +6,13 @@ for public hosted use.
 
 ## Unreleased
 
+- Fixed the bounded-window last-slot defect. A claim spent its slot before
+  the action ran, so the action's own re-check rejected it and the final
+  follow of every window failed against our counter. The window now records
+  claimed action ids and admits only those at the limit. Thirteen focused
+  checks pass, and two live waves verified their final action.
+  See [operator window](docs/OPERATOR-WINDOW-2026-11-05.md).
+
 - Added a bounded owner-authorized follow window and a single-target
   calibration permit. They keep historical rate-limit evidence and revoke on
   a newer 429 or security interstitial. Sixty focused offline checks pass.
