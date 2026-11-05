@@ -176,6 +176,7 @@ Playwright MCP 负责通用网页观察。X MCP 负责 X 专用的目标校验�
 ## 文档
 
 - [`docs/PRODUCT-REPORT.md`](docs/PRODUCT-REPORT.md)：产品报告和实测数据。
+- [`docs/DSH-FOLLOW-200-2026-11-05.md`](docs/DSH-FOLLOW-200-2026-11-05.md)：DSH + DeepSeek 跑完 202 个已验证关注的实测记录和审计方法。
 - [`docs/promotion/LAUNCH-KIT-2026-10-30.md`](docs/promotion/LAUNCH-KIT-2026-10-30.md)：推文、视频脚本和组合 Demo。
 - [`docs/THIRD-PARTY-MCP-ADAPTERS.md`](docs/THIRD-PARTY-MCP-ADAPTERS.md)：第三方 MCP 组合方案。
 - [`docs/API-ADAPTER-ROADMAP.md`](docs/API-ADAPTER-ROADMAP.md)：官方 API 和浏览器双通道路线。
