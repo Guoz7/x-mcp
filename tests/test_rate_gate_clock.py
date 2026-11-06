@@ -179,6 +179,36 @@ class RateGateClockTests(unittest.TestCase):
             with self.assertRaises(BridgeError):
                 bridge.next_action(session_id="new-session")
 
+    def test_interaction_window_covers_only_its_named_types(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = self._bounded(
+                directory,
+                mode="bounded_interaction_run",
+                action_types=["like_post"],
+            )
+            data = bridge._read()
+            data["actions"]["new"]["type"] = "like_post"
+            bridge._write(data)
+            self.assertEqual(bridge.next_action(session_id="new-session")["action_id"], "new")
+
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = self._bounded(
+                directory,
+                mode="bounded_interaction_run",
+                action_types=["like_post"],
+            )
+            with self.assertRaises(BridgeError):
+                bridge.next_action(session_id="new-session")
+
+    def test_interaction_window_without_types_never_widens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = self._bounded(directory, mode="bounded_interaction_run")
+            data = bridge._read()
+            data["actions"]["new"]["type"] = "like_post"
+            bridge._write(data)
+            with self.assertRaises(BridgeError):
+                bridge.next_action(session_id="new-session")
+
     def test_conflicting_rate_headers_use_longer_window(self):
         for reset, expected in ((1050, 59), (2000, 999)):
             with self.subTest(reset=reset), tempfile.TemporaryDirectory() as directory:

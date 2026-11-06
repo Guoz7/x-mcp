@@ -6,6 +6,14 @@ for public hosted use.
 
 ## Unreleased
 
+- Generalized the operator window from follows to explicit write types.
+  --actions names the allowed types and stores them in ction_types.
+  A follow-only list keeps the older ounded_follow_run mode. A window
+  never admits a type that it does not name. Live checks on 2026-11-07
+  completed 2 likes, 1 repost and 2 follows, each with a verified changed
+  state. Forty-one focused checks pass.
+  See [operator window](docs/OPERATOR-WINDOW-2026-11-05.md).
+
 - Fixed the bounded-window last-slot defect. A claim spent its slot before
   the action ran, so the action's own re-check rejected it and the final
   follow of every window failed against our counter. The window now records

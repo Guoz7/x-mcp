@@ -1344,8 +1344,8 @@ class BrowserBridge:
                             and recovery.get("consumed") is not True):
                         recovery["consumed"] = True
                         recovery["consumed_action_id"] = action["action_id"]
-                    if (action.get("type") == "follow_profile" and isinstance(recovery, dict)
-                            and recovery.get("mode") == "bounded_follow_run"):
+                    if (self._operator_window_covers(recovery, action.get("type"))
+                            and isinstance(recovery, dict)):
                         recovery["used_actions"] = int(recovery.get("used_actions", 0)) + 1
                         counted = recovery.get("used_action_ids")
                         if not isinstance(counted, list):
@@ -1451,6 +1451,30 @@ class BrowserBridge:
             )
 
     @staticmethod
+    def _operator_window_covers(window: Any, action_type: Any) -> bool:
+        """Return True when a bounded window was authorized for this write type.
+
+        Older ledgers only recorded ``bounded_follow_run`` with no type list.
+        They stay follow-only. A generalized window must name its write types
+        explicitly; an empty or malformed list never widens the permission.
+        """
+
+        if not isinstance(window, dict):
+            return False
+        mode = window.get("mode")
+        if mode == "bounded_follow_run" and "action_types" not in window:
+            allowed = ["follow_profile"]
+        elif mode in {"bounded_follow_run", "bounded_interaction_run", "bounded_operator_run"}:
+            allowed = window.get("action_types")
+        else:
+            return False
+        if not isinstance(allowed, list) or not allowed:
+            return False
+        if not all(isinstance(item, str) for item in allowed):
+            return False
+        return str(action_type or "") in allowed
+
+    @staticmethod
     def _operator_window_allows(
         data: dict[str, Any], now: float, action: dict[str, Any] | None
     ) -> bool:
@@ -1462,7 +1486,11 @@ class BrowserBridge:
         """
 
         window = data.get("operator_recovery")
-        if not isinstance(window, dict) or window.get("mode") != "bounded_follow_run":
+        if not isinstance(window, dict):
+            return False
+        if window.get("mode") not in {
+            "bounded_follow_run", "bounded_interaction_run", "bounded_operator_run"
+        }:
             return False
         if window.get("revoked_reason"):
             return False
@@ -1489,7 +1517,7 @@ class BrowserBridge:
         started = window.get("authorized_epoch")
         if isinstance(started, bool) or not isinstance(started, (int, float)):
             return False
-        if (action or {}).get("type") != "follow_profile":
+        if not BrowserBridge._operator_window_covers(window, (action or {}).get("type")):
             return False
         for record in data.get("actions", {}).values():
             code = (record.get("error") or {}).get("code")
