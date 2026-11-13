@@ -1571,7 +1571,12 @@ class BrowserBridge:
                 preconditions_checked=preconditions_checked,
                 postconditions_checked=postconditions_checked,
             )
-            if self.allowed_browser_family:
+            # The family gate guards a success claim: it proves the browser that
+            # produced the evidence is the one the experiment configured. A
+            # failure or an uncertain outcome has no success evidence to
+            # protect, and rejecting it here would replace the real error code
+            # (for example a login wall) with a family mismatch.
+            if self.allowed_browser_family and outcome == "succeeded":
                 actual_family = (execution.get("executor_context") or {}).get("browser_family")
                 if actual_family != self.allowed_browser_family:
                     raise BridgeError(

@@ -115,6 +115,33 @@ def _locale() -> str:
     return value
 
 
+def _navigate_timeout() -> int:
+    """Milliseconds allowed for one committed navigation.
+
+    A cold Chrome start and a status page on a slow path both exceed the
+    fifteen seconds that suit a warm local navigation, and a hard timeout turns
+    a slow page into an unproven write. The value stays bounded so one stalled
+    navigation cannot hold a batch forever.
+    """
+
+    raw = os.environ.get("X_BROWSER_EXECUTOR_NAV_TIMEOUT_MS", "").strip()
+    if not raw:
+        return 15000
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ExecutorError(
+            "INVALID_ARGUMENT",
+            "X_BROWSER_EXECUTOR_NAV_TIMEOUT_MS must be an integer.",
+        ) from None
+    if not 1000 <= value <= 60000:
+        raise ExecutorError(
+            "INVALID_ARGUMENT",
+            "X_BROWSER_EXECUTOR_NAV_TIMEOUT_MS must be from 1000 to 60000.",
+        )
+    return value
+
+
 def _color_scheme() -> str | None:
     value = os.environ.get("X_BROWSER_EXECUTOR_COLOR_SCHEME", "").strip().lower()
     if not value:
@@ -404,7 +431,7 @@ class Browser:
                             viewport=viewport, user_agent=user_agent, **context_options
                         )
                     self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
-                    self.page.goto(url, wait_until="commit", timeout=15000)
+                    self.page.goto(url, wait_until="commit", timeout=_navigate_timeout())
                     # Content readiness is checked below. Do not add a fixed
                     # one-second delay to every action in a long batch.
                     self.page.wait_for_timeout(200)
@@ -412,7 +439,7 @@ class Browser:
                     self.close()
                     raise ExecutorError("BROWSER_START_FAILED", str(exc)) from exc
             else:
-                self.page.goto(url, wait_until="commit", timeout=15000)
+                self.page.goto(url, wait_until="commit", timeout=_navigate_timeout())
                 self.page.wait_for_timeout(200)
             self._wait_for_initial_content(url)
             return self.observe()
@@ -449,6 +476,17 @@ class Browser:
             "|| /Something went wrong|Try reloading/i.test(document.body?.innerText || '')"
         )
 
+        # A status page can paint a recommendation card before the article the
+        # caller asked for, so "any article" is not readiness here. Wait for a
+        # link to this exact status; otherwise the interaction layer locates
+        # zero targets and reports an unproven write against a page that simply
+        # had not finished rendering.
+        status_script = (
+            "() => !!document.querySelector('a[href=\"%s\"]') "
+            "|| !!document.querySelector('a[href=\"/i/flow/login\"], a[href=\"/login\"]') "
+            "|| /Something went wrong|Try reloading/i.test(document.body?.innerText || '')"
+        ) % path
+
         profile_script = (
             "() => {"
             "const main = document.querySelector('main');"
@@ -463,7 +501,7 @@ class Browser:
 
         try:
             self.page.wait_for_function(
-                profile_script if is_profile else ready_script if is_status else (
+                profile_script if is_profile else status_script if is_status else (
                     "() => location.pathname.replace(/\\/$/, '') !== '/home'"
                     " || !!document.querySelector('article a[href*=\"/status/\"]')"
                     " || !!document.querySelector('a[href=\"/i/flow/login\"], a[href=\"/login\"]')"
@@ -483,9 +521,9 @@ class Browser:
             # available. A single pre-action reload is safe; after it, leave the
             # page observable so the action layer can stop on an unproven state.
             try:
-                self.page.reload(wait_until="commit", timeout=15000)
+                self.page.reload(wait_until="commit", timeout=_navigate_timeout())
                 self.page.wait_for_timeout(200)
-                self.page.wait_for_function(ready_script, timeout=15000)
+                self.page.wait_for_function(status_script, timeout=15000)
             except PlaywrightTimeoutError:
                 return
 
@@ -1428,12 +1466,29 @@ class Browser:
         parsed = urlparse(post_url)
         status_path = parsed.path.rstrip("/")
         def find_target() -> Any:
+            # X does not always publish a bare "/status/<id>" anchor: a post
+            # whose media or history links are what the page kept can expose
+            # only "/status/<id>/photo/2", "/history" or "/analytics". An exact
+            # href then matches zero articles even though the post is on
+            # screen. Accept the status id followed by a path boundary, which
+            # still cannot cross into a different status id.
             locator = self.page.locator(
-                f'article[data-testid="tweet"]:has(a[href="{status_path}"])'
+                f'article[data-testid="tweet"]:has(a[href^="{status_path}"])'
             )
-            if locator.count() != 1:
-                locator = self.page.locator(f'article:has(a[href="{status_path}"])')
-            return locator
+            count = locator.count()
+            if count > 1:
+                # Sibling links to the same post would widen this; keep the
+                # narrow exact form when it resolves to exactly one article.
+                exact = self.page.locator(
+                    f'article[data-testid="tweet"]:has(a[href="{status_path}"])'
+                )
+                if exact.count() == 1:
+                    return exact
+            elif count == 1:
+                return locator
+            # Fall back to the same prefix rule without the tweet testid, which
+            # some layouts drop on the focal article.
+            return self.page.locator(f'article:has(a[href^="{status_path}"])')
 
         target = find_target()
         target_deadline = time.monotonic() + 10.0
@@ -1460,9 +1515,58 @@ class Browser:
                 self.page.wait_for_timeout(250)
             return locator.count() == expected
 
+        def wait_for_condition(check: Any, timeout_ms: int = 5000) -> bool:
+            """Poll a boolean DOM question without clicking anything again."""
+            deadline = time.monotonic() + timeout_ms / 1000
+            while time.monotonic() < deadline:
+                try:
+                    if check():
+                        return True
+                except Exception:
+                    pass
+                self.page.wait_for_timeout(250)
+            try:
+                return bool(check())
+            except Exception:
+                return False
+
         if action_type in {"like_post", "repost_post"}:
             active_selector = '[data-testid="unlike"]' if action_type == "like_post" else '[data-testid="unretweet"]'
             control_selector = '[data-testid="like"]' if action_type == "like_post" else '[data-testid="retweet"]'
+
+            def like_is_active() -> bool:
+                """Whether the focal post is liked, by any signal X exposes.
+
+                X no longer swaps ``data-testid="like"`` for ``"unlike"`` in
+                every build: the button keeps its testid and changes only its
+                aria-label (``"Liked"`` / a non-zero count) and aria-pressed.
+                Reading one attribute reported a landed write as unproven.
+                """
+                like_buttons = target.locator('[data-testid="like"]')
+                if like_buttons.count() == 1:
+                    pressed = like_buttons.get_attribute("aria-pressed")
+                    if str(pressed).lower() == "true":
+                        return True
+                    label = like_buttons.get_attribute("aria-label") or ""
+                    if re.search(r"\bLiked\b", label, re.I):
+                        return True
+                    match = re.match(r"\s*([\d,\.]+[KMB]?)\s+Likes?\b", label, re.I)
+                    if match and match.group(1).strip() not in {"0", "0.0"}:
+                        return True
+                return target.locator('[data-testid="unlike"]').count() == 1
+
+            def repost_is_active() -> bool:
+                if target.locator('[data-testid="unretweet"]').count() == 1:
+                    return True
+                button = target.locator('[data-testid="retweet"]')
+                if button.count() == 1:
+                    label = button.get_attribute("aria-label") or ""
+                    if re.search(r"\b(Reposted|Undo repost)\b", label, re.I):
+                        return True
+                return False
+
+            is_active = like_is_active if action_type == "like_post" else repost_is_active
+
             control_deadline = time.monotonic() + 5.0
             active = one(active_selector)
             control = one(control_selector)
@@ -1480,6 +1584,19 @@ class Browser:
                     "locator_strategy": "dom",
                 }
             if control is None:
+                # The control may be present with its testid while the state is
+                # already active; treat that as an existing write, not a fault.
+                # This runs on the executor worker already, so call it directly
+                # instead of queueing a second job behind the current one.
+                if is_active():
+                    return {
+                        "post_url": post_url,
+                        "author": author,
+                        "verified": True,
+                        "state": "liked" if action_type == "like_post" else "reposted",
+                        "changed": False,
+                        "locator_strategy": "dom",
+                    }
                 raise self._visual_fallback_error(
                     "The X interaction control was not uniquely exposed; screenshot fallback is required.",
                     page_kind="x_status",
@@ -1500,25 +1617,20 @@ class Browser:
                 self._consume_x_grant(self.X_CLICK_ACTIONS)
                 self._click_x_write_once(confirm, "repost_post")
                 self.page.wait_for_timeout(500)
-                verified = wait_for_count(target.locator('[data-testid="unretweet"]'))
+                verified = is_active()
             else:
                 # X can acknowledge the click after the page has returned.
                 # Wait for the state transition, but never click again.
-                verified = wait_for_count(target.locator('[data-testid="unlike"]'))
+                verified = wait_for_condition(is_active, timeout_ms=5000)
             # The click is already consumed. A single read-only reload can
             # prove a delayed server acknowledgement without retrying it.
             try:
-                self.page.reload(wait_until="commit", timeout=15000)
+                self.page.reload(wait_until="commit", timeout=_navigate_timeout())
                 self.page.wait_for_timeout(200)
                 self._wait_for_initial_content(post_url)
                 target = find_target()
-                active_selector = (
-                    '[data-testid="unretweet"]'
-                    if action_type == "repost_post"
-                    else '[data-testid="unlike"]'
-                )
-                verified = target.count() == 1 and wait_for_count(
-                    target.locator(active_selector), timeout_ms=8000
+                verified = target.count() == 1 and wait_for_condition(
+                    is_active, timeout_ms=8000
                 )
             except Exception:
                 verified = False

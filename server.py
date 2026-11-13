@@ -98,6 +98,17 @@ def _event(layer: str, action: str, **detail: Any) -> dict[str, Any]:
     return {"at": utc_now(), "layer": layer, "action": action, "detail": detail}
 
 
+# Verified end states of the four interaction write kinds. A completed action
+# that reached one of these carries real evidence; grouping them by name keeps
+# the batch result honest instead of reporting every non-follow as zero.
+_INTERACTION_SUCCESS_STATES: dict[str, str] = {
+    "following": "verified_following",
+    "liked": "verified_liked",
+    "reposted": "verified_reposted",
+    "replied": "verified_replied",
+}
+
+
 def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
 
@@ -379,11 +390,18 @@ class XStarter:
             if session not in self._browsers:
                 if self._owner_profile is not None:
                     # A signed-in profile must not be shared by two sessions.
+                    # A holder that no longer owns a live browser is a session
+                    # that went away without closing it; leaving the claim in
+                    # place would make every later MCP session fail with
+                    # BROWSER_OWNER_EXCLUSIVE for the life of the process.
                     if self._owner_session not in {None, session}:
-                        raise StarterError(
-                            "BROWSER_OWNER_EXCLUSIVE",
-                            "The owner browser is already used by another MCP session.",
-                        )
+                        holder = self._browsers.get(self._owner_session)
+                        if holder is not None:
+                            raise StarterError(
+                                "BROWSER_OWNER_EXCLUSIVE",
+                                "The owner browser is already used by another MCP session.",
+                            )
+                        self._owner_session = None
                     self._owner_session = session
                     self._browsers[session] = Browser(profile=self._owner_profile)
                     return self._browsers[session]
@@ -3039,6 +3057,7 @@ class XStarter:
         started = time.monotonic()
         deadline_at = started + deadline_seconds if deadline_seconds is not None else None
         verified_changed = 0
+        verified_by_kind: dict[str, int] = {}
         deadline_reached = False
         success_limit_reached = False
         action_limit_reached = False
@@ -3113,9 +3132,15 @@ class XStarter:
                     and isinstance(completed.get("result"), dict)
                     and completed["result"].get("changed") is True
                     and completed["result"].get("verified") is True
-                    and completed["result"].get("state") == "following"
                 ):
+                    # The interaction batch covers four write kinds. Counting
+                    # only "following" reported likes and reposts as zero even
+                    # when every one of them verified.
                     verified_changed += 1
+                    state = completed["result"].get("state")
+                    if isinstance(state, str) and state in _INTERACTION_SUCCESS_STATES:
+                        bucket = _INTERACTION_SUCCESS_STATES[state]
+                        verified_by_kind[bucket] = verified_by_kind.get(bucket, 0) + 1
             except (BridgeError, ExecutorError, StarterError) as exc:
                 error = {
                     "code": getattr(exc, "code", "ACTION_UNCERTAIN"),
@@ -3172,6 +3197,7 @@ class XStarter:
             "action_limit": action_limit,
             "action_limit_reached": action_limit_reached,
             "verified_changed": verified_changed,
+            "verified_by_kind": verified_by_kind,
         }
 
     def _x_follow_batch_status(

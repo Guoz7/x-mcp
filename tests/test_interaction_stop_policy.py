@@ -110,6 +110,13 @@ class InteractionStopPolicyTests(unittest.TestCase):
         target.count.return_value = 1
         control = Mock()
         control.count.return_value = 1
+        # The like-state probe reads aria-pressed and aria-label on the button
+        # before falling back to the unlike testid, so the fixture has to answer
+        # those attributes the way a plain (not yet liked) button does.
+        control.get_attribute.side_effect = lambda name: {
+            "aria-pressed": "false",
+            "aria-label": "0 Likes. Like",
+        }.get(name, "")
         active = Mock()
         active.count.side_effect = [0, 1, 1]
         target.locator.side_effect = lambda selector: active if selector == '[data-testid="unlike"]' else control
