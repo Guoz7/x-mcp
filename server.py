@@ -2720,6 +2720,7 @@ class XStarter:
         started = time.monotonic()
         stop_reason = None
         stop_details = None
+        refused_count = 0
         browser = None
         from follow_orchestration import GLOBAL_STOP_CODES
 
@@ -2792,11 +2793,18 @@ class XStarter:
                         "attempt_elapsed_seconds": round(time.monotonic() - action_started, 3),
                     },
                 }
+                # A refusal is a definite answer from X, not a write whose
+                # outcome is unknown: the page simply has nothing to prove.
+                # Storing it as uncertain made a policy block look like a lost
+                # acknowledgement and let the stop-on-uncertainty rule end
+                # batches that could have continued.
+                refused = error["code"] == "X_WRITE_REJECTED"
+                outcome = "failed" if refused else "uncertain"
                 try:
                     self._bridge().complete_action(
                         action_id=action["action_id"],
                         claim_token=action["claim_token"],
-                        outcome="uncertain",
+                        outcome=outcome,
                         result=None,
                         error=error,
                         executor_context={"browser_family": "chromium", "host": "x.com", "mode": "browser", "page_kind": "x_status"},
@@ -2804,7 +2812,10 @@ class XStarter:
                     )
                 except BridgeError:
                     pass
-                results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
+                results.append({"action_id": action["action_id"], "status": outcome, "error": error})
+                if refused:
+                    refused_count += 1
+                    continue
                 if error["code"] == "X_RATE_LIMITED" or error["code"] in GLOBAL_STOP_CODES:
                     stop_reason, stop_details = error["code"], error["details"]
                     break
@@ -2831,6 +2842,7 @@ class XStarter:
             "deadline_seconds": deadline_seconds,
             "action_limit": action_limit,
             "browser_closed": True,
+            "refused": refused_count,
         }
 
     def _x_interaction_batch_status(
@@ -3108,10 +3120,22 @@ class XStarter:
                     action_type=action.get("type", ""),
                 )
                 browser_family = getattr(browser, "browser_family", "chromium")
+                # A like, repost or reply is about a status, and the executor
+                # locates the article by that status path. Follows are the only
+                # kind that carries a profile URL. Reading profile_url here sent
+                # every interaction to the author's timeline, where the status
+                # article does not exist, so the action always came back
+                # unproven and X's real answer was never seen.
+                target_url = str(
+                    payload.get("post_url")
+                    or payload.get("profile_url")
+                    or payload.get("url")
+                    or ""
+                ).strip()
                 result = browser.execute_x_action(
                     action_type=action["type"],
-                    post_url=str(payload.get("profile_url")),
-                    author=str(payload.get("handle", "")),
+                    post_url=target_url,
+                    author=str(payload.get("author") or payload.get("handle", "")),
                     text=None,
                     action_id=action["action_id"],
                     claim_token=action["claim_token"],
@@ -3158,6 +3182,11 @@ class XStarter:
                 # then ended batches that could have continued.
                 refused = error["code"] == "X_WRITE_REJECTED"
                 outcome = "failed" if refused else "uncertain"
+                trace.append(_event(
+                    "browser_executor", "follow_outcome",
+                    action_id=action["action_id"], error_code=error["code"],
+                    refused=refused, outcome=outcome,
+                ))
                 try:
                     self._bridge().complete_action(
                         action_id=action["action_id"], claim_token=action["claim_token"], outcome=outcome, result=None,
@@ -3165,8 +3194,17 @@ class XStarter:
                         executor_context={"browser_family": getattr(browser, "browser_family", "chromium"), "host": "x.com", "mode": "browser", "page_kind": "x_profile"},
                         session_id=session_id,
                     )
-                except BridgeError:
-                    pass
+                except BridgeError as exc:
+                    # Let the caller see why the outcome could not be stored;
+                    # silently passing left a refused action looking uncertain.
+                    trace.append(_event(
+                        "browser_bridge", "complete_action_rejected",
+                        action_id=action["action_id"], code=exc.code, message=exc.message,
+                    ))
+                    results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
+                    if failure_policy == "stop":
+                        break
+                    continue
                 results.append({"action_id": action["action_id"], "status": outcome, "error": error})
                 if refused:
                     refused_count += 1
