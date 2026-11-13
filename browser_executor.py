@@ -2036,6 +2036,63 @@ class Browser:
             if "retry_after_seconds" in rate:
                 details["retry_after_seconds"] = rate["retry_after_seconds"]
             raise ExecutorError("X_RATE_LIMITED", "X returned HTTP 429; stop all write actions.", details=details)
+        rejection = self._read_write_rejection(response)
+        if rejection is not None:
+            # X answers a refused write with HTTP 200 and an errors array, so a
+            # DOM-only check cannot tell "the write landed and the page has not
+            # repainted" from "the server said no". Reporting the refusal keeps
+            # the caller from counting it as an unproven success.
+            reject_code = rejection.get("code")
+            raise ExecutorError(
+                "X_WRITE_REJECTED",
+                "X refused the write: " + str(rejection.get("message") or "")[:200],
+                details={
+                    "write_dispatched": True,
+                    "attempt_elapsed_seconds": round(time.monotonic() - started, 3),
+                    "api_response": {
+                        "method": "POST",
+                        "status": response.status,
+                        "action_type": action_type,
+                    },
+                    "rejection": rejection,
+                    "rejection_code": reject_code,
+                },
+            )
+
+    @staticmethod
+    def _read_write_rejection(response: Any) -> dict[str, Any] | None:
+        """Return the first X error object when the write was refused.
+
+        X reports refusals such as ``code 283`` ("denied by scarecrow") inside a
+        200 response. Only a non-empty ``errors`` array counts; a normal success
+        answers with ``data`` and no errors.
+        """
+
+        if getattr(response, "status", None) != 200:
+            return None
+        try:
+            payload = response.json()
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        errors = payload.get("errors")
+        if not isinstance(errors, list) or not errors:
+            return None
+        first = errors[0]
+        if not isinstance(first, dict):
+            return {"message": str(first)[:200]}
+        detail: dict[str, Any] = {}
+        for key in ("code", "message", "kind", "name"):
+            value = first.get(key)
+            if value is not None:
+                detail[key] = str(value)[:200] if isinstance(value, str) else value
+        extensions = first.get("extensions")
+        if isinstance(extensions, dict):
+            for key in ("code", "kind", "name"):
+                if key in extensions and key not in detail:
+                    detail[key] = str(extensions[key])[:200]
+        return detail
 
     @staticmethod
     def _read_rate_limit_headers(response: Any) -> dict[str, Any]:

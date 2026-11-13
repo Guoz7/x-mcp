@@ -3058,6 +3058,7 @@ class XStarter:
         deadline_at = started + deadline_seconds if deadline_seconds is not None else None
         verified_changed = 0
         verified_by_kind: dict[str, int] = {}
+        refused_count = 0
         deadline_reached = False
         success_limit_reached = False
         action_limit_reached = False
@@ -3150,16 +3151,26 @@ class XStarter:
                         "attempt_elapsed_seconds": round(time.monotonic() - action_started, 3),
                     },
                 }
+                # A refusal is a definite answer from X, not a write whose
+                # outcome is unknown: the page simply has nothing to prove.
+                # Recording it as uncertain made a policy block indistinguishable
+                # from a lost acknowledgement, and the stop-on-uncertainty rule
+                # then ended batches that could have continued.
+                refused = error["code"] == "X_WRITE_REJECTED"
+                outcome = "failed" if refused else "uncertain"
                 try:
                     self._bridge().complete_action(
-                        action_id=action["action_id"], claim_token=action["claim_token"], outcome="uncertain", result=None,
+                        action_id=action["action_id"], claim_token=action["claim_token"], outcome=outcome, result=None,
                         error=error,
                         executor_context={"browser_family": getattr(browser, "browser_family", "chromium"), "host": "x.com", "mode": "browser", "page_kind": "x_profile"},
                         session_id=session_id,
                     )
                 except BridgeError:
                     pass
-                results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
+                results.append({"action_id": action["action_id"], "status": outcome, "error": error})
+                if refused:
+                    refused_count += 1
+                    continue
                 if error["code"] in global_stop_codes:
                     stop_reason = error["code"]
                     stop_details = error["details"]
@@ -3198,6 +3209,7 @@ class XStarter:
             "action_limit_reached": action_limit_reached,
             "verified_changed": verified_changed,
             "verified_by_kind": verified_by_kind,
+            "refused": refused_count,
         }
 
     def _x_follow_batch_status(
