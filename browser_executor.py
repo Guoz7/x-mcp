@@ -1927,6 +1927,25 @@ class Browser:
                 details["retry_after_seconds"] = retry_after
             details["rate_limit_strength"] = "hard_429"
             raise ExecutorError("X_RATE_LIMITED", "X returned HTTP 429; stop this batch.", details=details)
+        if api_response is not None:
+            rejection = self._read_write_rejection(response)
+            if rejection is not None:
+                # X answers an exhausted follow allowance with HTTP 403 and
+                # code 161, "You are unable to follow more people at this
+                # time". That is a definite account limit, not an unproven
+                # write: the button stays on "Follow" and waiting the batch
+                # out changes nothing.
+                raise ExecutorError(
+                    "X_WRITE_REJECTED",
+                    "X refused the follow: " + str(rejection.get("message") or "")[:200],
+                    details={
+                        "write_dispatched": click_started,
+                        "attempt_elapsed_seconds": round(time.monotonic() - started, 3),
+                        "api_response": api_response,
+                        "rejection": rejection,
+                        "rejection_code": rejection.get("code"),
+                    },
+                )
         self.page.wait_for_timeout(350)
 
         after = state()
@@ -2063,12 +2082,21 @@ class Browser:
     def _read_write_rejection(response: Any) -> dict[str, Any] | None:
         """Return the first X error object when the write was refused.
 
-        X reports refusals such as ``code 283`` ("denied by scarecrow") inside a
-        200 response. Only a non-empty ``errors`` array counts; a normal success
-        answers with ``data`` and no errors.
+        X reports refusals in two shapes. A policy block such as ``code 283``
+        ("denied by scarecrow") arrives inside a 200 response, while a hard
+        account limit such as ``code 161`` ("unable to follow more people at
+        this time") arrives as HTTP 403. Both carry an ``errors`` array, and
+        both are definite answers rather than an unproven write. A normal
+        success answers with ``data`` and no errors.
         """
 
-        if getattr(response, "status", None) != 200:
+        status = getattr(response, "status", None)
+        if not isinstance(status, int) or status < 200 or status >= 500:
+            return None
+        if status == 429:
+            # A rate limit carries its own recovery contract; the caller must
+            # keep it as X_RATE_LIMITED so the batch waits for reset_epoch
+            # instead of writing the action off as refused.
             return None
         try:
             payload = response.json()

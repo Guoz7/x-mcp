@@ -47,8 +47,24 @@ class WriteRejectionTest(unittest.TestCase):
         response = self._response(payload={"data": {}, "errors": []})
         self.assertIsNone(Browser._read_write_rejection(response))
 
-    def test_a_non_200_status_is_left_to_the_other_handlers(self):
+    def test_a_forbidden_status_with_errors_is_a_rejection(self):
+        # X answers an exhausted follow allowance with HTTP 403 and code 161.
+        response = self._response(status=403, payload={
+            "errors": [{"code": 161,
+                        "message": "You are unable to follow more people at this time."}],
+        })
+        found = Browser._read_write_rejection(response)
+        self.assertIsNotNone(found)
+        self.assertEqual(str(found.get("code")), "161")
+        self.assertIn("unable to follow", str(found.get("message")))
+
+    def test_a_rate_limit_status_is_left_to_the_rate_handler(self):
+        # 429 carries its own recovery contract; it must not be reclassified.
         response = self._response(status=429, payload={"errors": [{"code": 88}]})
+        self.assertIsNone(Browser._read_write_rejection(response))
+
+    def test_a_server_error_is_not_treated_as_a_refusal(self):
+        response = self._response(status=503, payload={"errors": [{"code": 1}]})
         self.assertIsNone(Browser._read_write_rejection(response))
 
     def test_an_unparseable_body_is_not_a_rejection(self):
