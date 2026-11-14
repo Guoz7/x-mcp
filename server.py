@@ -2721,6 +2721,8 @@ class XStarter:
         stop_reason = None
         stop_details = None
         refused_count = 0
+        verified_changed = 0
+        verified_by_kind: dict[str, int] = {}
         browser = None
         from follow_orchestration import GLOBAL_STOP_CODES
 
@@ -2784,6 +2786,21 @@ class XStarter:
                     session_id=session_id,
                 )
                 results.append({"action_id": action["action_id"], "status": completed["status"], "result": completed.get("result")})
+                if (
+                    completed["status"] == "completed"
+                    and isinstance(completed.get("result"), dict)
+                    and completed["result"].get("changed") is True
+                    and completed["result"].get("verified") is True
+                ):
+                    # The interaction batch covers likes, reposts and replies.
+                    # Without this increment every wave reported gained=0 even
+                    # while the ledger grew, so the driver could not tell a
+                    # productive wave from a refused one.
+                    verified_changed += 1
+                    state = completed["result"].get("state")
+                    if isinstance(state, str) and state in _INTERACTION_SUCCESS_STATES:
+                        bucket = _INTERACTION_SUCCESS_STATES[state]
+                        verified_by_kind[bucket] = verified_by_kind.get(bucket, 0) + 1
             except (BridgeError, ExecutorError, StarterError) as exc:
                 error = {
                     "code": getattr(exc, "code", "ACTION_UNCERTAIN"),
@@ -2843,6 +2860,8 @@ class XStarter:
             "action_limit": action_limit,
             "browser_closed": True,
             "refused": refused_count,
+            "verified_changed": verified_changed,
+            "verified_by_kind": verified_by_kind,
         }
 
     def _x_interaction_batch_status(
