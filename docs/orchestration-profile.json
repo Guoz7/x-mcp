@@ -1,0 +1,37 @@
+{
+  "account": "guoz7qoq",
+  "profile_dir": "D:\\workspace\\agent-help\\x-starter\\.browser-executor-profile",
+  "runtime": {
+    "nav_timeout_ms": 45000,
+    "headless": true,
+    "persistent": true
+  },
+  "follow": {
+    "per_window": 14,
+    "window_seconds": 900,
+    "gap_seconds": 4,
+    "on_429": "wait_reset_epoch",
+    "on_code_161": "stop",
+    "probe_interval_minutes": 150,
+    "enabled": true
+  },
+  "repost": {
+    "per_wave": 4,
+    "gap_seconds": 20,
+    "on_barren_wave": "exponential_backoff_to_300s",
+    "max_barren_waves": 5,
+    "enabled": true
+  },
+  "like": {
+    "enabled": false,
+    "probe_interval_minutes": 240,
+    "disabled_reason": "code 283 scarecrow on every attempt"
+  },
+  "pool": {
+    "replenish_below": 60,
+    "per_harvest": 200
+  },
+  "success_states": ["following", "liked", "reposted", "replied"],
+  "failure_codes_that_are_definite": ["X_WRITE_REJECTED"],
+  "failure_codes_that_wait": ["X_RATE_LIMITED"]
+}
