@@ -639,11 +639,23 @@ def _seen_ledger_targets(ledger: dict[str, Any]) -> tuple[set[str], set[str]]:
     return handles, urls
 
 
+_RECIPROCAL_MARKERS = ("互关", "互follow", "互粉", "follow back", "followback", "f4f", "回关")
+RECIPROCAL_SEARCH_QUERY = "互关 OR 互follow OR 互粉"
+
+
 def score_follow_candidate(cand: dict[str, Any]) -> tuple[int, str]:
     """Score a follow candidate for reciprocal growth likelihood (higher is better)."""
     score = 0
     if cand.get("mutual_verified") is True:
         score += 40
+    combined = " ".join([
+        str(cand.get("handle") or cand.get("username") or ""),
+        str(cand.get("display_name") or ""),
+        str(cand.get("bio") or ""),
+        str(cand.get("post_text") or ""),
+    ]).casefold()
+    if any(marker in combined for marker in _RECIPROCAL_MARKERS):
+        score += 60
     if str(cand.get("bio") or "").strip():
         score += 10
     if cand.get("recent_post_at") or cand.get("active") is True:
@@ -668,6 +680,54 @@ _STOPWORDS = frozenset({
     "不", "人", "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去", "你",
     "会", "着", "没有", "看", "好", "自己", "这", "怎么", "以后", "最近", "什么",
 })
+
+
+def find_unfollow_candidates(
+    ledger: dict[str, Any],
+    *,
+    min_age_days: int = 7,
+    now_epoch: float | None = None,
+) -> list[dict[str, Any]]:
+    """Return oldest-first follows older than min_age_days with no mutual_verified proof."""
+    now = float(now_epoch) if now_epoch is not None else time.time()
+    min_age_sec = max(1, int(min_age_days)) * 86400.0
+    unfollowed: set[str] = set()
+    follows: dict[str, dict[str, Any]] = {}
+
+    for action in _sorted_actions(ledger):
+        if action.get("status") != "completed":
+            continue
+        atype = action.get("type")
+        payload = action.get("payload") or {}
+        result = action.get("result") or {}
+        handle = str(result.get("handle") or payload.get("handle") or "").strip().lstrip("@")
+        if not handle:
+            continue
+        key = handle.casefold()
+        if atype == "unfollow_profile" and result.get("state") == "unfollowed":
+            unfollowed.add(key)
+        elif atype == "follow_profile" and result.get("verified") is True and result.get("state") == "following":
+            unfollowed.discard(key)
+            if result.get("mutual_verified") is True:
+                follows.pop(key, None)
+                continue
+            ep = _parse_epoch(action.get("completed_at"))
+            if ep is not None:
+                follows[key] = {
+                    "handle": handle,
+                    "profile_url": f"https://x.com/{handle}",
+                    "followed_at": action.get("completed_at"),
+                    "followed_epoch": ep,
+                    "age_days": round((now - ep) / 86400.0, 2),
+                    "action_id": action.get("action_id"),
+                }
+
+    due = [
+        row for key, row in follows.items()
+        if key not in unfollowed and (now - row["followed_epoch"]) >= min_age_sec
+    ]
+    due.sort(key=lambda row: row["followed_epoch"])
+    return due
 
 
 def infer_owner_profile(

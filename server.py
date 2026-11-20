@@ -1610,8 +1610,10 @@ class XStarter:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "ops_summary", "scheduler_start", "scheduler_stop", "infer_persona"]},
+                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "reciprocal_wave", "cleanup_candidates", "run_cleanup", "ops_summary", "scheduler_start", "scheduler_stop", "infer_persona"]},
                         "days": {"type": "integer", "minimum": 1, "maximum": 30, "default": 7},
+                        "min_age_days": {"type": "integer", "minimum": 1, "maximum": 90, "default": 7},
+                        "max_count": {"type": "integer", "minimum": 1, "maximum": 25, "default": 5},
                         "active_hours": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 24}},
                         "max_per_wave": {"type": "integer", "minimum": 1, "maximum": 10, "default": 4},
                         "min_wave_interval_minutes": {"type": "integer", "minimum": 15, "maximum": 720, "default": 90},
@@ -3624,7 +3626,7 @@ class XStarter:
                     )
                 else:
                     raw = browser.execute_x_action(
-                        action_type="follow_profile",
+                        action_type="unfollow_profile" if kind == "unfollow_profile" else "follow_profile",
                         post_url=str(payload.get("profile_url") or ""),
                         author=str(payload.get("handle") or ""),
                         text=None,
@@ -3833,6 +3835,114 @@ class XStarter:
                 inferred["username"] = username or None
                 trace.append(_event("x_adapter", "autopilot_persona_inferred", username=username, topics=len(inferred["persona_topics"])))
                 return inferred
+            if action == "cleanup_candidates":
+                ledger = self._bridge().read_ledger_snapshot()
+                min_age = _bounded_int(arguments, "min_age_days", default=7, minimum=1, maximum=90)
+                cands = account_orchestrator.find_unfollow_candidates(ledger, min_age_days=min_age)
+                return {"min_age_days": min_age, "count": len(cands), "candidates": cands}
+            if action == "run_cleanup":
+                ledger = self._bridge().read_ledger_snapshot()
+                breaker = account_orchestrator.evaluate_circuit_breaker(ledger)
+                if not breaker["allow_write"]:
+                    raise StarterError("ACCOUNT_COOLDOWN", f"Cleanup halted by circuit breaker ({breaker['reason']}).", details=breaker)
+                min_age = _bounded_int(arguments, "min_age_days", default=7, minimum=1, maximum=90)
+                max_count = _bounded_int(arguments, "max_count", default=5, minimum=1, maximum=25)
+                cands = account_orchestrator.find_unfollow_candidates(ledger, min_age_days=min_age)[:max_count]
+                if not cands:
+                    return {"ran": False, "reason": "NO_CLEANUP_CANDIDATES", "min_age_days": min_age}
+                ops = [
+                    {
+                        "step_index": idx + 1,
+                        "action": "unfollow_profile",
+                        "handle": row["handle"],
+                        "profile_url": row["profile_url"],
+                        "delay_before_seconds": 0 if idx == 0 else 90,
+                    }
+                    for idx, row in enumerate(cands)
+                ]
+                cleanup_plan = {
+                    "status": "planned_not_executed",
+                    "blocked": False,
+                    "plan_id": "cleanup_" + secrets.token_hex(6),
+                    "operations": ops,
+                    "operation_count": len(ops),
+                }
+                session_id = arguments.get("_mcp_session_id")
+                prep = self._bridge().prepare_daily_batch(cleanup_plan, session_id=session_id, ttl_seconds=600)
+                exe = self._x_daily_orchestrate_execute(
+                    {
+                        "batch_id": prep["batch_id"],
+                        "confirmation": prep["confirmation_phrase"],
+                        "action_limit": max_count,
+                        "respect_pacing": bool(arguments.get("respect_pacing", True)),
+                        "_mcp_session_id": session_id,
+                    },
+                    trace,
+                )
+                return {"ran": True, "min_age_days": min_age, "execution": exe}
+            if action == "reciprocal_wave":
+                ledger = self._bridge().read_ledger_snapshot()
+                breaker = account_orchestrator.evaluate_circuit_breaker(ledger)
+                if not breaker["allow_write"]:
+                    raise StarterError("ACCOUNT_COOLDOWN", f"Reciprocal wave halted ({breaker['reason']}).", details=breaker)
+                query = str(arguments.get("search_query") or account_orchestrator.RECIPROCAL_SEARCH_QUERY)
+                max_count = _bounded_int(arguments, "max_count", default=4, minimum=1, maximum=10)
+                posts = arguments.get("timeline_posts")
+                own_username = str(ledger.get("account_binding") or "").strip().lstrip("@")
+                if posts is None and self.mode == "browser":
+                    browser = self._browser_for(arguments)
+                    if not own_username:
+                        own_username = str((browser_read.read_account(browser) or {}).get("username") or "").strip()
+                    posts = browser_read.read_search_posts(
+                        browser, query, limit=15, sort="live", base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                    ).get("posts") or []
+                posts = posts or []
+                follow_candidates = arguments.get("follow_candidates")
+                if follow_candidates is None:
+                    seen: set[str] = set()
+                    follow_candidates = []
+                    for post in posts:
+                        author = str(post.get("author") or "").strip().lstrip("@")
+                        if not author or author.casefold() == own_username.casefold() or author.casefold() in seen:
+                            continue
+                        seen.add(author.casefold())
+                        follow_candidates.append({
+                            "handle": author,
+                            "post_text": post.get("text") or "",
+                            "source": "reciprocal_search",
+                        })
+                plan = account_orchestrator.build_daily_orchestration_plan(
+                    ledger,
+                    goals={"publish_post": 0, "like_post": max(1, max_count // 2), "follow_profile": max_count, "repost_post": 0},
+                    timeline_posts=posts,
+                    follow_candidates=follow_candidates,
+                    account_snapshot=arguments.get("account_snapshot") or ({"username": own_username, "posts_count": 75} if own_username else None),
+                    persona_topics=["互关", "互follow", "互粉", "follow"],
+                )
+                ops = list(plan.get("operations") or [])[:max_count]
+                if not ops:
+                    return {"ran": False, "reason": "NO_RECIPROCAL_TARGETS", "query": query}
+                wave_plan = {**plan, "operations": ops, "operation_count": len(ops)}
+                session_id = arguments.get("_mcp_session_id")
+                prep = self._bridge().prepare_daily_batch(wave_plan, session_id=session_id, ttl_seconds=600)
+                exe = self._x_daily_orchestrate_execute(
+                    {
+                        "batch_id": prep["batch_id"],
+                        "confirmation": prep["confirmation_phrase"],
+                        "action_limit": max_count,
+                        "respect_pacing": bool(arguments.get("respect_pacing", True)),
+                        "_mcp_session_id": session_id,
+                    },
+                    trace,
+                )
+                store.record_wave({
+                    "batch_id": exe["batch_id"],
+                    "mode": "reciprocal_wave",
+                    "processed": exe["processed"],
+                    "verified_changed": exe["verified_changed"],
+                    "stop_reason": exe["stop_reason"],
+                })
+                return {"ran": True, "query": query, "execution": exe}
             if action == "prepare":
                 res = store.prepare_window(
                     days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),

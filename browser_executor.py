@@ -938,7 +938,7 @@ class Browser:
     X_TYPE_ACTIONS = frozenset({"publish_post", "reply_post", "douyin_comment_video"})
     X_CLICK_ACTIONS = frozenset({
         "publish_post", "delete_post", "like_post", "repost_post", "reply_post",
-        "follow_profile", "douyin_follow_profile", "douyin_like_video",
+        "follow_profile", "unfollow_profile", "douyin_follow_profile", "douyin_like_video",
         "douyin_comment_video", "douyin_favorite_video",
     })
 
@@ -1160,7 +1160,7 @@ class Browser:
         pages that need visual interpretation.
         """
 
-        if action_type not in {"like_post", "repost_post", "reply_post", "follow_profile"}:
+        if action_type not in {"like_post", "repost_post", "reply_post", "follow_profile", "unfollow_profile"}:
             raise ExecutorError("X_ACTION_NOT_A_WRITE", "The action is not a supported X interaction.")
         try:
             return self._run_on_worker(
@@ -1560,6 +1560,11 @@ class Browser:
                 profile_url=post_url,
                 handle=author,
             )
+        if action_type == "unfollow_profile":
+            return self._execute_unfollow_profile_impl(
+                profile_url=post_url,
+                handle=author,
+            )
         if self._security_interstitial():
             raise ExecutorError("X_SECURITY_INTERSTITIAL", "X requires owner verification; stop all writes.")
         parsed = urlparse(post_url)
@@ -1835,6 +1840,86 @@ class Browser:
             "verified": True,
             "changed": True,
             "locator_strategy": "dom",
+        }
+
+    def _execute_unfollow_profile_impl(self, *, profile_url: str, handle: str) -> dict[str, Any]:
+        """Unfollow one non-reciprocal profile, preserving mutual followers."""
+        parsed = urlparse(profile_url)
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if (
+            parsed.hostname not in _profile_hosts()
+            or len(path_parts) != 1
+            or not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle or "")
+            or path_parts[0].casefold() != handle.casefold()
+        ):
+            raise ExecutorError("TARGET_MISMATCH", "The unfollow profile does not match the target handle.")
+        if self._security_interstitial():
+            raise ExecutorError("X_SECURITY_INTERSTITIAL", "X presented a security verification page.")
+
+        def state() -> dict[str, Any]:
+            return self.page.evaluate(
+                """() => {
+                    const main = document.querySelector('main');
+                    if (!main) return { follow_testid: null, unfollow_testid: null, follows_you: false };
+                    const follow = main.querySelectorAll('[data-testid$="-follow"]');
+                    const unfollow = main.querySelectorAll('[data-testid$="-unfollow"]');
+                    const followsYou = !!main.querySelector('[data-testid="userFollowIndicator"]');
+                    return {
+                        follow_testid: follow.length === 1 ? follow[0].getAttribute('data-testid') : null,
+                        unfollow_testid: unfollow.length === 1 ? unfollow[0].getAttribute('data-testid') : null,
+                        follows_you: followsYou,
+                    };
+                }"""
+            )
+
+        deadline = time.monotonic() + 10.0
+        current = state()
+        while not (current["follow_testid"] or current["unfollow_testid"]) and time.monotonic() < deadline:
+            self.page.wait_for_timeout(250)
+            current = state()
+
+        if current["follows_you"]:
+            return {
+                "handle": handle,
+                "profile_url": profile_url,
+                "verified": True,
+                "state": "following",
+                "changed": False,
+                "mutual_verified": True,
+            }
+        if current["follow_testid"] and not current["unfollow_testid"]:
+            return {
+                "handle": handle,
+                "profile_url": profile_url,
+                "verified": True,
+                "state": "unfollowed",
+                "changed": False,
+                "mutual_verified": False,
+            }
+        if not current["unfollow_testid"]:
+            raise self._visual_fallback_error("Unfollow control was not uniquely exposed.", page_kind="x_profile")
+
+        self._validate_x_grant(frozenset({"unfollow_profile"}))
+        self.page.locator(f'[data-testid="{current["unfollow_testid"]}"]').first.click(timeout=5000)
+        confirm = self.page.locator('[data-testid="confirmationSheetConfirm"]').first
+        confirm.wait_for(state="visible", timeout=5000)
+        confirm.click(timeout=5000)
+        self._consume_x_grant("click")
+
+        verify_deadline = time.monotonic() + 8.0
+        after = state()
+        while not after["follow_testid"] and time.monotonic() < verify_deadline:
+            self.page.wait_for_timeout(250)
+            after = state()
+        if not after["follow_testid"]:
+            raise self._visual_fallback_error("Unfollow state was not proven after click.", page_kind="x_profile")
+        return {
+            "handle": handle,
+            "profile_url": profile_url,
+            "verified": True,
+            "state": "unfollowed",
+            "changed": True,
+            "mutual_verified": False,
         }
 
     def _execute_follow_profile_impl(self, *, profile_url: str, handle: str) -> dict[str, Any]:

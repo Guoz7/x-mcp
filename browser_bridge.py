@@ -210,6 +210,7 @@ def _compatibility_contract(
         "observe_timeline": ["x_home", "x_profile"],
         "observe_followers": ["x_followers"],
         "follow_profile": ["x_profile"],
+        "unfollow_profile": ["x_profile"],
         "publish_post": ["x_home", "x_profile"],
         "delete_post": ["x_status"],
         "like_post": ["x_status"],
@@ -1014,7 +1015,7 @@ class BrowserBridge:
         operations = plan.get("operations")
         if not isinstance(operations, list) or not 1 <= len(operations) <= 150:
             raise BridgeError("INVALID_BATCH", "The daily batch must contain from 1 to 150 operations.")
-        allowed = {"publish_post", "like_post", "repost_post", "follow_profile", "reply_post"}
+        allowed = {"publish_post", "like_post", "repost_post", "follow_profile", "unfollow_profile", "reply_post"}
         counts = {kind: 0 for kind in allowed}
         for op in operations:
             if not isinstance(op, dict) or op.get("action") not in allowed:
@@ -1032,10 +1033,10 @@ class BrowserBridge:
                 text = str(op.get("text") or "").strip()
                 if not text or len(text) > 280:
                     raise BridgeError("INVALID_BATCH", "Each reply_post operation needs 1-280 chars of text.")
-            elif kind == "follow_profile":
+            elif kind in {"follow_profile", "unfollow_profile"}:
                 handle = str(op.get("handle") or "").strip().lstrip("@")
                 if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
-                    raise BridgeError("INVALID_BATCH", "Each follow_profile operation needs a valid handle.")
+                    raise BridgeError("INVALID_BATCH", f"Each {kind} operation needs a valid handle.")
                 _x_profile_url_parts(str(op.get("profile_url") or f"https://x.com/{handle}"))
 
         now = self._now()
@@ -1567,7 +1568,7 @@ class BrowserBridge:
                     continue
                 if action["status"] == "pending":
                     if action.get("type") in {
-                        "follow_profile", "like_post", "repost_post", "reply_post",
+                        "follow_profile", "unfollow_profile", "like_post", "repost_post", "reply_post",
                         "publish_post", "delete_post",
                     }:
                         self._assert_x_rate_gate(data, now, action)
@@ -1918,7 +1919,7 @@ class BrowserBridge:
             if not secrets.compare_digest(str(action.get("claim_token", "")), claim_token):
                 raise BridgeError("CLAIM_TOKEN_MISMATCH", "The action claim token is invalid.")
             if action.get("type") in {
-                "follow_profile", "like_post", "repost_post", "reply_post",
+                "follow_profile", "unfollow_profile", "like_post", "repost_post", "reply_post",
                 "publish_post", "delete_post",
             }:
                 self._assert_x_rate_gate(data, self._now(), action)
@@ -2120,7 +2121,7 @@ class BrowserBridge:
                 "state": str(result.get("state", "active")),
                 "changed": bool(result.get("changed", True)),
             }
-        if action_type == "follow_profile":
+        if action_type in {"follow_profile", "unfollow_profile"}:
             handle = str(payload.get("handle", "")).strip().lstrip("@")
             result_handle = str(result.get("handle", "")).strip().lstrip("@")
             profile_url = str(result.get("profile_url", "")).strip()
@@ -2132,13 +2133,14 @@ class BrowserBridge:
                 raise BridgeError("TARGET_MISMATCH", "The followed profile URL changed.")
             if result.get("verified") is not True:
                 raise BridgeError("FOLLOW_NOT_VERIFIED", "The follow state was not verified.")
+            default_state = "unfollowed" if action_type == "unfollow_profile" else "following"
             normalized = {
                 "handle": handle,
                 "profile_url": f"https://x.com/{handle}",
                 "verified": True,
-                "state": str(result.get("state", "following")),
+                "state": str(result.get("state", default_state)),
                 "changed": bool(result.get("changed", True)),
-                "mutual_verified": bool(payload.get("mutual_verified", False)),
+                "mutual_verified": bool(result.get("mutual_verified", payload.get("mutual_verified", False))),
                 "elapsed_seconds": (
                     round(float(result["elapsed_seconds"]), 3)
                     if isinstance(result.get("elapsed_seconds"), (int, float))
@@ -2470,7 +2472,7 @@ def _action_contract(action_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
                 },
             },
         )
-    if action_type == "follow_profile":
+    if action_type in {"follow_profile", "unfollow_profile"}:
         return (
             {
                 "executor": "trusted_agent_computer_use",

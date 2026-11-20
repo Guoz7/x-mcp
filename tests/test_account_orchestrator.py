@@ -15,6 +15,7 @@ from account_orchestrator import (  # noqa: E402
     build_daily_orchestration_plan,
     evaluate_account_health,
     evaluate_circuit_breaker,
+    find_unfollow_candidates,
     infer_owner_profile,
 )
 from server import StarterError, XStarter, handle_message  # noqa: E402
@@ -563,6 +564,64 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 self.assertIn("Agent", inferred["persona_topics"])
                 self.assertIn("MCP", inferred["persona_topics"])
                 self.assertTrue(inferred["search_query"])
+
+                # Reciprocal wave & 7-day non-reciprocal unfollow cleanup.
+                mock_browser.browser_family = "chromium"
+                mock_browser.execute_x_action.side_effect = lambda *, action_type, post_url, author, text, action_id, claim_token, lease_expires_epoch: (
+                    {"handle": author, "profile_url": post_url, "state": "unfollowed", "verified": True, "changed": True, "mutual_verified": False}
+                    if action_type == "unfollow_profile"
+                    else (
+                        {"handle": author, "profile_url": post_url, "state": "following", "verified": True, "changed": True}
+                        if action_type == "follow_profile"
+                        else {"post_url": post_url, "author": author, "state": "liked", "verified": True, "changed": True}
+                    )
+                )
+                rec = app.call_tool(
+                    "x_autopilot",
+                    {
+                        "action": "reciprocal_wave",
+                        "max_count": 2,
+                        "respect_pacing": False,
+                        "timeline_posts": [
+                            {"url": "https://x.com/huguan_dev/status/910", "author": "huguan_dev", "text": "互关 AI Agent 一起交流"},
+                        ],
+                        "account_snapshot": {"username": "guoz7777", "posts_count": 75},
+                    },
+                )
+                self.assertTrue(rec["ok"])
+                self.assertTrue(rec["data"]["ran"])
+
+                old_ledger = {
+                    "account_binding": "guoz7777",
+                    "actions": {
+                        "f_old": _action(
+                            "f_old",
+                            "follow_profile",
+                            completed_at="2026-11-01T10:00:00+08:00",
+                            payload={"handle": "ghost_user", "profile_url": "https://x.com/ghost_user"},
+                            result={"handle": "ghost_user", "profile_url": "https://x.com/ghost_user", "state": "following", "verified": True, "changed": True, "mutual_verified": False},
+                        ),
+                        "f_mut": _action(
+                            "f_mut",
+                            "follow_profile",
+                            completed_at="2026-11-01T10:00:00+08:00",
+                            payload={"handle": "friend_user", "profile_url": "https://x.com/friend_user"},
+                            result={"handle": "friend_user", "profile_url": "https://x.com/friend_user", "state": "following", "verified": True, "changed": True, "mutual_verified": True},
+                        ),
+                    },
+                }
+                cands = find_unfollow_candidates(old_ledger, min_age_days=7, now_epoch=1800000000.0)
+                self.assertEqual([c["handle"] for c in cands], ["ghost_user"])
+
+                with app._bridge()._lock:
+                    st_data = app._bridge()._read()
+                    st_data["actions"]["f_old"] = old_ledger["actions"]["f_old"]
+                    app._bridge()._write(st_data)
+
+                cln = app.call_tool("x_autopilot", {"action": "run_cleanup", "min_age_days": 7, "max_count": 2, "respect_pacing": False})
+                self.assertTrue(cln["ok"])
+                self.assertTrue(cln["data"]["ran"])
+                self.assertEqual(cln["data"]["execution"]["verified_changed"], 1)
             finally:
                 app.close()
 

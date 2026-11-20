@@ -299,6 +299,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       <input id="apConfirmInput" placeholder="输入授权短语（如 AUTOPILOT A1B2C3）" style="max-width:250px;" disabled>
       <button id="btnApActivate" onclick="activateAutopilot()" disabled>2. 启用托管</button>
       <button id="btnApRunWave" onclick="runAutopilotWave()" disabled>立即跑一小波</button>
+      <button onclick="runReciprocalWave()">互关发现波次</button>
+      <button onclick="runCleanupUnfollow()">清理未回关 (7天+)</button>
       <button id="btnApSchedStart" onclick="toggleScheduler(true)" disabled>开启后台定时</button>
       <button id="btnApSchedStop" onclick="toggleScheduler(false)" disabled>停止后台定时</button>
       <button id="btnApStop" onclick="stopAutopilot()" disabled>紧急停机</button>
@@ -682,6 +684,26 @@ async function runAutopilotWave() {
     const exe = res.data.execution;
     showToast('apToast', true, `波次完成：处理 ${exe.processed}/${exe.planned}，成功 ${exe.verified_changed}${exe.stop_reason ? '（' + exe.stop_reason + '）' : ''}`);
   }
+  refreshAll();
+}
+
+async function runReciprocalWave() {
+  showToast('apToast', true, '正在搜索「互关 / 互follow」候选并安全执行小波次...');
+  const res = await callTool('x_autopilot', { action: 'reciprocal_wave', max_count: 4, respect_pacing: true });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '互关波次失败');
+  if (!res.data.ran) return showToast('apToast', false, '未找到新目标：' + res.data.reason);
+  const exe = res.data.execution;
+  showToast('apToast', true, `互关波次完成：处理 ${exe.processed}/${exe.planned}，成功 ${exe.verified_changed}。`);
+  refreshAll();
+}
+
+async function runCleanupUnfollow() {
+  showToast('apToast', true, '正在检查 7 天以上未回关的账号并清理...');
+  const res = await callTool('x_autopilot', { action: 'run_cleanup', min_age_days: 7, max_count: 5, respect_pacing: true });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '清理失败');
+  if (!res.data.ran) return showToast('apToast', true, '暂无超过 7 天未回关的待清理账号。');
+  const exe = res.data.execution;
+  showToast('apToast', true, `取关清理完成：处理 ${exe.processed}/${exe.planned}，已复验 ${exe.verified_changed}。`);
   refreshAll();
 }
 
