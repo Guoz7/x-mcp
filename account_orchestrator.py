@@ -345,14 +345,15 @@ def evaluate_account_health(
 
     standing_score = max(0, min(100, profile_score + original_score + engagement_score + safety_score))
     warmup_ready = (posts_count >= req_posts) and (account_age_days >= req_days) and not missing_fields
+    established_on_x = posts_count >= 50
 
-    if account_age_days < 3:
+    if account_age_days < 3 and posts_count < 3:
         warmup_stage = "ghost"
         stage_caps = {"publish_post": 0, "like_post": 3, "follow_profile": 0, "repost_post": 0, "reply_post": 0}
-    elif account_age_days < 7:
+    elif account_age_days < 7 and posts_count < 10:
         warmup_stage = "light_engage"
         stage_caps = {"publish_post": 1, "like_post": 6, "follow_profile": 2, "repost_post": 1, "reply_post": 0}
-    elif not warmup_ready:
+    elif not warmup_ready and not established_on_x:
         warmup_stage = "content_build"
         stage_caps = {"publish_post": 2, "like_post": 15, "follow_profile": 5, "repost_post": 3, "reply_post": 2}
     else:

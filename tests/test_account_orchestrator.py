@@ -243,6 +243,13 @@ class ContentQueueAndPlannerTests(unittest.TestCase):
         self.assertEqual(ratio_plan["counts"]["publish_post"], 1)
         self.assertTrue(ratio_plan["health"]["warmup"]["ratio_guard_triggered"])
 
+        # Established X account (e.g., 866 posts) connecting with a fresh local ledger -> growth, not ghost.
+        established = evaluate_account_health(
+            ledger,
+            account_snapshot={"display_name": "guoz", "posts_count": 866},
+        )
+        self.assertEqual(established["warmup"]["stage"], "growth")
+
 
 class DailyOrchestratorMcpTests(unittest.TestCase):
     def test_mcp_daily_orchestration_prepare_execute_and_refusal_halt(self) -> None:

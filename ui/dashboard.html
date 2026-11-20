@@ -437,23 +437,31 @@ async function removeQueueItem(itemId) {
 async function readAccount() {
   const res = await callTool('x_owner_read', { target: 'account' });
   if (!res.ok) return showToast('orchToast', false, res.error?.message || '读取账号失败（请确认已用 X_STARTER_MODE=browser 启动）');
-  state.accountSnapshot = res.data;
-  document.getElementById('accountBox').textContent = `当前账号: @${res.data.username} (${res.data.display_name}) · 累计帖数: ${res.data.posts_count}`;
+  const snap = res.data?.snapshot || res.data || {};
+  state.accountSnapshot = snap;
+  document.getElementById('accountBox').textContent = `当前账号: @${snap.username || '--'} (${snap.display_name || '--'}) · 累计帖数: ${snap.posts_count ?? '--'}`;
   refreshHealth();
 }
 
 async function readTimeline() {
   const res = await callTool('x_owner_read', { target: 'timeline', limit: 20 });
   if (!res.ok) return showToast('orchToast', false, res.error?.message || '读取时间线失败');
-  state.timelinePosts = res.data.posts || [];
+  const snap = res.data?.snapshot || res.data || {};
+  state.timelinePosts = snap.posts || [];
   updatePoolSummary();
   showToast('orchToast', true, `已抓取 ${state.timelinePosts.length} 条主页时间线帖子。`);
 }
 
 async function readCandidates() {
-  const res = await callTool('x_follow_candidates_read', { limit: 20 });
+  if (!state.accountSnapshot?.username) {
+    await readAccount();
+  }
+  const username = state.accountSnapshot?.username;
+  if (!username) return showToast('orchToast', false, '请先成功读取当前 X 账号，再读取关注候选。');
+  const res = await callTool('x_follow_candidates_read', { username, limit: 20 });
   if (!res.ok) return showToast('orchToast', false, res.error?.message || '读取关注候选失败');
-  state.followCandidates = res.data.candidates || res.data.accounts || [];
+  const snap = res.data?.snapshot || res.data || {};
+  state.followCandidates = snap.candidates || snap.accounts || [];
   updatePoolSummary();
   showToast('orchToast', true, `已读取 ${state.followCandidates.length} 位关注候选。`);
 }
