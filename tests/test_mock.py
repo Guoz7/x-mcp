@@ -104,6 +104,7 @@ class MockToolsTest(unittest.TestCase):
                 "x_search_posts",
                 "x_visit_profile",
                 "x_notifications_read",
+                "x_persona_memory",
                 "account_summary",
                 "draft_post",
                 "schedule_post",

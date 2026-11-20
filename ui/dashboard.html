@@ -309,6 +309,29 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     <div id="apToast" class="toast"></div>
     <div id="apWaves" class="list"></div>
   </section>
+
+  <!-- 5. 长期人设与记忆库 -->
+  <section class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <strong>5. 长期人设与记忆库（Persona Memory）</strong>
+      <span class="pill ok" id="pmPill">已加载</span>
+    </div>
+    <div class="row" style="margin-bottom:8px;">
+      <label style="flex:1;min-width:220px;">角色定位
+        <input id="pmRoleInput" placeholder="例：独立开发者 / AI 工具观察者" style="width:100%;margin-top:4px;">
+      </label>
+      <label style="flex:1;min-width:220px;">自定义违禁词（逗号分隔）
+        <input id="pmBannedInput" placeholder="例：太棒了, 赋能, 抓手" style="width:100%;margin-top:4px;">
+      </label>
+      <button onclick="savePersonaMemory()">保存人设与违禁词</button>
+    </div>
+    <div class="row" style="margin-bottom:8px;">
+      <input id="pmFeedbackInput" placeholder="补充一条主人纠偏/偏好（例：以后少聊宏大叙事，多写具体踩坑）" style="flex:1;min-width:260px;">
+      <button onclick="addPersonaFeedback()">记录纠偏反馈</button>
+    </div>
+    <div id="pmToast" class="toast"></div>
+    <div id="pmNotes" class="list"></div>
+  </section>
 </main>
 
 <script>
@@ -742,10 +765,51 @@ async function stopAutopilot() {
   refreshAutopilot();
 }
 
+async function refreshPersonaMemory() {
+  const res = await callTool('x_persona_memory', { action: 'get' });
+  if (!res.ok) return;
+  const d = res.data || {};
+  document.getElementById('pmRoleInput').value = d.role || '';
+  document.getElementById('pmBannedInput').value = (d.banned_phrases || []).join(', ');
+  const feedbacks = (d.feedback_notes || []).slice().reverse();
+  const episodes = (d.episodic_notes || []).slice().reverse().slice(0, 5);
+  document.getElementById('pmPill').textContent = `纠偏 ${feedbacks.length} · 经历 ${episodes.length}`;
+  const items = [
+    ...feedbacks.map(f => `<div class="item"><div><span class="pill warn">纠偏</span> ${esc(f.note || '')}</div><span class="mono muted">${esc(f.at || '')}</span></div>`),
+    ...episodes.map(e => `<div class="item"><div><span class="pill ok">经历</span> <strong>${esc(e.topic || '')}</strong> · ${esc(e.angle || '')}</div><span class="mono muted">${esc(e.at || '')}</span></div>`),
+  ];
+  document.getElementById('pmNotes').innerHTML = items.join('') || '<div class="muted">暂无纠偏或近期创作经历记录。</div>';
+}
+
+async function savePersonaMemory() {
+  const role = document.getElementById('pmRoleInput').value.trim();
+  const bannedRaw = document.getElementById('pmBannedInput').value;
+  const banned = bannedRaw.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  const res = await callTool('x_persona_memory', {
+    action: 'update',
+    role,
+    banned_phrases: banned,
+  });
+  if (!res.ok) return showToast('pmToast', false, res.error?.message || '保存失败');
+  showToast('pmToast', true, `已保存人设与 ${banned.length} 个自定义违禁词。`);
+  refreshPersonaMemory();
+}
+
+async function addPersonaFeedback() {
+  const note = document.getElementById('pmFeedbackInput').value.trim();
+  if (!note) return showToast('pmToast', false, '请先输入纠偏或偏好说明');
+  const res = await callTool('x_persona_memory', { action: 'add_feedback', note });
+  if (!res.ok) return showToast('pmToast', false, res.error?.message || '记录失败');
+  document.getElementById('pmFeedbackInput').value = '';
+  showToast('pmToast', true, '已写入长期人设记忆。');
+  refreshPersonaMemory();
+}
+
 function refreshAll() {
   refreshHealth();
   refreshQueue();
   refreshAutopilot();
+  refreshPersonaMemory();
 }
 
 document.getElementById('postText').addEventListener('input', e => {

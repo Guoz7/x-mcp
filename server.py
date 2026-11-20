@@ -1653,6 +1653,32 @@ class XStarter:
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
             },
             {
+                "name": "x_persona_memory",
+                "title": "Read or update personal X persona and episodic memory",
+                "description": (
+                    "Store and retrieve owner role, voice rules, content pillar weights, banned phrases, "
+                    "episodic post history, and style feedback notes."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback"]},
+                        "role": {"type": "string", "maxLength": 160},
+                        "voice_rules": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
+                        "content_pillars": {"type": "object"},
+                        "banned_phrases": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 80}},
+                        "topic": {"type": "string", "maxLength": 80},
+                        "angle": {"type": "string", "maxLength": 200},
+                        "post_url": {"type": "string", "maxLength": 300},
+                        "outcome": {"type": "string", "maxLength": 80},
+                        "note": {"type": "string", "maxLength": 240},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
                 "name": "x_visit_profile",
                 "title": "Visit an X profile and read recent posts",
                 "description": (
@@ -1670,6 +1696,32 @@ class XStarter:
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
             },
             {
+                "name": "x_persona_memory",
+                "title": "Read or update personal X persona and episodic memory",
+                "description": (
+                    "Store and retrieve owner role, voice rules, content pillar weights, banned phrases, "
+                    "episodic post history, and style feedback notes."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback"]},
+                        "role": {"type": "string", "maxLength": 160},
+                        "voice_rules": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
+                        "content_pillars": {"type": "object"},
+                        "banned_phrases": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 80}},
+                        "topic": {"type": "string", "maxLength": 80},
+                        "angle": {"type": "string", "maxLength": 200},
+                        "post_url": {"type": "string", "maxLength": 300},
+                        "outcome": {"type": "string", "maxLength": 80},
+                        "note": {"type": "string", "maxLength": 240},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
                 "name": "x_notifications_read",
                 "title": "Read recent X notifications and mentions",
                 "description": (
@@ -1685,6 +1737,32 @@ class XStarter:
                     "additionalProperties": False,
                 },
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
+            },
+            {
+                "name": "x_persona_memory",
+                "title": "Read or update personal X persona and episodic memory",
+                "description": (
+                    "Store and retrieve owner role, voice rules, content pillar weights, banned phrases, "
+                    "episodic post history, and style feedback notes."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback"]},
+                        "role": {"type": "string", "maxLength": 160},
+                        "voice_rules": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
+                        "content_pillars": {"type": "object"},
+                        "banned_phrases": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 80}},
+                        "topic": {"type": "string", "maxLength": 80},
+                        "angle": {"type": "string", "maxLength": 200},
+                        "post_url": {"type": "string", "maxLength": 300},
+                        "outcome": {"type": "string", "maxLength": 80},
+                        "note": {"type": "string", "maxLength": 240},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
             },
             {
                 "name": "account_summary",
@@ -1925,6 +2003,8 @@ class XStarter:
                 data = self._x_visit_profile(scoped, trace)
             elif name == "x_notifications_read":
                 data = self._x_notifications_read(scoped, trace)
+            elif name == "x_persona_memory":
+                data = self._x_persona_memory(arguments, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -3411,6 +3491,9 @@ class XStarter:
     def _content_queue(self) -> account_orchestrator.ContentQueueStore:
         return account_orchestrator.ContentQueueStore(self._bridge().path.parent)
 
+    def _persona_memory(self) -> account_orchestrator.PersonaMemoryStore:
+        return account_orchestrator.PersonaMemoryStore(self._bridge().path.parent)
+
     def _assert_circuit_breaker_allows_writes(self) -> None:
         ledger = self._bridge().read_ledger_snapshot()
         breaker = account_orchestrator.evaluate_circuit_breaker(ledger)
@@ -3452,12 +3535,14 @@ class XStarter:
         store = self._content_queue()
         try:
             if action == "add":
+                banned = self._persona_memory().read().get("banned_phrases") or []
                 item = store.add(
                     kind=str(arguments.get("kind") or "original_post"),
                     text=str(arguments.get("text") or ""),
                     topic=arguments.get("topic"),
                     target_url=arguments.get("target_url"),
                     scheduled_after_epoch=arguments.get("scheduled_after_epoch"),
+                    extra_banned=banned,
                 )
                 trace.append(_event("x_adapter", "content_queue_added", item_id=item["item_id"], external_call=False))
                 return {"action": "add", "item": item}
@@ -3822,6 +3907,42 @@ class XStarter:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
         trace.append(_event("browser_executor", "notifications_read", count=result["count"], mentions_only=mentions_only))
         return result
+
+    def _x_persona_memory(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        action = _required_string(arguments, "action", max_length=24)
+        store = self._persona_memory()
+        try:
+            if action == "get":
+                data = store.read()
+                trace.append(_event("x_adapter", "persona_memory_read", external_call=False))
+                return data
+            if action == "update":
+                data = store.update(
+                    role=arguments.get("role"),
+                    voice_rules=arguments.get("voice_rules"),
+                    content_pillars=arguments.get("content_pillars"),
+                    banned_phrases=arguments.get("banned_phrases"),
+                )
+                trace.append(_event("x_adapter", "persona_memory_updated", external_call=False))
+                return data
+            if action == "add_episode":
+                data = store.add_episode(
+                    topic=str(arguments.get("topic") or ""),
+                    angle=str(arguments.get("angle") or ""),
+                    post_url=arguments.get("post_url"),
+                    outcome=arguments.get("outcome"),
+                )
+                trace.append(_event("x_adapter", "persona_episode_added", external_call=False))
+                return data
+            if action == "add_feedback":
+                data = store.add_feedback(str(arguments.get("note") or ""))
+                trace.append(_event("x_adapter", "persona_feedback_added", external_call=False))
+                return data
+        except account_orchestrator.OrchestratorError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        raise StarterError("INVALID_ARGUMENT", "action must be get, update, add_episode, or add_feedback.")
 
     def _autopilot_store(self) -> autopilot_ops.AutopilotStore:
         return autopilot_ops.AutopilotStore(self._bridge().path.parent)
@@ -5988,6 +6109,7 @@ def make_http_handler(
                     "x_search_posts",
                     "x_visit_profile",
                     "x_notifications_read",
+                    "x_persona_memory",
                     "x_compose_check",
                 }
                 if tool not in allowed_ui_tools:

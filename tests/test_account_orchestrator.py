@@ -647,6 +647,78 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_persona_memory_persists_and_blocks_custom_banned_phrases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = XStarter(
+                mode="browser",
+                environ={
+                    "X_STARTER_MODE": "browser",
+                    "X_STARTER_ENABLE_BROWSER": "1",
+                    "X_STARTER_STATE_DIR": tmpdir,
+                },
+            )
+            try:
+                got = app.call_tool("x_persona_memory", {"action": "get"})
+                self.assertTrue(got["ok"])
+                self.assertTrue(bool(got["data"]["role"]))
+
+                updated = app.call_tool(
+                    "x_persona_memory",
+                    {
+                        "action": "update",
+                        "role": "Indie dev building MCP tooling",
+                        "voice_rules": ["short sentences", "concrete metrics"],
+                        "content_pillars": ["mcp", "browser-automation"],
+                        "banned_phrases": ["synergy", "game-changer"],
+                    },
+                )
+                self.assertTrue(updated["ok"])
+                self.assertEqual(updated["data"]["role"], "Indie dev building MCP tooling")
+                self.assertEqual(updated["data"]["banned_phrases"], ["synergy", "game-changer"])
+
+                ep = app.call_tool(
+                    "x_persona_memory",
+                    {
+                        "action": "add_episode",
+                        "topic": "MCP schema clamp",
+                        "angle": "why 2^53-1 matters",
+                        "outcome": "12 replies",
+                    },
+                )
+                self.assertTrue(ep["ok"])
+                self.assertEqual(len(ep["data"]["episodic_notes"]), 1)
+
+                fb = app.call_tool(
+                    "x_persona_memory",
+                    {
+                        "action": "add_feedback",
+                        "note": "Avoid hype adjectives",
+                    },
+                )
+                self.assertTrue(fb["ok"])
+                self.assertEqual(fb["data"]["feedback_notes"][0]["note"], "Avoid hype adjectives")
+
+                blocked = app.call_tool(
+                    "x_content_queue",
+                    {
+                        "action": "add",
+                        "text": "This new MCP bridge is a true game-changer for our workflow.",
+                    },
+                )
+                self.assertFalse(blocked["ok"])
+                self.assertEqual(blocked["error"]["code"], "BANNED_PHRASE")
+
+                allowed = app.call_tool(
+                    "x_content_queue",
+                    {
+                        "action": "add",
+                        "text": "Clamped integer bounds to 2^53-1 in the MCP bridge today.",
+                    },
+                )
+                self.assertTrue(allowed["ok"])
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()

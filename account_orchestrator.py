@@ -83,14 +83,19 @@ _AI_CLICHE_PATTERNS = (
 )
 
 
-def check_reply_naturalness(text: str) -> list[str]:
+def check_reply_naturalness(
+    text: str,
+    *,
+    extra_banned: list[str] | None = None,
+) -> list[str]:
     """Return warnings if a reply reads like generic AI boilerplate."""
     cleaned = str(text or "").strip()
     lower = cleaned.casefold()
     warnings: list[str] = []
-    for phrase in _AI_CLICHE_PATTERNS:
-        if phrase in lower:
-            warnings.append(f"Avoid generic AI cliché: '{phrase}'")
+    for phrase in (*_AI_CLICHE_PATTERNS, *(extra_banned or [])):
+        p = str(phrase or "").strip().casefold()
+        if p and p in lower:
+            warnings.append(f"Avoid generic or banned phrase: '{phrase}'")
     if cleaned.count("#") >= 2:
         warnings.append("Avoid multiple hashtags in replies.")
     if len(cleaned) < 8:
@@ -503,6 +508,117 @@ def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
+class PersonaMemoryStore:
+    """Durable store for owner persona rules, content pillars, and episodic memory."""
+
+    def __init__(self, state_dir: str | Path) -> None:
+        self.state_dir = Path(state_dir)
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.path = self.state_dir / "persona_memory.json"
+        self.lock = LedgerLock(self.state_dir / ".persona_memory.lock")
+
+    @staticmethod
+    def _default() -> dict[str, Any]:
+        return {
+            "version": 1,
+            "role": "Build-in-Public AI & Agent Developer",
+            "voice_rules": [
+                "短句直接、讲真实数据与实测结果，不用客套话",
+                "中英混排自然，不堆砌 hashtag 和 emoji",
+            ],
+            "content_pillars": {
+                "build_in_public": 40,
+                "tech_insights": 40,
+                "curated_replies": 20,
+            },
+            "banned_phrases": ["game-changer", "synergy", "很有深度", "感谢分享", "说得太好了"],
+            "episodic_notes": [],
+            "feedback_notes": [],
+        }
+
+    def _read_unlocked(self) -> dict[str, Any]:
+        base = self._default()
+        if not self.path.exists():
+            return base
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                base.update(loaded)
+        except ValueError:
+            pass
+        return base
+
+    def _write_unlocked(self, data: dict[str, Any]) -> None:
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def read(self) -> dict[str, Any]:
+        with self.lock:
+            return self._read_unlocked()
+
+    def update(
+        self,
+        *,
+        role: str | None = None,
+        voice_rules: list[str] | None = None,
+        content_pillars: dict[str, int] | None = None,
+        banned_phrases: list[str] | None = None,
+    ) -> dict[str, Any]:
+        with self.lock:
+            data = self._read_unlocked()
+            if role is not None:
+                data["role"] = str(role).strip()[:160]
+            if isinstance(voice_rules, list):
+                data["voice_rules"] = [str(r).strip()[:200] for r in voice_rules if str(r).strip()][:20]
+            if isinstance(content_pillars, dict):
+                data["content_pillars"] = {
+                    str(k).strip()[:40]: max(0, min(100, int(v)))
+                    for k, v in content_pillars.items()
+                    if str(k).strip()
+                }
+            if isinstance(banned_phrases, list):
+                data["banned_phrases"] = [str(p).strip()[:80] for p in banned_phrases if str(p).strip()][:50]
+            data["updated_at"] = _iso(time.time())
+            self._write_unlocked(data)
+            return data
+
+    def add_episode(
+        self,
+        *,
+        topic: str,
+        angle: str,
+        post_url: str | None = None,
+        outcome: str | None = None,
+    ) -> dict[str, Any]:
+        entry = {
+            "at": _iso(time.time()),
+            "topic": str(topic or "").strip()[:80],
+            "angle": str(angle or "").strip()[:200],
+            "post_url": str(post_url).strip() if post_url else None,
+            "outcome": str(outcome).strip()[:80] if outcome else None,
+        }
+        with self.lock:
+            data = self._read_unlocked()
+            notes = list(data.get("episodic_notes") or [])
+            notes.append(entry)
+            data["episodic_notes"] = notes[-30:]
+            self._write_unlocked(data)
+            return data
+
+    def add_feedback(self, note: str) -> dict[str, Any]:
+        cleaned = str(note or "").strip()[:240]
+        if not cleaned:
+            raise OrchestratorError("INVALID_ARGUMENT", "feedback note must be non-empty.")
+        with self.lock:
+            data = self._read_unlocked()
+            notes = list(data.get("feedback_notes") or [])
+            notes.append({"at": _iso(time.time()), "note": cleaned})
+            data["feedback_notes"] = notes[-20:]
+            self._write_unlocked(data)
+            return data
+
+
 class ContentQueueStore:
     """Durable JSON store for scheduled/queued personal X posts and replies."""
 
@@ -536,6 +652,7 @@ class ContentQueueStore:
         topic: str | None = None,
         target_url: str | None = None,
         scheduled_after_epoch: float | None = None,
+        extra_banned: list[str] | None = None,
     ) -> dict[str, Any]:
         if kind not in {"original_post", "reply"}:
             raise OrchestratorError("INVALID_ARGUMENT", "kind must be original_post or reply.")
@@ -544,10 +661,15 @@ class ContentQueueStore:
             raise OrchestratorError("INVALID_ARGUMENT", "text must be 1 to 280 characters.")
         if _SECRET_PATTERN.search(cleaned):
             raise OrchestratorError("SECRET_DETECTED", "Refusing to store text matching a secret pattern.")
+        lowered = cleaned.casefold()
+        for phrase in extra_banned or []:
+            p = str(phrase or "").strip().casefold()
+            if p and p in lowered:
+                raise OrchestratorError("BANNED_PHRASE", f"Refusing to store text matching banned phrase: '{phrase}'.")
         if kind == "reply":
             if not target_url or not _STATUS_URL_RE.match(str(target_url).strip()):
                 raise OrchestratorError("INVALID_ARGUMENT", "reply items require a valid X status target_url.")
-            cliches = check_reply_naturalness(cleaned)
+            cliches = check_reply_naturalness(cleaned, extra_banned=extra_banned)
             if cliches:
                 raise OrchestratorError("REPLY_TOO_GENERIC", "; ".join(cliches))
         item = {
