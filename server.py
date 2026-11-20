@@ -1651,6 +1651,23 @@ class XStarter:
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
             },
             {
+                "name": "x_visit_profile",
+                "title": "Visit an X profile and read recent posts",
+                "description": (
+                    "Read-only visit to a target user's X profile to browse and fetch their recent canonical posts."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "username": {"type": "string", "minLength": 1, "maxLength": 20},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+                    },
+                    "required": ["username"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
+            },
+            {
                 "name": "account_summary",
                 "title": "Inspect X account",
                 "description": (
@@ -1885,6 +1902,8 @@ class XStarter:
                 data = self._x_autopilot(scoped, trace)
             elif name == "x_search_posts":
                 data = self._x_search_posts(scoped, trace)
+            elif name == "x_visit_profile":
+                data = self._x_visit_profile(scoped, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -3741,6 +3760,26 @@ class XStarter:
         except browser_read.ReadError as exc:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
         trace.append(_event("browser_executor", "search_posts_read", query=query, count=len(result.get("posts") or [])))
+        return result
+
+    def _x_visit_profile(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        if self.mode != "browser":
+            raise StarterError("BROWSER_BRIDGE_REQUIRED", "x_visit_profile requires X_STARTER_MODE=browser.")
+        username = _required_string(arguments, "username", max_length=20)
+        limit = _bounded_int(arguments, "limit", default=5, minimum=1, maximum=20)
+        browser = self._browser_for(arguments)
+        try:
+            result = browser_read.read_user_posts(
+                browser,
+                username,
+                limit=limit,
+                base_url=self.environ.get("X_STARTER_READ_BASE_URL"),
+            )
+        except browser_read.ReadError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("browser_executor", "profile_visited", username=result["username"], count=len(result.get("posts") or [])))
         return result
 
     def _autopilot_store(self) -> autopilot_ops.AutopilotStore:
@@ -5749,6 +5788,7 @@ def make_http_handler(
                     "x_daily_orchestrate_execute",
                     "x_autopilot",
                     "x_search_posts",
+                    "x_visit_profile",
                     "x_compose_check",
                 }
                 if tool not in allowed_ui_tools:

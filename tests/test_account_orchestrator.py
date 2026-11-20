@@ -522,6 +522,29 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 self.assertTrue(srch["ok"])
                 self.assertEqual(srch["data"]["posts"][0]["url"], "https://x.com/dev/status/901")
 
+                # Generic AI cliché replies must be rejected before entering the queue.
+                bad_reply = app.call_tool(
+                    "x_content_queue",
+                    {
+                        "action": "add",
+                        "kind": "reply",
+                        "target_url": "https://x.com/dev/status/901",
+                        "text": "Great post! Very insightful, thanks for sharing!",
+                    },
+                )
+                self.assertFalse(bad_reply["ok"])
+                self.assertEqual(bad_reply["error"]["code"], "REPLY_TOO_GENERIC")
+
+                # Visiting a profile reads their recent posts.
+                mock_browser.open.return_value = {
+                    "url": "https://x.com/dev",
+                    "text": "dev posts",
+                    "articles": [{"text": "Concrete benchmark on MCP latency", "links": ["https://x.com/dev/status/902"]}],
+                }
+                visit = app.call_tool("x_visit_profile", {"username": "dev", "limit": 5})
+                self.assertTrue(visit["ok"])
+                self.assertEqual(visit["data"]["posts"][0]["url"], "https://x.com/dev/status/902")
+
                 st = app.call_tool("x_autopilot", {"action": "scheduler_start"})
                 self.assertTrue(st["ok"])
                 self.assertTrue(st["data"]["scheduler"]["running"])

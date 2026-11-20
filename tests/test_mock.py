@@ -102,6 +102,7 @@ class MockToolsTest(unittest.TestCase):
                 "x_daily_orchestrate_execute",
                 "x_autopilot",
                 "x_search_posts",
+                "x_visit_profile",
                 "account_summary",
                 "draft_post",
                 "schedule_post",

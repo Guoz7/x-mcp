@@ -67,6 +67,35 @@ _SECRET_PATTERN = re.compile(
 )
 _EXTERNAL_URL_RE = re.compile(r"https?://(?!(?:www\.)?(?:x\.com|twitter\.com|t\.co)\b)\S+", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+_AI_CLICHE_PATTERNS = (
+    "great post",
+    "very insightful",
+    "thanks for sharing",
+    "totally agree",
+    "well said",
+    "this is huge",
+    "game changer",
+    "感谢分享",
+    "很有深度",
+    "说得太好了",
+    "非常赞同",
+    "受益匪浅",
+)
+
+
+def check_reply_naturalness(text: str) -> list[str]:
+    """Return warnings if a reply reads like generic AI boilerplate."""
+    cleaned = str(text or "").strip()
+    lower = cleaned.casefold()
+    warnings: list[str] = []
+    for phrase in _AI_CLICHE_PATTERNS:
+        if phrase in lower:
+            warnings.append(f"Avoid generic AI cliché: '{phrase}'")
+    if cleaned.count("#") >= 2:
+        warnings.append("Avoid multiple hashtags in replies.")
+    if len(cleaned) < 8:
+        warnings.append("Reply is too short to add a concrete point.")
+    return warnings
 _STATUS_URL_RE = re.compile(
     r"^https?://(?:www\.)?(?:x\.com|twitter\.com)/([A-Za-z0-9_]{1,15})/status/(\d{1,25})(?:\?.*)?$",
     re.IGNORECASE,
@@ -518,6 +547,9 @@ class ContentQueueStore:
         if kind == "reply":
             if not target_url or not _STATUS_URL_RE.match(str(target_url).strip()):
                 raise OrchestratorError("INVALID_ARGUMENT", "reply items require a valid X status target_url.")
+            cliches = check_reply_naturalness(cleaned)
+            if cliches:
+                raise OrchestratorError("REPLY_TOO_GENERIC", "; ".join(cliches))
         item = {
             "item_id": "cq_" + secrets.token_hex(6),
             "kind": kind,

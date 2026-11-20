@@ -289,7 +289,7 @@ def _read_feed_url(
     while True:
         observations += 1
         articles = home.get("articles") or []
-        if not articles and not posts and observations == 1 and empty_code == "SEARCH_EMPTY" and hasattr(browser, "observe"):
+        if not articles and not posts and observations == 1 and empty_code in {"SEARCH_EMPTY", "PROFILE_POSTS_EMPTY"} and hasattr(browser, "observe"):
             for _ in range(2):
                 time.sleep(2.0)
                 try:
@@ -406,6 +406,31 @@ def read_search_posts(
     )
     result["query"] = cleaned
     result["sort"] = tab
+    return result
+
+
+def read_user_posts(
+    browser: Browser,
+    username: str,
+    *,
+    limit: int = 5,
+    base_url: str | None = None,
+) -> dict[str, Any]:
+    """Visit a target user's profile and read their recent canonical posts."""
+    handle = str(username or "").strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+        raise ReadError("INVALID_ARGUMENT", "username must be a valid X handle.")
+    base = _base_url(base_url)
+    result = _read_feed_url(
+        browser,
+        f"{base}/{handle}",
+        limit=limit,
+        base=base,
+        empty_code="PROFILE_POSTS_EMPTY",
+        empty_message="No posts were visible on this user's profile.",
+    )
+    result["username"] = handle
+    result["profile_url"] = f"{base}/{handle}"
     return result
 
 
