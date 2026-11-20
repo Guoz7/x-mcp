@@ -327,6 +327,43 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             self.assertFalse(blocked_prep["ok"])
             self.assertEqual(blocked_prep["error"]["code"], "ACCOUNT_COOLDOWN")
 
+    def test_lightweight_dashboard_http_routes(self) -> None:
+        import json
+        import threading
+        import urllib.request
+        from http.server import ThreadingHTTPServer
+        from server import make_http_handler
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = XStarter(
+                mode="browser",
+                environ={
+                    "X_STARTER_MODE": "browser",
+                    "X_STARTER_ENABLE_BROWSER": "1",
+                    "X_STARTER_STATE_DIR": tmp,
+                },
+            )
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), make_http_handler(app))
+            port = srv.server_address[1]
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            try:
+                html = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode("utf-8")
+                self.assertIn("X MCP 轻量控制台", html)
+
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/tool",
+                    data=json.dumps({"tool": "x_account_health", "arguments": {}}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                resp = json.loads(urllib.request.urlopen(req).read().decode("utf-8"))
+                self.assertTrue(resp["ok"])
+                self.assertEqual(resp["data"]["account_status"], "active")
+            finally:
+                srv.shutdown()
+                srv.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

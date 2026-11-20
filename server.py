@@ -5378,6 +5378,19 @@ def make_http_handler(
             if not self._origin_ok():
                 self._send_json(403, {"error": "Forbidden Host or Origin"})
                 return
+            if self.path in {"/", "/ui", "/dashboard"}:
+                dashboard = Path(__file__).resolve().parent / "ui" / "dashboard.html"
+                if not dashboard.is_file():
+                    self._send_json(404, {"error": "Dashboard UI not found"})
+                    return
+                body = dashboard.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path == "/health":
                 # A shallow health flag hides a dead browser worker. Report the
                 # executor state so DSH can distinguish "alive" from "usable".
@@ -5477,6 +5490,43 @@ def make_http_handler(
         def do_POST(self) -> None:
             if not self._origin_ok():
                 self._send_json(403, {"error": "Forbidden Host or Origin"})
+                return
+            if self.path == "/api/tool":
+                length_header = self.headers.get("Content-Length", "0")
+                try:
+                    length = int(length_header)
+                except ValueError:
+                    self._send_json(400, {"ok": False, "error": {"code": "INVALID_LENGTH", "message": "Invalid Content-Length"}})
+                    return
+                if length < 0 or length > 1_000_000:
+                    self._send_json(413, {"ok": False, "error": {"code": "TOO_LARGE", "message": "Request too large"}})
+                    return
+                try:
+                    req = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    self._send_json(400, {"ok": False, "error": {"code": "PARSE_ERROR", "message": "Invalid JSON"}})
+                    return
+                tool = str(req.get("tool") or "") if isinstance(req, dict) else ""
+                allowed_ui_tools = {
+                    "account_summary",
+                    "x_session_status",
+                    "x_owner_read",
+                    "x_follow_candidates_read",
+                    "x_account_health",
+                    "x_content_queue",
+                    "x_daily_orchestrate_plan",
+                    "x_daily_orchestrate_prepare",
+                    "x_daily_orchestrate_execute",
+                    "x_compose_check",
+                }
+                if tool not in allowed_ui_tools:
+                    self._send_json(403, {"ok": False, "error": {"code": "TOOL_NOT_ALLOWED", "message": "Tool is not exposed on the web UI."}})
+                    return
+                raw_args = req.get("arguments")
+                args = dict(raw_args) if isinstance(raw_args, dict) else {}
+                args["_mcp_session_id"] = "web-ui-local"
+                result = app.call_tool(tool, args)
+                self._send_json(200 if result.get("ok") else 400, result)
                 return
             if self.path != "/mcp":
                 self._send_json(404, {"ok": False, "error": "Not found"})

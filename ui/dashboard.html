@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>X MCP 轻量控制台</title>
+<style>
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --ink: #11141a;
+  --ink-2: #525b6c;
+  --line: #e4e7ec;
+  --accent: #1d4ed8;
+  --accent-soft: #eef2ff;
+  --ok: #067647;
+  --ok-soft: #ecfdf3;
+  --warn: #b54708;
+  --warn-soft: #fffaeb;
+  --danger: #b42318;
+  --danger-soft: #fef3f2;
+  --radius: 12px;
+  --font: "Segoe UI Variable Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "Cascadia Mono", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--ink);
+  line-height: 1.5;
+}
+header {
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 16px;
+}
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.pill.ok { background: var(--ok-soft); color: var(--ok); }
+.pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.danger { background: var(--danger-soft); color: var(--danger); }
+main {
+  max-width: 1120px;
+  margin: 20px auto;
+  padding: 0 16px 40px;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 16px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+  grid-column: span 12;
+}
+@media (min-width: 860px) {
+  .span-5 { grid-column: span 5; }
+  .span-7 { grid-column: span 7; }
+  .span-6 { grid-column: span 6; }
+}
+h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.stat {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fafbfc;
+}
+.stat-label { font-size: 12px; color: var(--ink-2); }
+.stat-val { font-size: 20px; font-weight: 700; margin-top: 2px; }
+.bar-wrap { margin-top: 8px; }
+.bar-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+.bar { height: 7px; background: #eaecf0; border-radius: 999px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .2s; }
+label { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 4px; }
+input, textarea, select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  background: #fff;
+  color: var(--ink);
+}
+textarea { min-height: 78px; resize: vertical; }
+button {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 7px 13px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; max-height: 260px; overflow: auto; }
+.item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 13px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+.mono { font-family: var(--mono); font-size: 12px; }
+.muted { color: var(--ink-2); font-size: 12px; }
+.toast {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  display: none;
+}
+.toast.show { display: block; }
+.toast.ok { background: var(--ok-soft); color: var(--ok); }
+.toast.err { background: var(--danger-soft); color: var(--danger); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span>X MCP 轻量控制台</span>
+    <span id="modePill" class="pill">连接中...</span>
+    <span id="breakerPill" class="pill">状态未知</span>
+  </div>
+  <div class="row">
+    <button onclick="refreshAll()">刷新状态</button>
+    <button onclick="readAccount()">读取当前 X 账号</button>
+    <button onclick="readTimeline()">抓取主页时间线</button>
+    <button onclick="readCandidates()">读取关注候选</button>
+  </div>
+</header>
+
+<main>
+  <!-- 1. Health & Safe Budget -->
+  <section class="card span-5">
+    <h2>
+      <span>账号健康度与今日安全配额</span>
+      <span id="dayLabel" class="muted">--</span>
+    </h2>
+    <div class="grid-2">
+      <div class="stat">
+        <div class="stat-label">账号健康分 (0-100)</div>
+        <div class="stat-val" id="scoreVal">--</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">养号状态 (原创 / 活跃天)</div>
+        <div class="stat-val" id="warmupVal">--</div>
+      </div>
+    </div>
+    <div id="bars" style="margin-top:12px;"></div>
+    <div id="accountBox" class="muted" style="margin-top:12px;">尚未读取实时账号快照（可点击右上角「读取当前 X 账号」）。</div>
+    <div id="recommendBox" class="list"></div>
+  </section>
+
+  <!-- 2. Content Queue -->
+  <section class="card span-7">
+    <h2>
+      <span>个人内容队列（自动发布池）</span>
+      <span id="queueCount" class="muted">0 条待发</span>
+    </h2>
+    <label for="postText">新增原创内容（最多 280 字符）</label>
+    <textarea id="postText" maxlength="280" placeholder="写一条你想自动排期发布的 X 原创推文..."></textarea>
+    <div class="row" style="margin-top:8px; justify-content: space-between;">
+      <div class="row" style="flex:1;">
+        <input id="postTopic" placeholder="标签/主题（可选）" style="max-width:180px;">
+        <span id="charCount" class="muted">0 / 280</span>
+      </div>
+      <button class="primary" onclick="addQueueItem()">加入发布队列</button>
+    </div>
+    <div id="queueList" class="list"></div>
+    <div id="queueToast" class="toast"></div>
+  </section>
+
+  <!-- 3. Daily Orchestrator -->
+  <section class="card">
+    <h2>
+      <span>日常活动安全编排（发帖 + 点赞 + 关注 + 转发）</span>
+      <span id="poolSummary" class="muted">时间线候选 0 条 · 关注候选 0 人</span>
+    </h2>
+    <div class="grid-4">
+      <div>
+        <label>原创发帖目标</label>
+        <input id="gPublish" type="number" min="0" max="5" value="1">
+      </div>
+      <div>
+        <label>点赞目标</label>
+        <input id="gLike" type="number" min="0" max="60" value="8">
+      </div>
+      <div>
+        <label>关注目标</label>
+        <input id="gFollow" type="number" min="0" max="25" value="5">
+      </div>
+      <div>
+        <label>转发目标</label>
+        <input id="gRepost" type="number" min="0" max="40" value="2">
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button class="primary" onclick="planDaily()">1. 生成安全编排计划</button>
+      <button id="btnPrepare" onclick="prepareDaily()" disabled>2. 锁定并生成确认短语</button>
+      <input id="confirmInput" placeholder="输入确认短语（如 DAILY A1B2C3）" style="max-width:240px;" disabled>
+      <label style="display:inline-flex; align-items:center; gap:6px; margin:0;">
+        <input id="respectPacing" type="checkbox" checked style="width:auto;"> 按安全随机间隔执行
+      </label>
+      <button id="btnExecute" class="primary" onclick="executeDaily()" disabled>3. 确认并执行</button>
+    </div>
+    <div id="orchToast" class="toast"></div>
+    <div id="planList" class="list"></div>
+  </section>
+</main>
+
+<script>
+const state = {
+  accountSnapshot: null,
+  timelinePosts: [],
+  followCandidates: [],
+  currentPlan: null,
+  prepared: null,
+};
+
+async function callTool(tool, args = {}) {
+  const res = await fetch('/api/tool', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tool, arguments: args }),
+  });
+  return res.json();
+}
+
+function showToast(id, ok, msg) {
+  const el = document.getElementById(id);
+  el.className = 'toast show ' + (ok ? 'ok' : 'err');
+  el.textContent = msg;
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function refreshHealth() {
+  const health = await fetch('/health').then(r => r.json());
+  const modePill = document.getElementById('modePill');
+  modePill.textContent = '模式: ' + (health.mode || 'unknown');
+  modePill.className = 'pill ' + (health.mode === 'browser' ? 'ok' : 'warn');
+
+  const res = await callTool('x_account_health', state.accountSnapshot ? { account_snapshot: state.accountSnapshot } : {});
+  if (!res.ok) {
+    document.getElementById('breakerPill').textContent = res.error?.code || '不可用';
+    document.getElementById('breakerPill').className = 'pill warn';
+    return;
+  }
+  const d = res.data;
+  document.getElementById('dayLabel').textContent = d.today.local_day;
+  document.getElementById('scoreVal').textContent = d.standing_score;
+  document.getElementById('warmupVal').textContent = `${d.warmup.posts_count}/${d.warmup.required_original_posts} 帖 · ${d.warmup.active_days}/${d.warmup.required_days} 天`;
+
+  const bp = document.getElementById('breakerPill');
+  if (d.account_status === 'active') {
+    bp.textContent = '熔断器: 正常放行';
+    bp.className = 'pill ok';
+  } else {
+    bp.textContent = '熔断器: ' + (d.circuit_breaker?.reason || d.account_status);
+    bp.className = 'pill danger';
+  }
+
+  const labels = {
+    follow_profile: '关注 (Follow)',
+    like_post: '点赞 (Like)',
+    repost_post: '转发 (Repost)',
+    publish_post: '原创发帖 (Publish)',
+  };
+  const bars = Object.entries(labels).map(([k, label]) => {
+    const used = d.today.achieved[k] || 0;
+    const cap = d.today.safe_caps[k] || 0;
+    const pct = cap > 0 ? Math.min(100, Math.round((used / cap) * 100)) : 0;
+    return `<div class="bar-wrap"><div class="bar-head"><span>${label}</span><span>${used} / ${cap}</span></div><div class="bar"><i style="width:${pct}%"></i></div></div>`;
+  }).join('');
+  document.getElementById('bars').innerHTML = bars;
+
+  document.getElementById('recommendBox').innerHTML = (d.recommended_actions || []).slice(0, 4).map(a =>
+    `<div class="item"><div><strong>${esc(a.action)}</strong><div class="muted">${esc(a.reason || (a.suggested_count ? `建议执行 ${a.suggested_count} 次，最小间隔 ${a.min_gap_seconds}s` : ''))}</div></div><span class="pill">${esc(a.priority)}</span></div>`
+  ).join('');
+}
+
+async function refreshQueue() {
+  const res = await callTool('x_content_queue', { action: 'list' });
+  if (!res.ok) return;
+  const items = res.data.items || [];
+  const queued = items.filter(i => i.status === 'queued');
+  document.getElementById('queueCount').textContent = `${queued.length} 条待发 · 共 ${items.length} 条`;
+  document.getElementById('queueList').innerHTML = items.slice().reverse().map(i => `
+    <div class="item">
+      <div>
+        <div><span class="pill ${i.status === 'published' ? 'ok' : ''}">${esc(i.status)}</span> ${esc(i.text)}</div>
+        <div class="muted mono">${esc(i.item_id)} ${i.topic ? '· #' + esc(i.topic) : ''}</div>
+      </div>
+      ${i.status === 'queued' ? `<button onclick="removeQueueItem('${esc(i.item_id)}')">移除</button>` : ''}
+    </div>
+  `).join('') || '<div class="muted">队列为空，先添加一条原创推文吧。</div>';
+}
+
+async function addQueueItem() {
+  const text = document.getElementById('postText').value.trim();
+  const topic = document.getElementById('postTopic').value.trim();
+  if (!text) return showToast('queueToast', false, '请先输入推文内容。');
+  const res = await callTool('x_content_queue', { action: 'add', kind: 'original_post', text, topic: topic || undefined });
+  if (!res.ok) return showToast('queueToast', false, res.error?.message || '添加失败');
+  document.getElementById('postText').value = '';
+  document.getElementById('charCount').textContent = '0 / 280';
+  showToast('queueToast', true, '已加入待发队列：' + res.data.item.item_id);
+  refreshAll();
+}
+
+async function removeQueueItem(itemId) {
+  await callTool('x_content_queue', { action: 'remove', item_id: itemId });
+  refreshAll();
+}
+
+async function readAccount() {
+  const res = await callTool('x_owner_read', { target: 'account' });
+  if (!res.ok) return showToast('orchToast', false, res.error?.message || '读取账号失败（请确认已用 X_STARTER_MODE=browser 启动）');
+  state.accountSnapshot = res.data;
+  document.getElementById('accountBox').textContent = `当前账号: @${res.data.username} (${res.data.display_name}) · 累计帖数: ${res.data.posts_count}`;
+  refreshHealth();
+}
+
+async function readTimeline() {
+  const res = await callTool('x_owner_read', { target: 'timeline', limit: 20 });
+  if (!res.ok) return showToast('orchToast', false, res.error?.message || '读取时间线失败');
+  state.timelinePosts = res.data.posts || [];
+  updatePoolSummary();
+  showToast('orchToast', true, `已抓取 ${state.timelinePosts.length} 条主页时间线帖子。`);
+}
+
+async function readCandidates() {
+  const res = await callTool('x_follow_candidates_read', { limit: 20 });
+  if (!res.ok) return showToast('orchToast', false, res.error?.message || '读取关注候选失败');
+  state.followCandidates = res.data.candidates || res.data.accounts || [];
+  updatePoolSummary();
+  showToast('orchToast', true, `已读取 ${state.followCandidates.length} 位关注候选。`);
+}
+
+function updatePoolSummary() {
+  document.getElementById('poolSummary').textContent = `时间线候选 ${state.timelinePosts.length} 条 · 关注候选 ${state.followCandidates.length} 人`;
+}
+
+async function planDaily() {
+  const goals = {
+    publish_post: Number(document.getElementById('gPublish').value || 0),
+    like_post: Number(document.getElementById('gLike').value || 0),
+    follow_profile: Number(document.getElementById('gFollow').value || 0),
+    repost_post: Number(document.getElementById('gRepost').value || 0),
+  };
+  const res = await callTool('x_daily_orchestrate_plan', {
+    goals,
+    timeline_posts: state.timelinePosts,
+    follow_candidates: state.followCandidates,
+    account_snapshot: state.accountSnapshot || undefined,
+  });
+  if (!res.ok) return showToast('orchToast', false, res.error?.message || '生成计划失败');
+  state.currentPlan = res.data;
+  state.prepared = null;
+  document.getElementById('btnPrepare').disabled = res.data.blocked || res.data.operation_count === 0;
+  document.getElementById('btnExecute').disabled = true;
+  document.getElementById('confirmInput').disabled = true;
+
+  if (res.data.blocked) {
+    showToast('orchToast', false, '熔断器阻断：' + res.data.reason);
+  } else {
+    showToast('orchToast', true, `已生成 ${res.data.operation_count} 步安全编排（预计耗时约 ${Math.round(res.data.estimated_duration_seconds / 60)} 分钟）。`);
+  }
+  document.getElementById('planList').innerHTML = (res.data.operations || []).map(op => `
+    <div class="item">
+      <div><strong>#${op.step_index} ${esc(op.action)}</strong> · <span class="muted">${esc(op.url || op.profile_url || op.text || '')}</span></div>
+      <span class="mono muted">等待 ${op.delay_before_seconds}s</span>
+    </div>
+  `).join('') || '<div class="muted">暂无可执行动作（请先添加原创内容或抓取时间线/关注候选）。</div>';
+}
+
+async function prepareDaily() {
+  if (!state.currentPlan) return;
+  const res = await callTool('x_daily_orchestrate_prepare', { plan: state.currentPlan });
+  if (!res.ok) return showToast('orchToast', false, res.error?.message || '准备确认失败');
+  state.prepared = res.data;
+  document.getElementById('confirmInput').disabled = false;
+  document.getElementById('confirmInput').value = '';
+  document.getElementById('btnExecute').disabled = false;
+  showToast('orchToast', true, `请核对上方计划，并在输入框填入确认短语：${res.data.confirmation_phrase}`);
+}
+
+async function executeDaily() {
+  if (!state.prepared) return;
+  const confirmation = document.getElementById('confirmInput').value.trim();
+  const respectPacing = document.getElementById('respectPacing').checked;
+  showToast('orchToast', true, '正在按安全间隔执行并复验页面状态，请勿关闭窗口...');
+  document.getElementById('btnExecute').disabled = true;
+  const res = await callTool('x_daily_orchestrate_execute', {
+    batch_id: state.prepared.batch_id,
+    confirmation,
+    respect_pacing: respectPacing,
+  });
+  if (!res.ok) {
+    document.getElementById('btnExecute').disabled = false;
+    return showToast('orchToast', false, res.error?.message || '执行失败');
+  }
+  const d = res.data;
+  showToast('orchToast', true, `执行完成：处理 ${d.processed}/${d.planned}，已复验成功 ${d.verified_changed} 项${d.stop_reason ? '（停止原因: ' + d.stop_reason + '）' : ''}。`);
+  refreshAll();
+}
+
+function refreshAll() {
+  refreshHealth();
+  refreshQueue();
+}
+
+document.getElementById('postText').addEventListener('input', e => {
+  document.getElementById('charCount').textContent = `${e.target.value.length} / 280`;
+});
+
+refreshAll();
+</script>
+</body>
+</html>
