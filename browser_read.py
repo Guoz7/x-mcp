@@ -434,6 +434,70 @@ def read_user_posts(
     return result
 
 
+def read_notifications(
+    browser: Browser,
+    *,
+    limit: int = 20,
+    mentions_only: bool = False,
+    base_url: str | None = None,
+) -> dict[str, Any]:
+    """Read recent X notifications / mentions to engage promptly with interactors."""
+    base = _base_url(base_url)
+    path = "/notifications/mentions" if mentions_only else "/notifications"
+    try:
+        page = browser.open(f"{base}{path}")
+    except ExecutorError as exc:
+        raise ReadError(exc.code, exc.message) from None
+    _detect_login_wall(page)
+
+    articles = page.get("articles") or []
+    if not articles and hasattr(browser, "observe"):
+        for _ in range(2):
+            time.sleep(2.0)
+            try:
+                page = browser.observe()
+            except ExecutorError:
+                break
+            articles = page.get("articles") or []
+            if articles:
+                break
+
+    interactions: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for article in articles:
+        text = str(article.get("text") or "").strip()
+        if not text:
+            continue
+        status = None
+        for link in article.get("links") or []:
+            status = _handle_from_status_url(str(link), _hosts_for(base))
+            if status:
+                break
+        if status:
+            author, status_id = status
+            post_url = f"{base}/{author}/status/{status_id}"
+            if post_url in seen_urls:
+                continue
+            seen_urls.add(post_url)
+            interactions.append({"author": author, "url": post_url, "text": text})
+        else:
+            # Capture actor handle from profile links when no status link is present.
+            for link in article.get("links") or []:
+                parsed = urlparse(str(link))
+                parts = [p for p in parsed.path.split("/") if p]
+                if parsed.hostname in _hosts_for(base) and len(parts) == 1 and re.fullmatch(r"[A-Za-z0-9_]{1,15}", parts[0]):
+                    interactions.append({"author": parts[0], "url": None, "text": text})
+                    break
+        if len(interactions) >= limit:
+            break
+
+    return {
+        "mentions_only": mentions_only,
+        "count": len(interactions),
+        "interactions": interactions,
+    }
+
+
 def executor_context(browser: Browser) -> dict[str, Any]:
     """Safe metadata about the live context, for action completion."""
 

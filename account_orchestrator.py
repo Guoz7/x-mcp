@@ -387,7 +387,7 @@ def evaluate_account_health(
         stage_caps = {"publish_post": 2, "like_post": 15, "follow_profile": 5, "repost_post": 3, "reply_post": 2}
     else:
         warmup_stage = "growth"
-        stage_caps = {"publish_post": 5, "like_post": 60, "follow_profile": 25, "repost_post": 40, "reply_post": 15}
+        stage_caps = {"publish_post": 5, "like_post": 60, "follow_profile": 100, "repost_post": 40, "reply_post": 15}
 
     followers_snap = snap.get("followers_count")
     following_snap = snap.get("following_count")
@@ -643,18 +643,23 @@ _RECIPROCAL_MARKERS = ("互关", "互follow", "互粉", "follow back", "followba
 RECIPROCAL_SEARCH_QUERY = "互关 OR 互follow OR 互粉"
 
 
-def score_follow_candidate(cand: dict[str, Any]) -> tuple[int, str]:
-    """Score a follow candidate for reciprocal growth likelihood (higher is better)."""
-    score = 0
-    if cand.get("mutual_verified") is True:
-        score += 40
+def has_reciprocal_marker(cand: dict[str, Any]) -> bool:
+    """Return True when candidate handle/name/bio/post advertises reciprocal follow."""
     combined = " ".join([
         str(cand.get("handle") or cand.get("username") or ""),
         str(cand.get("display_name") or ""),
         str(cand.get("bio") or ""),
         str(cand.get("post_text") or ""),
     ]).casefold()
-    if any(marker in combined for marker in _RECIPROCAL_MARKERS):
+    return any(marker in combined for marker in _RECIPROCAL_MARKERS)
+
+
+def score_follow_candidate(cand: dict[str, Any]) -> tuple[int, str]:
+    """Score a follow candidate for reciprocal growth likelihood (higher is better)."""
+    score = 0
+    if cand.get("mutual_verified") is True:
+        score += 40
+    if has_reciprocal_marker(cand):
         score += 60
     if str(cand.get("bio") or "").strip():
         score += 10
@@ -828,6 +833,7 @@ def build_daily_orchestration_plan(
     account_snapshot: dict[str, Any] | None = None,
     persona_topics: list[str] | None = None,
     exclude_keywords: list[str] | None = None,
+    require_reciprocal_marker: bool = False,
     profile: dict[str, Any] | None = None,
     now_epoch: float | None = None,
     seed: int | None = None,
@@ -835,6 +841,18 @@ def build_daily_orchestration_plan(
     """Build a deduplicated, safe-paced, mixed daily maintenance plan."""
     now = float(now_epoch) if now_epoch is not None else time.time()
     prof = profile or load_safe_profile()
+    # Allow explicit growth-stage reciprocal follow goal up to 100/day when requested.
+    if goals and int(goals.get("follow_profile", 0)) > int(prof["actions"]["follow_profile"]["per_day"]):
+        prof = {
+            **prof,
+            "actions": {
+                **prof["actions"],
+                "follow_profile": {
+                    **prof["actions"]["follow_profile"],
+                    "per_day": min(100, int(goals["follow_profile"])),
+                },
+            },
+        }
     health = evaluate_account_health(
         ledger,
         account_snapshot=account_snapshot,
@@ -967,6 +985,8 @@ def build_daily_orchestration_plan(
     for cand in ranked_cands:
         if len(buckets["follow_profile"]) >= capped["follow_profile"]:
             break
+        if require_reciprocal_marker and not has_reciprocal_marker(cand):
+            continue
         handle = str(cand.get("handle") or cand.get("username") or "").strip().lstrip("@")
         if not _HANDLE_RE.match(handle):
             continue

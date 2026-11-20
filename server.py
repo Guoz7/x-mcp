@@ -1670,6 +1670,23 @@ class XStarter:
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
             },
             {
+                "name": "x_notifications_read",
+                "title": "Read recent X notifications and mentions",
+                "description": (
+                    "Read-only check of recent X notifications/mentions so the agent can promptly "
+                    "like, reply, or follow back users who interacted with you."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                        "mentions_only": {"type": "boolean", "default": False},
+                    },
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
+            },
+            {
                 "name": "account_summary",
                 "title": "Inspect X account",
                 "description": (
@@ -1906,6 +1923,8 @@ class XStarter:
                 data = self._x_search_posts(scoped, trace)
             elif name == "x_visit_profile":
                 data = self._x_visit_profile(scoped, trace)
+            elif name == "x_notifications_read":
+                data = self._x_notifications_read(scoped, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -3784,6 +3803,26 @@ class XStarter:
         trace.append(_event("browser_executor", "profile_visited", username=result["username"], count=len(result.get("posts") or [])))
         return result
 
+    def _x_notifications_read(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        if self.mode != "browser":
+            raise StarterError("BROWSER_BRIDGE_REQUIRED", "x_notifications_read requires X_STARTER_MODE=browser.")
+        limit = _bounded_int(arguments, "limit", default=20, minimum=1, maximum=50)
+        mentions_only = bool(arguments.get("mentions_only", False))
+        browser = self._browser_for(arguments)
+        try:
+            result = browser_read.read_notifications(
+                browser,
+                limit=limit,
+                mentions_only=mentions_only,
+                base_url=self.environ.get("X_STARTER_READ_BASE_URL"),
+            )
+        except browser_read.ReadError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("browser_executor", "notifications_read", count=result["count"], mentions_only=mentions_only))
+        return result
+
     def _autopilot_store(self) -> autopilot_ops.AutopilotStore:
         return autopilot_ops.AutopilotStore(self._bridge().path.parent)
 
@@ -3913,11 +3952,12 @@ class XStarter:
                         })
                 plan = account_orchestrator.build_daily_orchestration_plan(
                     ledger,
-                    goals={"publish_post": 0, "like_post": max(1, max_count // 2), "follow_profile": max_count, "repost_post": 0},
+                    goals={"publish_post": 0, "like_post": max(1, max_count // 2), "follow_profile": 100, "repost_post": 0},
                     timeline_posts=posts,
                     follow_candidates=follow_candidates,
                     account_snapshot=arguments.get("account_snapshot") or ({"username": own_username, "posts_count": 75} if own_username else None),
                     persona_topics=["互关", "互follow", "互粉", "follow"],
+                    require_reciprocal_marker=True,
                 )
                 ops = list(plan.get("operations") or [])[:max_count]
                 if not ops:
@@ -5947,6 +5987,7 @@ def make_http_handler(
                     "x_autopilot",
                     "x_search_posts",
                     "x_visit_profile",
+                    "x_notifications_read",
                     "x_compose_check",
                 }
                 if tool not in allowed_ui_tools:

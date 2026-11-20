@@ -103,6 +103,7 @@ class MockToolsTest(unittest.TestCase):
                 "x_autopilot",
                 "x_search_posts",
                 "x_visit_profile",
+                "x_notifications_read",
                 "account_summary",
                 "draft_post",
                 "schedule_post",

@@ -171,6 +171,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     <button onclick="refreshAll()">刷新状态</button>
     <button onclick="readAccount()">读取当前 X 账号</button>
     <button onclick="readTimeline()">抓取主页时间线</button>
+    <button onclick="readNotifications()">读取互动通知</button>
     <button onclick="readCandidates()">读取关注候选</button>
   </div>
 </header>
@@ -235,8 +236,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
         <input id="gLike" type="number" min="0" max="60" value="8">
       </div>
       <div>
-        <label>关注目标</label>
-        <input id="gFollow" type="number" min="0" max="25" value="5">
+        <label>关注目标 (互关上限100)</label>
+        <input id="gFollow" type="number" min="0" max="100" value="10">
       </div>
       <div>
         <label>转发目标</label>
@@ -468,6 +469,26 @@ async function readTimeline() {
   state.timelinePosts = snap.posts || [];
   updatePoolSummary();
   showToast('orchToast', true, `已抓取 ${state.timelinePosts.length} 条主页时间线帖子。`);
+}
+
+async function readNotifications() {
+  const res = await callTool('x_notifications_read', { limit: 20 });
+  if (!res.ok) return showToast('orchToast', false, res.error?.message || '读取通知失败');
+  const items = res.data?.interactions || [];
+  const seen = new Set(state.timelinePosts.map(p => p.url));
+  const seenHandles = new Set(state.followCandidates.map(c => (c.handle || '').toLowerCase()));
+  for (const it of items) {
+    if (it.url && !seen.has(it.url)) {
+      state.timelinePosts.unshift({ url: it.url, author: it.author, text: it.text });
+      seen.add(it.url);
+    }
+    if (it.author && !seenHandles.has(it.author.toLowerCase())) {
+      state.followCandidates.unshift({ handle: it.author, mutual_verified: true, post_text: it.text, source: 'notifications' });
+      seenHandles.add(it.author.toLowerCase());
+    }
+  }
+  updatePoolSummary();
+  showToast('orchToast', true, `已抓取 ${items.length} 条互动通知（已自动加入优先互关与回复候选）。`);
 }
 
 async function readCandidates() {

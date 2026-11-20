@@ -622,6 +622,28 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 self.assertTrue(cln["ok"])
                 self.assertTrue(cln["data"]["ran"])
                 self.assertEqual(cln["data"]["execution"]["verified_changed"], 1)
+
+                # 100/day reciprocal marker filter & x_notifications_read.
+                rec_100 = build_daily_orchestration_plan(
+                    {"account_binding": "guoz7777", "actions": {}},
+                    goals={"follow_profile": 100, "like_post": 0, "publish_post": 0},
+                    follow_candidates=[
+                        {"handle": "normal_user", "bio": "software engineer"},
+                        {"handle": "huguan_100", "bio": "互关 互follow"},
+                    ],
+                    account_snapshot={"posts_count": 75},
+                    require_reciprocal_marker=True,
+                )
+                self.assertEqual([op["handle"] for op in rec_100["operations"]], ["huguan_100"])
+
+                mock_browser.open.return_value = {
+                    "url": "https://x.com/notifications",
+                    "text": "notifications",
+                    "articles": [{"text": "alice replied: nice MCP tool!", "links": ["https://x.com/alice/status/999"]}],
+                }
+                notif = app.call_tool("x_notifications_read", {"limit": 10})
+                self.assertTrue(notif["ok"])
+                self.assertEqual(notif["data"]["interactions"][0]["author"], "alice")
             finally:
                 app.close()
 
