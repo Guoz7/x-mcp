@@ -65,6 +65,7 @@ DEFAULT_WARMUP: dict[str, Any] = {
 _SECRET_PATTERN = re.compile(
     r"(?:sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]+PRIVATE KEY-----)"
 )
+_EXTERNAL_URL_RE = re.compile(r"https?://(?!(?:www\.)?(?:x\.com|twitter\.com|t\.co)\b)\S+", re.IGNORECASE)
 _HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 _STATUS_URL_RE = re.compile(
     r"^https?://(?:www\.)?(?:x\.com|twitter\.com)/([A-Za-z0-9_]{1,15})/status/(\d{1,25})(?:\?.*)?$",
@@ -345,6 +346,30 @@ def evaluate_account_health(
     standing_score = max(0, min(100, profile_score + original_score + engagement_score + safety_score))
     warmup_ready = (posts_count >= req_posts) and (account_age_days >= req_days) and not missing_fields
 
+    if account_age_days < 3:
+        warmup_stage = "ghost"
+        stage_caps = {"publish_post": 0, "like_post": 3, "follow_profile": 0, "repost_post": 0, "reply_post": 0}
+    elif account_age_days < 7:
+        warmup_stage = "light_engage"
+        stage_caps = {"publish_post": 1, "like_post": 6, "follow_profile": 2, "repost_post": 1, "reply_post": 0}
+    elif not warmup_ready:
+        warmup_stage = "content_build"
+        stage_caps = {"publish_post": 2, "like_post": 15, "follow_profile": 5, "repost_post": 3, "reply_post": 2}
+    else:
+        warmup_stage = "growth"
+        stage_caps = {"publish_post": 5, "like_post": 60, "follow_profile": 25, "repost_post": 40, "reply_post": 15}
+
+    followers_snap = snap.get("followers_count")
+    following_snap = snap.get("following_count")
+    ratio_guard = (
+        isinstance(following_snap, (int, float))
+        and isinstance(followers_snap, (int, float))
+        and following_snap >= 50
+        and following_snap > max(1.0, float(followers_snap)) * 2.5
+    )
+    if ratio_guard:
+        stage_caps["follow_profile"] = 0
+
     queued_items = [item for item in (content_queue or []) if item.get("status") == "queued"]
     due_items = [
         item for item in queued_items
@@ -386,11 +411,17 @@ def evaluate_account_health(
                 "suggested_count": min(10, remaining_safe["like_post"]),
                 "min_gap_seconds": prof["actions"]["like_post"]["min_gap_seconds"],
             })
-        if remaining_safe["follow_profile"] > 0:
+        if ratio_guard:
+            recommended_actions.append({
+                "action": "improve_follower_ratio",
+                "priority": "high",
+                "reason": f"Following ({int(following_snap)}) > 2.5x followers ({int(followers_snap)}); pause follows and focus on original posts.",
+            })
+        if remaining_safe["follow_profile"] > 0 and stage_caps["follow_profile"] > 0:
             recommended_actions.append({
                 "action": "follow_profile",
                 "priority": "medium",
-                "suggested_count": min(5, remaining_safe["follow_profile"]),
+                "suggested_count": min(5, remaining_safe["follow_profile"], stage_caps["follow_profile"]),
                 "min_gap_seconds": prof["actions"]["follow_profile"]["min_gap_seconds"],
             })
         if remaining_safe["repost_post"] > 0:
@@ -415,6 +446,9 @@ def evaluate_account_health(
         },
         "warmup": {
             "ready": warmup_ready,
+            "stage": warmup_stage,
+            "stage_caps": stage_caps,
+            "ratio_guard_triggered": ratio_guard,
             "posts_count": posts_count,
             "required_original_posts": req_posts,
             "active_days": account_age_days,
@@ -497,6 +531,10 @@ class ContentQueueStore:
         }
         with self.lock:
             data = self._read()
+            norm = cleaned.casefold()
+            for existing in data["items"]:
+                if existing.get("status") in {"queued", "published"} and str(existing.get("text") or "").strip().casefold() == norm:
+                    raise OrchestratorError("DUPLICATE_CONTENT", "Matching text already exists in the content queue.")
             data["items"].append(item)
             self._write(data)
         return item
@@ -631,16 +669,11 @@ def build_daily_orchestration_plan(
         "repost_post": 3,
         "reply_post": 2,
     }
-    warmup_ready = bool(health["warmup"]["ready"])
-    stage = "growth" if warmup_ready else "warmup"
-    stage_caps = (
-        {"publish_post": 5, "like_post": 60, "follow_profile": 25, "repost_post": 40, "reply_post": 15}
-        if warmup_ready
-        else {"publish_post": 5, "like_post": 15, "follow_profile": 5, "repost_post": 10, "reply_post": 3}
-    )
+    stage = str(health["warmup"].get("stage") or "growth")
+    stage_caps = dict(health["warmup"].get("stage_caps") or {})
     remaining = health["today"]["remaining_safe"]
     capped = {
-        kind: max(0, min(int(requested.get(kind, 0)), int(remaining.get(kind, 0)), stage_caps[kind]))
+        kind: max(0, min(int(requested.get(kind, 0)), int(remaining.get(kind, 0)), int(stage_caps.get(kind, 0))))
         for kind in ("publish_post", "like_post", "follow_profile", "repost_post", "reply_post")
     }
 
@@ -664,6 +697,8 @@ def build_daily_orchestration_plan(
             continue
         kind = item.get("kind")
         if kind == "original_post" and len(buckets["publish_post"]) < capped["publish_post"]:
+            if stage != "growth" and _EXTERNAL_URL_RE.search(str(item.get("text") or "")):
+                continue
             buckets["publish_post"].append({
                 "action": "publish_post",
                 "text": item["text"],

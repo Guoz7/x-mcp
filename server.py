@@ -3513,6 +3513,7 @@ class XStarter:
         verified_changed = 0
         uncertain_streak = 0
         browser = None
+        pre_browsed = False
         queue_store = self._content_queue()
 
         for index, _ in enumerate(queued["action_ids"]):
@@ -3536,6 +3537,15 @@ class XStarter:
 
             if browser is None:
                 browser = self._browser_for(arguments)
+                if respect_pacing and not pre_browsed and hasattr(browser, "open") and hasattr(browser, "scroll_current"):
+                    pre_browsed = True
+                    try:
+                        browser.open("https://x.com/home")
+                        browser.scroll_current(delta_y=850)
+                        time.sleep(1.5)
+                        browser.scroll_current(delta_y=950)
+                    except ExecutorError:
+                        pass
             try:
                 verified = bridge.verify_claim(action["action_id"], action["claim_token"], session_id=session_id)
                 browser.authorize_x_action(

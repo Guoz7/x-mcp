@@ -140,6 +140,9 @@ class ContentQueueAndPlannerTests(unittest.TestCase):
 
             future = time.time() + 3600
             item1 = store.add(kind="original_post", text="Shipped safe pacing today.", topic="build")
+            with self.assertRaises(OrchestratorError) as dup:
+                store.add(kind="original_post", text="shipped safe pacing today.")
+            self.assertEqual(dup.exception.code, "DUPLICATE_CONTENT")
             item2 = store.add(kind="original_post", text="Later post.", scheduled_after_epoch=future)
             due = store.due()
             self.assertEqual([i["item_id"] for i in due], [item1["item_id"]])
@@ -187,12 +190,13 @@ class ContentQueueAndPlannerTests(unittest.TestCase):
                 {"handle": "new_friend_1", "mutual_verified": True, "bio": "builder", "followers_count": 300, "following_count": 280},
                 {"handle": "new_friend_2", "followers_count": 200, "following_count": 250},
             ],
+            account_snapshot={"display_name": "Guoz", "bio": "Builder", "has_avatar": True, "posts_count": 5, "account_age_days": 8},
             seed=42,
         )
         self.assertFalse(plan["blocked"])
         self.assertEqual(plan["status"], "planned_not_executed")
-        # Warmup stage (posts < 10) caps follow_profile at 5 even though 10 were requested.
-        self.assertEqual(plan["stage"], "warmup")
+        # Day 8 with 5 posts is content_build stage (caps follow_profile at 5).
+        self.assertEqual(plan["stage"], "content_build")
         self.assertEqual(plan["counts"], {"publish_post": 1, "like_post": 2, "follow_profile": 3, "repost_post": 1, "reply_post": 1})
         urls = [op.get("url") for op in plan["operations"] if op.get("url")]
         self.assertNotIn("https://x.com/bob/status/100", urls)
@@ -200,6 +204,44 @@ class ContentQueueAndPlannerTests(unittest.TestCase):
         self.assertNotIn("already_followed", handles)
         # Highest-scored candidate (new_friend_1) must come before big_account.
         self.assertLess(handles.index("new_friend_1"), handles.index("big_account"))
+
+    def test_ghost_stage_and_ratio_guard_and_external_link_skip(self) -> None:
+        ledger = {"account_binding": "guoz7777", "actions": {}}
+        # Ghost stage (0 active days): only likes <= 3, 0 follows, 0 publishes.
+        ghost_plan = build_daily_orchestration_plan(
+            ledger,
+            goals={"publish_post": 2, "like_post": 10, "follow_profile": 5, "repost_post": 3},
+            content_queue=[{"item_id": "cq_ext", "kind": "original_post", "status": "queued", "text": "Check https://example.com"}],
+            timeline_posts=[
+                {"url": "https://x.com/a/status/1", "author": "a", "text": "1"},
+                {"url": "https://x.com/b/status/2", "author": "b", "text": "2"},
+                {"url": "https://x.com/c/status/3", "author": "c", "text": "3"},
+                {"url": "https://x.com/d/status/4", "author": "d", "text": "4"},
+            ],
+            follow_candidates=[{"handle": "cand1"}],
+            account_snapshot={"posts_count": 0, "account_age_days": 1},
+            seed=1,
+        )
+        self.assertEqual(ghost_plan["stage"], "ghost")
+        self.assertEqual(ghost_plan["counts"]["like_post"], 3)
+        self.assertEqual(ghost_plan["counts"]["follow_profile"], 0)
+        self.assertEqual(ghost_plan["counts"]["publish_post"], 0)
+
+        # Ratio guard + external link filter in content_build stage.
+        ratio_plan = build_daily_orchestration_plan(
+            ledger,
+            goals={"publish_post": 2, "like_post": 2, "follow_profile": 5},
+            content_queue=[
+                {"item_id": "cq_ext", "kind": "original_post", "status": "queued", "text": "Link https://example.com"},
+                {"item_id": "cq_clean", "kind": "original_post", "status": "queued", "text": "Pure text post"},
+            ],
+            follow_candidates=[{"handle": "cand1"}],
+            account_snapshot={"posts_count": 5, "account_age_days": 8, "following_count": 200, "followers_count": 20},
+            seed=1,
+        )
+        self.assertEqual(ratio_plan["counts"]["follow_profile"], 0)
+        self.assertEqual(ratio_plan["counts"]["publish_post"], 1)
+        self.assertTrue(ratio_plan["health"]["warmup"]["ratio_guard_triggered"])
 
 
 class DailyOrchestratorMcpTests(unittest.TestCase):
@@ -229,13 +271,14 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             self.assertTrue(h["ok"])
             self.assertEqual(h["data"]["content_queue"]["due"], 1)
 
-            # 3. Plan daily wave.
+            # 3. Plan daily wave (provide growth-ready snapshot so publish_post is admitted).
             planned = app.call_tool(
                 "x_daily_orchestrate_plan",
                 {
                     "goals": {"publish_post": 1, "like_post": 1, "follow_profile": 1, "repost_post": 0},
                     "timeline_posts": [{"url": "https://x.com/alice/status/555", "author": "alice", "text": "hello"}],
                     "follow_candidates": [{"handle": "alice"}],
+                    "account_snapshot": {"display_name": "Guoz", "bio": "Builder", "has_avatar": True, "posts_count": 12, "account_age_days": 14},
                     "seed": 1,
                 },
             )
@@ -414,6 +457,7 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                     "respect_pacing": False,
                     "timeline_posts": [{"url": "https://x.com/alice/status/888", "author": "alice", "text": "hi"}],
                     "follow_candidates": [{"handle": "bob", "mutual_verified": True}],
+                    "account_snapshot": {"display_name": "Guoz", "bio": "Builder", "has_avatar": True, "posts_count": 12, "account_age_days": 14},
                 },
             )
             self.assertTrue(wave["ok"])

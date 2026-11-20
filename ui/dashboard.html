@@ -354,9 +354,11 @@ async function refreshHealth() {
     return;
   }
   const d = res.data;
+  const stageNames = { ghost: 'Ghost 潜伏期', light_engage: '轻互动期', content_build: '内容建设期', growth: '成长期' };
+  const stageLabel = stageNames[d.warmup.stage] || d.warmup.stage || 'warmup';
   document.getElementById('dayLabel').textContent = d.today.local_day;
   document.getElementById('scoreVal').textContent = d.standing_score;
-  document.getElementById('warmupVal').textContent = `${d.warmup.posts_count}/${d.warmup.required_original_posts} 帖 · ${d.warmup.active_days}/${d.warmup.required_days} 天`;
+  document.getElementById('warmupVal').textContent = `${d.warmup.posts_count}/${d.warmup.required_original_posts} 帖 · ${d.warmup.active_days}/${d.warmup.required_days} 天 (${stageLabel})`;
 
   const bp = document.getElementById('breakerPill');
   if (d.account_status === 'active') {
@@ -483,7 +485,8 @@ async function planDaily() {
   if (res.data.blocked) {
     showToast('orchToast', false, '熔断器阻断：' + res.data.reason);
   } else {
-    const stageLabel = res.data.stage === 'warmup' ? '养号期（保守上限）' : '成长期';
+    const stageNames = { ghost: 'Ghost 潜伏期', light_engage: '轻互动期', content_build: '内容建设期', growth: '成长期' };
+    const stageLabel = stageNames[res.data.stage] || res.data.stage || 'warmup';
     const missing = [];
     if ((goals.like_post > 0 || goals.repost_post > 0) && state.timelinePosts.length === 0) {
       missing.push('尚未抓取主页时间线（请先点右上角「抓取主页时间线」）');
