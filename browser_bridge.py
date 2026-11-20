@@ -2189,10 +2189,16 @@ class BrowserBridge:
             text = str(result.get("text", ""))
             if text != str(payload.get("text", "")):
                 raise BridgeError("TEXT_MISMATCH", "The reply text does not match the confirmed text.")
-            if str(result.get("post_url", "")).split("?")[0].rstrip("/") != str(payload.get("post_url", "")).split("?")[0].rstrip("/"):
-                raise BridgeError("TARGET_MISMATCH", "The reply target changed.")
+            res_post_url = str(result.get("post_url", "")).split("?")[0].rstrip("/")
+            if payload.get("reply_to_previous_thread_step") and not payload.get("post_url"):
+                _x_post_url_parts(res_post_url)
+                canonical_target = res_post_url
+            else:
+                if res_post_url != str(payload.get("post_url", "")).split("?")[0].rstrip("/"):
+                    raise BridgeError("TARGET_MISMATCH", "The reply target changed.")
+                canonical_target = payload["post_url"]
             return {
-                "post_url": payload["post_url"],
+                "post_url": canonical_target,
                 "reply_url": str(result.get("reply_url", "")),
                 "text": text,
                 "text_sha256": _text_digest(text),

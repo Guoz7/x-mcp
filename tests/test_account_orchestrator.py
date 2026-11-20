@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -730,6 +730,10 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 },
             )
             try:
+                with app._bridge()._lock:
+                    st = app._bridge()._read()
+                    st["account_binding"] = "guoz7777"
+                    app._bridge()._write(st)
                 app.call_tool(
                     "x_persona_memory",
                     {
@@ -757,8 +761,8 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 )
 
                 # Queue lower-weighted 'coffee' first, higher-weighted 'mcp' second -> planner picks 'mcp' first.
-                app.call_tool("x_content_queue", {"action": "add", "kind": "original_post", "topic": "coffee", "text": "Morning pour-over before debugging."})
-                app.call_tool("x_content_queue", {"action": "add", "kind": "original_post", "topic": "mcp", "text": "Why bounded MCP integer schemas prevent upstream 500s."})
+                p_coffee = app.call_tool("x_content_queue", {"action": "add", "kind": "original_post", "topic": "coffee", "text": "Morning pour-over before debugging."})
+                p_mcp = app.call_tool("x_content_queue", {"action": "add", "kind": "original_post", "topic": "mcp", "text": "Why bounded MCP integer schemas prevent upstream 500s."})
                 weighted_plan = app.call_tool(
                     "x_daily_orchestrate_plan",
                     {
@@ -768,6 +772,9 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 )
                 self.assertTrue(weighted_plan["ok"])
                 self.assertEqual(weighted_plan["data"]["operations"][0]["topic"], "mcp")
+
+                app.call_tool("x_content_queue", {"action": "remove", "item_id": p_coffee["data"]["item"]["item_id"]})
+                app.call_tool("x_content_queue", {"action": "remove", "item_id": p_mcp["data"]["item"]["item_id"]})
 
                 # Queue a 3-tweet thread under 'mcp' and run plan -> prepare -> execute chaining URLs.
                 thr = app.call_tool(
@@ -801,17 +808,37 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 prep = app.call_tool("x_daily_orchestrate_prepare", {"plan": plan["data"]})
                 self.assertTrue(prep["ok"])
 
+                import hashlib
                 mock_browser = MagicMock()
                 mock_browser.browser_family = "chromium"
-                mock_browser.execute_x_publish.return_value = {
+                mock_browser.execute_x_publish.side_effect = lambda *, text, expected_username, action_id, claim_token, lease_expires_epoch: {
                     "verified": True,
                     "changed": True,
                     "state": "published",
+                    "author": "guoz7777",
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                     "post_url": "https://x.com/guoz7777/status/1001",
                 }
                 mock_browser.execute_x_action.side_effect = [
-                    {"verified": True, "changed": True, "state": "replied", "post_url": "https://x.com/guoz7777/status/1002"},
-                    {"verified": True, "changed": True, "state": "replied", "post_url": "https://x.com/guoz7777/status/1003"},
+                    {
+                        "verified": True,
+                        "changed": True,
+                        "state": "replied",
+                        "author": "guoz7777",
+                        "post_url": "https://x.com/guoz7777/status/1001",
+                        "reply_url": "https://x.com/guoz7777/status/1002",
+                        "text": "2/ Every write goes through prepare -> confirmation -> leased claim.",
+                    },
+                    {
+                        "verified": True,
+                        "changed": True,
+                        "state": "replied",
+                        "author": "guoz7777",
+                        "post_url": "https://x.com/guoz7777/status/1002",
+                        "reply_url": "https://x.com/guoz7777/status/1003",
+                        "text": "3/ Follow-ups chain dynamically onto the published status URL.",
+                    },
                 ]
                 with patch.object(app, "_browser_for", return_value=mock_browser):
                     exe = app.call_tool(

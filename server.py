@@ -3777,7 +3777,8 @@ class XStarter:
                 ):
                     verified_changed += 1
                 if kind in {"publish_post", "reply_post"} and payload.get("thread_id"):
-                    published_thread_url = (completed.get("result") or {}).get("post_url")
+                    res_obj = completed.get("result") or {}
+                    published_thread_url = (res_obj.get("reply_url") if kind == "reply_post" else None) or res_obj.get("post_url")
                     if isinstance(published_thread_url, str) and published_thread_url.strip():
                         thread_last_url[str(payload["thread_id"])] = published_thread_url.strip()
                 if kind == "publish_post" and payload.get("queue_item_id"):
