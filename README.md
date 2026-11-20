@@ -37,13 +37,15 @@ python -I -X utf8 run_mock.ps1
 python -I -X utf8 server.py --transport http --port 8765
 ```
 
-启动浏览器路径：
+启动浏览器路径与轻量 Web 控制台（打开 `http://127.0.0.1:8765/`）：
 
 ```powershell
 $env:X_STARTER_MODE = "browser"
 $env:X_STARTER_ENABLE_BROWSER = "1"
 python -I -X utf8 server.py --transport http --port 8765
 ```
+
+Windows 用户也可直接运行 `dashboard.cmd` 一键启动并打开轻量控制台（支持账号健康度/安全配额看板、个人内容队列及日常活动安全编排）。
 
 ## 第一个任务
 

@@ -3514,17 +3514,24 @@ class XStarter:
                 )
                 kind = action["type"]
                 if kind == "publish_post":
-                    raw = browser.execute_x_action(
-                        action_type="publish_post",
-                        text=str(payload.get("text") or ""),
-                        action_id=action["action_id"],
-                        claim_token=action["claim_token"],
-                        lease_expires_epoch=verified["lease_expires_epoch"],
-                    )
+                    if hasattr(browser, "execute_x_publish"):
+                        raw = browser.execute_x_publish(
+                            text=str(payload.get("text") or ""),
+                            action_id=action["action_id"],
+                            claim_token=action["claim_token"],
+                            lease_expires_epoch=verified["lease_expires_epoch"],
+                        )
+                    else:
+                        raise ExecutorError(
+                            "PUBLISH_REQUIRES_COMPOSER_FLOW",
+                            "publish_post requires the interactive composer flow (x_post_prepare / x_post_publish).",
+                        )
                 elif kind in {"like_post", "repost_post"}:
                     raw = browser.execute_x_action(
                         action_type=kind,
                         post_url=str(payload.get("post_url") or payload.get("url") or ""),
+                        author=str(payload.get("author") or ""),
+                        text=None,
                         action_id=action["action_id"],
                         claim_token=action["claim_token"],
                         lease_expires_epoch=verified["lease_expires_epoch"],
@@ -3532,7 +3539,9 @@ class XStarter:
                 else:
                     raw = browser.execute_x_action(
                         action_type="follow_profile",
-                        profile_url=str(payload.get("profile_url") or ""),
+                        post_url=str(payload.get("profile_url") or ""),
+                        author=str(payload.get("handle") or ""),
+                        text=None,
                         action_id=action["action_id"],
                         claim_token=action["claim_token"],
                         lease_expires_epoch=verified["lease_expires_epoch"],
@@ -5524,8 +5533,7 @@ def make_http_handler(
                     return
                 raw_args = req.get("arguments")
                 args = dict(raw_args) if isinstance(raw_args, dict) else {}
-                args["_mcp_session_id"] = "web-ui-local"
-                result = app.call_tool(tool, args)
+                result = app.call_tool(tool, args, session_id="web-ui-local")
                 self._send_json(200 if result.get("ok") else 400, result)
                 return
             if self.path != "/mcp":

@@ -239,28 +239,29 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             batch_id = prep["data"]["batch_id"]
             phrase = prep["data"]["confirmation_phrase"]
 
-            # 5. Mock browser executor for safe local MCP execution.
+            # 5. Mock browser executor matching Browser.execute_x_action's exact signature.
             mock_browser = MagicMock()
             mock_browser.browser_family = "chromium"
 
-            def fake_exec(**kwargs):
-                atype = kwargs["action_type"]
-                if atype == "publish_post":
-                    import hashlib
-                    return {
-                        "post_url": "https://x.com/guoz7777/status/777",
-                        "author": "guoz7777",
-                        "text": kwargs["text"],
-                        "text_sha256": hashlib.sha256(kwargs["text"].encode("utf-8")).hexdigest(),
-                        "verified": True,
-                        "changed": True,
-                    }
-                if atype == "like_post":
-                    return {"post_url": kwargs["post_url"], "author": "alice", "state": "liked", "verified": True, "changed": True}
-                if atype == "follow_profile":
-                    return {"profile_url": kwargs["profile_url"], "handle": "alice", "state": "following", "verified": True, "changed": True}
+            def fake_publish(*, text, action_id, claim_token, lease_expires_epoch):
+                import hashlib
+                return {
+                    "post_url": "https://x.com/guoz7777/status/777",
+                    "author": "guoz7777",
+                    "text": text,
+                    "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    "verified": True,
+                    "changed": True,
+                }
+
+            def fake_exec(*, action_type, post_url, author, text, action_id, claim_token, lease_expires_epoch):
+                if action_type == "like_post":
+                    return {"post_url": post_url, "author": author, "state": "liked", "verified": True, "changed": True}
+                if action_type == "follow_profile":
+                    return {"profile_url": post_url, "handle": author, "state": "following", "verified": True, "changed": True}
                 return {}
 
+            mock_browser.execute_x_publish.side_effect = fake_publish
             mock_browser.execute_x_action.side_effect = fake_exec
             app._browser_for = lambda _args: mock_browser
 

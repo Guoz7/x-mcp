@@ -164,6 +164,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   <div class="brand">
     <span>X MCP 轻量控制台</span>
     <span id="modePill" class="pill">连接中...</span>
+    <span id="sessionPill" class="pill">账号: 检查中...</span>
     <span id="breakerPill" class="pill">状态未知</span>
   </div>
   <div class="row">
@@ -209,7 +210,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
         <input id="postTopic" placeholder="标签/主题（可选）" style="max-width:180px;">
         <span id="charCount" class="muted">0 / 280</span>
       </div>
-      <button class="primary" onclick="addQueueItem()">加入发布队列</button>
+      <div class="row">
+        <button onclick="checkDraft()">预检文案</button>
+        <button class="primary" onclick="addQueueItem()">加入发布队列</button>
+      </div>
     </div>
     <div id="queueList" class="list"></div>
     <div id="queueToast" class="toast"></div>
@@ -295,6 +299,19 @@ async function refreshHealth() {
   modePill.textContent = '模式: ' + (health.mode || 'unknown');
   modePill.className = 'pill ' + (health.mode === 'browser' ? 'ok' : 'warn');
 
+  const sess = await callTool('x_session_status', {});
+  const sp = document.getElementById('sessionPill');
+  if (sess.ok && sess.data?.selected_account?.username) {
+    sp.textContent = '账号: @' + sess.data.selected_account.username;
+    sp.className = 'pill ok';
+  } else if (sess.ok) {
+    sp.textContent = '账号: 未绑定';
+    sp.className = 'pill warn';
+  } else {
+    sp.textContent = '会话: ' + (sess.error?.code || '不可用');
+    sp.className = 'pill warn';
+  }
+
   const res = await callTool('x_account_health', state.accountSnapshot ? { account_snapshot: state.accountSnapshot } : {});
   if (!res.ok) {
     document.getElementById('breakerPill').textContent = res.error?.code || '不可用';
@@ -351,6 +368,15 @@ async function refreshQueue() {
   `).join('') || '<div class="muted">队列为空，先添加一条原创推文吧。</div>';
 }
 
+async function checkDraft() {
+  const text = document.getElementById('postText').value.trim();
+  if (!text) return showToast('queueToast', false, '请先输入推文内容。');
+  const res = await callTool('x_compose_check', { text });
+  if (!res.ok) return showToast('queueToast', false, res.error?.message || '预检失败');
+  const d = res.data;
+  showToast('queueToast', Boolean(d.ok ?? true), `预检通过：${d.character_count ?? text.length}/280 字符${d.warnings?.length ? '（提示：' + d.warnings.join('；') + '）' : '，无敏感信息风险。'}`);
+}
+
 async function addQueueItem() {
   const text = document.getElementById('postText').value.trim();
   const topic = document.getElementById('postTopic').value.trim();
@@ -365,7 +391,9 @@ async function addQueueItem() {
 }
 
 async function removeQueueItem(itemId) {
-  await callTool('x_content_queue', { action: 'remove', item_id: itemId });
+  const res = await callTool('x_content_queue', { action: 'remove', item_id: itemId });
+  if (!res.ok) return showToast('queueToast', false, res.error?.message || '移除失败');
+  showToast('queueToast', true, '已移除队列项：' + itemId);
   refreshAll();
 }
 
