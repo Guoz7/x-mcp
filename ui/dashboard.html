@@ -204,10 +204,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       <span>个人内容队列（自动发布池）</span>
       <span id="queueCount" class="muted">0 条待发</span>
     </h2>
-    <label for="postText">新增原创内容（最多 280 字符）</label>
-    <textarea id="postText" maxlength="280" placeholder="写一条你想自动排期发布的 X 原创推文..."></textarea>
+    <label for="postText">新增原创内容（单条最多 280 字符；串推用独立一行 <code>---</code> 分隔每条）</label>
+    <textarea id="postText" placeholder="写一条你想自动排期发布的 X 原创推文；若选择串推，用 --- 分隔第 1、2、3... 条"></textarea>
     <div class="row" style="margin-top:8px; justify-content: space-between;">
       <div class="row" style="flex:1;">
+        <select id="postKind" onchange="onPostKindChange()" style="max-width:150px;">
+          <option value="original_post">单条推文</option>
+          <option value="thread">串推 (Thread)</option>
+        </select>
         <input id="postTopic" placeholder="标签/主题（可选）" style="max-width:180px;">
         <span id="charCount" class="muted">0 / 280</span>
       </div>
@@ -330,6 +334,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       <button onclick="addPersonaFeedback()">记录纠偏反馈</button>
     </div>
     <div id="pmToast" class="toast"></div>
+    <div id="pmPillars" class="muted" style="margin:6px 0;"></div>
     <div id="pmNotes" class="list"></div>
   </section>
 </main>
@@ -439,7 +444,7 @@ async function refreshQueue() {
   document.getElementById('queueList').innerHTML = items.slice().reverse().map(i => `
     <div class="item">
       <div>
-        <div><span class="pill ${i.status === 'published' ? 'ok' : ''}">${esc(i.status)}</span> ${esc(i.text)}</div>
+        <div><span class="pill ${i.status === 'published' ? 'ok' : ''}">${esc(i.status)}</span> ${i.kind === 'thread' ? `<span class="pill warn">串推 ${(i.tweets || []).length}条</span> ` : ''}${esc(i.text)}</div>
         <div class="muted mono">${esc(i.item_id)} ${i.topic ? '· #' + esc(i.topic) : ''}</div>
       </div>
       ${i.status === 'queued' ? `<button onclick="removeQueueItem('${esc(i.item_id)}')">移除</button>` : ''}
@@ -447,20 +452,40 @@ async function refreshQueue() {
   `).join('') || '<div class="muted">队列为空，先添加一条原创推文吧。</div>';
 }
 
+function onPostKindChange() {
+  const kind = document.getElementById('postKind').value;
+  const val = document.getElementById('postText').value;
+  if (kind === 'thread') {
+    const parts = val.split(/\r?\n---\r?\n/).map(s => s.trim()).filter(Boolean);
+    document.getElementById('charCount').textContent = `${parts.length} 条串推`;
+  } else {
+    document.getElementById('charCount').textContent = `${val.length} / 280`;
+  }
+}
+
 async function checkDraft() {
   const text = document.getElementById('postText').value.trim();
   if (!text) return showToast('queueToast', false, '请先输入推文内容。');
-  const res = await callTool('x_compose_check', { text });
+  const res = await callTool('x_compose_check', { text: text.split(/\r?\n---\r?\n/)[0].trim() });
   if (!res.ok) return showToast('queueToast', false, res.error?.message || '预检失败');
   const d = res.data;
   showToast('queueToast', Boolean(d.ok ?? true), `预检通过：${d.character_count ?? text.length}/280 字符${d.warnings?.length ? '（提示：' + d.warnings.join('；') + '）' : '，无敏感信息风险。'}`);
 }
 
 async function addQueueItem() {
+  const kind = document.getElementById('postKind').value;
   const text = document.getElementById('postText').value.trim();
   const topic = document.getElementById('postTopic').value.trim();
   if (!text) return showToast('queueToast', false, '请先输入推文内容。');
-  const res = await callTool('x_content_queue', { action: 'add', kind: 'original_post', text, topic: topic || undefined });
+  const args = { action: 'add', kind, topic: topic || undefined };
+  if (kind === 'thread') {
+    const tweets = text.split(/\r?\n---\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (tweets.length < 2) return showToast('queueToast', false, '串推至少需要 2 条，请用独立一行 --- 分隔。');
+    args.tweets = tweets;
+  } else {
+    args.text = text;
+  }
+  const res = await callTool('x_content_queue', args);
   if (!res.ok) return showToast('queueToast', false, res.error?.message || '添加失败');
   document.getElementById('postText').value = '';
   document.getElementById('postTopic').value = '';
@@ -774,6 +799,14 @@ async function refreshPersonaMemory() {
   const feedbacks = (d.feedback_notes || []).slice().reverse();
   const episodes = (d.episodic_notes || []).slice().reverse().slice(0, 5);
   document.getElementById('pmPill').textContent = `纠偏 ${feedbacks.length} · 经历 ${episodes.length}`;
+  const pw = await callTool('x_persona_memory', { action: 'pillar_weights' });
+  if (pw.ok && Array.isArray(pw.data?.pillars) && pw.data.pillars.length) {
+    document.getElementById('pmPillars').innerHTML = '内容支柱权重：' + pw.data.pillars.slice(0, 5).map(p =>
+      `<span class="pill ok">${esc(p.pillar)} · ${p.weight}x (${p.engagement_signals})</span>`
+    ).join(' ');
+  } else {
+    document.getElementById('pmPillars').textContent = '内容支柱权重：暂无互动信号（发帖或记录经历后自动加权）。';
+  }
   const items = [
     ...feedbacks.map(f => `<div class="item"><div><span class="pill warn">纠偏</span> ${esc(f.note || '')}</div><span class="mono muted">${esc(f.at || '')}</span></div>`),
     ...episodes.map(e => `<div class="item"><div><span class="pill ok">经历</span> <strong>${esc(e.topic || '')}</strong> · ${esc(e.angle || '')}</div><span class="mono muted">${esc(e.at || '')}</span></div>`),
@@ -812,8 +845,8 @@ function refreshAll() {
   refreshPersonaMemory();
 }
 
-document.getElementById('postText').addEventListener('input', e => {
-  document.getElementById('charCount').textContent = `${e.target.value.length} / 280`;
+document.getElementById('postText').addEventListener('input', () => {
+  onPostKindChange();
 });
 
 refreshAll();

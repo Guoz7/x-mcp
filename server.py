@@ -1525,8 +1525,9 @@ class XStarter:
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["add", "list", "remove", "due"]},
-                        "kind": {"type": "string", "enum": ["original_post", "reply"], "default": "original_post"},
+                        "kind": {"type": "string", "enum": ["original_post", "reply", "thread"], "default": "original_post"},
                         "text": {"type": "string", "maxLength": 280},
+                        "tweets": {"type": "array", "minItems": 2, "maxItems": 10, "items": {"type": "string", "maxLength": 280}},
                         "topic": {"type": "string", "maxLength": 80},
                         "target_url": {"type": "string", "maxLength": 300},
                         "scheduled_after_epoch": {"type": "number", "minimum": 0, "maximum": 4102444800},
@@ -1662,7 +1663,7 @@ class XStarter:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback"]},
+                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback", "pillar_weights"]},
                         "role": {"type": "string", "maxLength": 160},
                         "voice_rules": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
                         "content_pillars": {"type": "object"},
@@ -1705,7 +1706,7 @@ class XStarter:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback"]},
+                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback", "pillar_weights"]},
                         "role": {"type": "string", "maxLength": 160},
                         "voice_rules": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
                         "content_pillars": {"type": "object"},
@@ -1748,7 +1749,7 @@ class XStarter:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback"]},
+                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback", "pillar_weights"]},
                         "role": {"type": "string", "maxLength": 160},
                         "voice_rules": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
                         "content_pillars": {"type": "object"},
@@ -3543,6 +3544,7 @@ class XStarter:
                     target_url=arguments.get("target_url"),
                     scheduled_after_epoch=arguments.get("scheduled_after_epoch"),
                     extra_banned=banned,
+                    tweets=arguments.get("tweets"),
                 )
                 trace.append(_event("x_adapter", "content_queue_added", item_id=item["item_id"], external_call=False))
                 return {"action": "add", "item": item}
@@ -3584,6 +3586,11 @@ class XStarter:
             raise StarterError("INVALID_ARGUMENT", "seed must be an integer.")
         ledger = self._bridge().read_ledger_snapshot()
         queue_items = self._content_queue().list()
+        pw = account_orchestrator.compute_pillar_weights(
+            ledger,
+            queue_items,
+            self._persona_memory().read(),
+        )
         plan = account_orchestrator.build_daily_orchestration_plan(
             ledger,
             goals=goals,
@@ -3593,6 +3600,7 @@ class XStarter:
             account_snapshot=snapshot,
             persona_topics=arguments.get("persona_topics"),
             exclude_keywords=arguments.get("exclude_keywords"),
+            pillar_weights=pw["weights_map"],
             seed=seed,
         )
         trace.append(
@@ -3670,6 +3678,7 @@ class XStarter:
         browser = None
         pre_browsed = False
         queue_store = self._content_queue()
+        thread_last_url: dict[str, str] = {}
 
         for index, _ in enumerate(queued["action_ids"]):
             if index >= action_limit:
@@ -3719,9 +3728,15 @@ class XStarter:
                         lease_expires_epoch=verified["lease_expires_epoch"],
                     )
                 elif kind in {"like_post", "repost_post", "reply_post"}:
+                    post_url = str(payload.get("post_url") or payload.get("url") or "")
+                    if kind == "reply_post" and payload.get("reply_to_previous_thread_step"):
+                        tid = str(payload.get("thread_id") or "")
+                        post_url = thread_last_url.get(tid, "")
+                        if not post_url:
+                            raise StarterError("THREAD_PARENT_MISSING", "Previous thread tweet did not publish a post_url.")
                     raw = browser.execute_x_action(
                         action_type=kind,
-                        post_url=str(payload.get("post_url") or payload.get("url") or ""),
+                        post_url=post_url,
                         author=str(payload.get("author") or ""),
                         text=str(payload.get("text")) if kind == "reply_post" else None,
                         action_id=action["action_id"],
@@ -3761,6 +3776,10 @@ class XStarter:
                     or (kind == "publish_post" and completed_result.get("verified") is True)
                 ):
                     verified_changed += 1
+                if kind in {"publish_post", "reply_post"} and payload.get("thread_id"):
+                    published_thread_url = (completed.get("result") or {}).get("post_url")
+                    if isinstance(published_thread_url, str) and published_thread_url.strip():
+                        thread_last_url[str(payload["thread_id"])] = published_thread_url.strip()
                 if kind == "publish_post" and payload.get("queue_item_id"):
                     try:
                         queue_store.mark_published(
@@ -3940,9 +3959,17 @@ class XStarter:
                 data = store.add_feedback(str(arguments.get("note") or ""))
                 trace.append(_event("x_adapter", "persona_feedback_added", external_call=False))
                 return data
+            if action == "pillar_weights":
+                weights = account_orchestrator.compute_pillar_weights(
+                    self._bridge().read_ledger_snapshot(),
+                    self._content_queue().list(),
+                    store.read(),
+                )
+                trace.append(_event("x_adapter", "persona_pillar_weights_computed", external_call=False))
+                return weights
         except account_orchestrator.OrchestratorError as exc:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
-        raise StarterError("INVALID_ARGUMENT", "action must be get, update, add_episode, or add_feedback.")
+        raise StarterError("INVALID_ARGUMENT", "action must be get, update, add_episode, add_feedback, or pillar_weights.")
 
     def _autopilot_store(self) -> autopilot_ops.AutopilotStore:
         return autopilot_ops.AutopilotStore(self._bridge().path.parent)

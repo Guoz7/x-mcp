@@ -648,30 +648,49 @@ class ContentQueueStore:
         self,
         *,
         kind: str,
-        text: str,
+        text: str = "",
         topic: str | None = None,
         target_url: str | None = None,
         scheduled_after_epoch: float | None = None,
         extra_banned: list[str] | None = None,
+        tweets: list[str] | None = None,
     ) -> dict[str, Any]:
-        if kind not in {"original_post", "reply"}:
-            raise OrchestratorError("INVALID_ARGUMENT", "kind must be original_post or reply.")
-        cleaned = str(text or "").strip()
-        if not cleaned or len(cleaned) > 280:
-            raise OrchestratorError("INVALID_ARGUMENT", "text must be 1 to 280 characters.")
-        if _SECRET_PATTERN.search(cleaned):
-            raise OrchestratorError("SECRET_DETECTED", "Refusing to store text matching a secret pattern.")
-        lowered = cleaned.casefold()
-        for phrase in extra_banned or []:
-            p = str(phrase or "").strip().casefold()
-            if p and p in lowered:
-                raise OrchestratorError("BANNED_PHRASE", f"Refusing to store text matching banned phrase: '{phrase}'.")
-        if kind == "reply":
-            if not target_url or not _STATUS_URL_RE.match(str(target_url).strip()):
-                raise OrchestratorError("INVALID_ARGUMENT", "reply items require a valid X status target_url.")
-            cliches = check_reply_naturalness(cleaned, extra_banned=extra_banned)
-            if cliches:
-                raise OrchestratorError("REPLY_TOO_GENERIC", "; ".join(cliches))
+        if kind not in {"original_post", "reply", "thread"}:
+            raise OrchestratorError("INVALID_ARGUMENT", "kind must be original_post, reply, or thread.")
+        cleaned_tweets: list[str] = []
+        if kind == "thread":
+            if not isinstance(tweets, list) or not 2 <= len(tweets) <= 10:
+                raise OrchestratorError("INVALID_ARGUMENT", "thread items require 2 to 10 tweets.")
+            for idx, part in enumerate(tweets):
+                t = str(part or "").strip()
+                if not t or len(t) > 280:
+                    raise OrchestratorError("INVALID_ARGUMENT", f"thread tweet #{idx + 1} must be 1 to 280 characters.")
+                if _SECRET_PATTERN.search(t):
+                    raise OrchestratorError("SECRET_DETECTED", "Refusing to store text matching a secret pattern.")
+                lowered_part = t.casefold()
+                for phrase in extra_banned or []:
+                    p = str(phrase or "").strip().casefold()
+                    if p and p in lowered_part:
+                        raise OrchestratorError("BANNED_PHRASE", f"Refusing to store text matching banned phrase: '{phrase}'.")
+                cleaned_tweets.append(t)
+            cleaned = cleaned_tweets[0]
+        else:
+            cleaned = str(text or "").strip()
+            if not cleaned or len(cleaned) > 280:
+                raise OrchestratorError("INVALID_ARGUMENT", "text must be 1 to 280 characters.")
+            if _SECRET_PATTERN.search(cleaned):
+                raise OrchestratorError("SECRET_DETECTED", "Refusing to store text matching a secret pattern.")
+            lowered = cleaned.casefold()
+            for phrase in extra_banned or []:
+                p = str(phrase or "").strip().casefold()
+                if p and p in lowered:
+                    raise OrchestratorError("BANNED_PHRASE", f"Refusing to store text matching banned phrase: '{phrase}'.")
+            if kind == "reply":
+                if not target_url or not _STATUS_URL_RE.match(str(target_url).strip()):
+                    raise OrchestratorError("INVALID_ARGUMENT", "reply items require a valid X status target_url.")
+                cliches = check_reply_naturalness(cleaned, extra_banned=extra_banned)
+                if cliches:
+                    raise OrchestratorError("REPLY_TOO_GENERIC", "; ".join(cliches))
         item = {
             "item_id": "cq_" + secrets.token_hex(6),
             "kind": kind,
@@ -684,6 +703,8 @@ class ContentQueueStore:
             "published_url": None,
             "action_id": None,
         }
+        if kind == "thread":
+            item["tweets"] = cleaned_tweets
         with self.lock:
             data = self._read()
             norm = cleaned.casefold()
@@ -945,6 +966,89 @@ def score_post_relevance(
     return (True, hits * 10)
 
 
+_ENGAGEMENT_NUM_RE = re.compile(r"(\d+)\s*(?:likes?|replies?|reply|follows?|follow-backs?|reposts?|bookmarks?|赞|回复|回关|转发)", re.IGNORECASE)
+
+
+def compute_pillar_weights(
+    ledger: dict[str, Any],
+    content_queue: list[dict[str, Any]] | None = None,
+    persona_memory: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Compute engagement-weighted priority scores per content pillar from episodes, queue, and ledger."""
+    stats: dict[str, dict[str, Any]] = {}
+
+    def _ensure(topic: str) -> dict[str, Any]:
+        key = topic.strip().casefold()
+        if key not in stats:
+            stats[key] = {
+                "pillar": topic.strip(),
+                "published_count": 0,
+                "episode_count": 0,
+                "engagement_signals": 0,
+                "weight": 1.0,
+            }
+        return stats[key]
+
+    for pillar in (persona_memory or {}).get("content_pillars") or []:
+        if isinstance(pillar, str) and pillar.strip():
+            _ensure(pillar)
+
+    for item in content_queue or []:
+        if not isinstance(item, dict):
+            continue
+        topic = str(item.get("topic") or "").strip()
+        if not topic:
+            continue
+        entry = _ensure(topic)
+        if item.get("status") == "published":
+            entry["published_count"] += 1
+            entry["engagement_signals"] += 1
+
+    for ep in (persona_memory or {}).get("episodic_notes") or []:
+        if not isinstance(ep, dict):
+            continue
+        topic = str(ep.get("topic") or "").strip()
+        if not topic:
+            continue
+        entry = _ensure(topic)
+        entry["episode_count"] += 1
+        outcome = str(ep.get("outcome") or "")
+        nums = [int(m.group(1)) for m in _ENGAGEMENT_NUM_RE.finditer(outcome)]
+        entry["engagement_signals"] += sum(nums) if nums else (1 if outcome.strip() else 0)
+
+    # Also credit verified actions whose payload carries a matching topic.
+    for action in (ledger.get("actions") or {}).values():
+        if not isinstance(action, dict) or action.get("status") != "completed":
+            continue
+        res = action.get("result") if isinstance(action.get("result"), dict) else {}
+        if res.get("verified") is not True:
+            continue
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        topic = str(payload.get("topic") or "").strip()
+        if topic:
+            entry = _ensure(topic)
+            entry["engagement_signals"] += 2 if res.get("mutual_verified") else 1
+
+    pillars_out: list[dict[str, Any]] = []
+    for entry in stats.values():
+        # Smooth weighting: base 1.0 + bounded logarithmic/linear signal boost.
+        signals = entry["engagement_signals"]
+        pub = entry["published_count"]
+        ep_cnt = entry["episode_count"]
+        weight = round(1.0 + min(3.0, signals * 0.15 + ep_cnt * 0.1 + pub * 0.05), 3)
+        entry["weight"] = weight
+        pillars_out.append(entry)
+
+    pillars_out.sort(key=lambda r: (r["weight"], r["engagement_signals"], r["pillar"].casefold()), reverse=True)
+    weights_map = {r["pillar"].casefold(): r["weight"] for r in pillars_out}
+    return {
+        "pillars": pillars_out,
+        "weights_map": weights_map,
+        "recommended_top": [r["pillar"] for r in pillars_out[:3]],
+        "total_signals": sum(r["engagement_signals"] for r in pillars_out),
+    }
+
+
 def build_daily_orchestration_plan(
     ledger: dict[str, Any],
     *,
@@ -956,6 +1060,7 @@ def build_daily_orchestration_plan(
     persona_topics: list[str] | None = None,
     exclude_keywords: list[str] | None = None,
     require_reciprocal_marker: bool = False,
+    pillar_weights: dict[str, float] | None = None,
     profile: dict[str, Any] | None = None,
     now_epoch: float | None = None,
     seed: int | None = None,
@@ -1021,15 +1126,57 @@ def build_daily_orchestration_plan(
         "reply_post": [],
     }
 
-    # 1. Due original posts and replies from content queue.
-    for item in (content_queue or []):
+    # 1. Due original posts, threads, and replies from content queue (pillar-weighted).
+    norm_weights = {str(k).strip().casefold(): float(v) for k, v in (pillar_weights or {}).items()}
+    due_items: list[tuple[float, int, dict[str, Any]]] = []
+    for idx, item in enumerate(content_queue or []):
         if item.get("status") != "queued":
             continue
         sched = item.get("scheduled_after_epoch")
         if sched is not None and float(sched) > now:
             continue
+        topic_key = str(item.get("topic") or "").strip().casefold()
+        w = norm_weights.get(topic_key, 1.0)
+        due_items.append((-w, idx, item))
+    due_items.sort(key=lambda t: (t[0], t[1]))
+
+    thread_sequences: list[list[dict[str, Any]]] = []
+    for _, _, item in due_items:
         kind = item.get("kind")
-        if kind == "original_post" and len(buckets["publish_post"]) < capped["publish_post"]:
+        if kind == "thread" and len(buckets["publish_post"]) < capped["publish_post"] and not thread_sequences:
+            tweets = [str(t).strip() for t in (item.get("tweets") or []) if str(t).strip()]
+            if len(tweets) >= 2:
+                if stage != "growth" and any(_EXTERNAL_URL_RE.search(t) for t in tweets):
+                    continue
+                thread_id = str(item.get("item_id") or "")
+                seq: list[dict[str, Any]] = [{
+                    "action": "publish_post",
+                    "text": tweets[0],
+                    "queue_item_id": thread_id,
+                    "topic": item.get("topic"),
+                    "thread_id": thread_id,
+                    "thread_index": 0,
+                    "thread_total": len(tweets),
+                }]
+                for t_idx, t_text in enumerate(tweets[1:], start=1):
+                    if len(buckets["reply_post"]) + t_idx > capped["reply_post"]:
+                        break
+                    seq.append({
+                        "action": "reply_post",
+                        "url": "",
+                        "text": t_text,
+                        "queue_item_id": thread_id,
+                        "topic": item.get("topic"),
+                        "thread_id": thread_id,
+                        "thread_index": t_idx,
+                        "thread_total": len(tweets),
+                        "reply_to_previous_thread_step": True,
+                    })
+                if len(seq) >= 2:
+                    thread_sequences.append(seq)
+                    capped["publish_post"] = max(0, capped["publish_post"] - 1)
+                    capped["reply_post"] = max(0, capped["reply_post"] - (len(seq) - 1))
+        elif kind == "original_post" and len(buckets["publish_post"]) < capped["publish_post"]:
             if stage != "growth" and _EXTERNAL_URL_RE.search(str(item.get("text") or "")):
                 continue
             buckets["publish_post"].append({
@@ -1126,7 +1273,10 @@ def build_daily_orchestration_plan(
         })
 
     # Interleave operations so writes look natural rather than bursting one kind.
+    # Thread sequences stay contiguous so each reply chains onto the previous post URL.
     ordered: list[dict[str, Any]] = []
+    for seq in thread_sequences:
+        ordered.extend(seq)
     if buckets["publish_post"]:
         ordered.append(buckets["publish_post"].pop(0))
     order_cycle = ("like_post", "reply_post", "follow_profile", "repost_post", "publish_post")

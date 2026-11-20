@@ -1029,7 +1029,8 @@ class BrowserBridge:
             elif kind in {"like_post", "repost_post"}:
                 _x_post_url_parts(str(op.get("url") or ""))
             elif kind == "reply_post":
-                _x_post_url_parts(str(op.get("url") or ""))
+                if not op.get("reply_to_previous_thread_step"):
+                    _x_post_url_parts(str(op.get("url") or ""))
                 text = str(op.get("text") or "").strip()
                 if not text or len(text) > 280:
                     raise BridgeError("INVALID_BATCH", "Each reply_post operation needs 1-280 chars of text.")
@@ -1119,22 +1120,44 @@ class BrowserBridge:
                         "text_sha256": _text_digest(text),
                         "expected_username": expected_username,
                         "queue_item_id": op.get("queue_item_id"),
+                        "topic": op.get("topic"),
+                        "thread_id": op.get("thread_id"),
+                        "thread_index": op.get("thread_index"),
+                        "thread_total": op.get("thread_total"),
                     }
                 elif kind in {"like_post", "repost_post", "reply_post"}:
-                    author, status_id = _x_post_url_parts(str(op["url"]))
-                    canonical = f"https://x.com/{author}/status/{status_id}"
-                    payload = {
-                        **common_meta,
-                        "post_url": canonical,
-                        "url": canonical,
-                        "author": author,
-                        "status_id": status_id,
-                    }
-                    if kind == "reply_post":
+                    if kind == "reply_post" and op.get("reply_to_previous_thread_step"):
+                        expected_username = str(data.get("account_binding") or "").strip().lstrip("@")
                         text = str(op["text"]).strip()
-                        payload["text"] = text
-                        payload["text_sha256"] = _text_digest(text)
-                        payload["queue_item_id"] = op.get("queue_item_id")
+                        payload = {
+                            **common_meta,
+                            "post_url": "",
+                            "url": "",
+                            "author": expected_username,
+                            "text": text,
+                            "text_sha256": _text_digest(text),
+                            "queue_item_id": op.get("queue_item_id"),
+                            "topic": op.get("topic"),
+                            "thread_id": op.get("thread_id"),
+                            "thread_index": op.get("thread_index"),
+                            "thread_total": op.get("thread_total"),
+                            "reply_to_previous_thread_step": True,
+                        }
+                    else:
+                        author, status_id = _x_post_url_parts(str(op["url"]))
+                        canonical = f"https://x.com/{author}/status/{status_id}"
+                        payload = {
+                            **common_meta,
+                            "post_url": canonical,
+                            "url": canonical,
+                            "author": author,
+                            "status_id": status_id,
+                        }
+                        if kind == "reply_post":
+                            text = str(op["text"]).strip()
+                            payload["text"] = text
+                            payload["text_sha256"] = _text_digest(text)
+                            payload["queue_item_id"] = op.get("queue_item_id")
                 else:
                     handle = str(op["handle"]).strip().lstrip("@")
                     profile_url = str(op.get("profile_url") or f"https://x.com/{handle}")

@@ -719,6 +719,116 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_pillar_weights_and_thread_composer_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = XStarter(
+                mode="browser",
+                environ={
+                    "X_STARTER_MODE": "browser",
+                    "X_STARTER_ENABLE_BROWSER": "1",
+                    "X_STARTER_STATE_DIR": tmpdir,
+                },
+            )
+            try:
+                app.call_tool(
+                    "x_persona_memory",
+                    {
+                        "action": "add_episode",
+                        "topic": "mcp",
+                        "angle": "schema bounds",
+                        "outcome": "25 likes, 5 replies",
+                    },
+                )
+                app.call_tool(
+                    "x_persona_memory",
+                    {
+                        "action": "add_episode",
+                        "topic": "coffee",
+                        "angle": "morning cup",
+                        "outcome": "1 like",
+                    },
+                )
+                pw = app.call_tool("x_persona_memory", {"action": "pillar_weights"})
+                self.assertTrue(pw["ok"])
+                self.assertEqual(pw["data"]["recommended_top"][0], "mcp")
+                self.assertGreater(
+                    pw["data"]["weights_map"]["mcp"],
+                    pw["data"]["weights_map"]["coffee"],
+                )
+
+                # Queue lower-weighted 'coffee' first, higher-weighted 'mcp' second -> planner picks 'mcp' first.
+                app.call_tool("x_content_queue", {"action": "add", "kind": "original_post", "topic": "coffee", "text": "Morning pour-over before debugging."})
+                app.call_tool("x_content_queue", {"action": "add", "kind": "original_post", "topic": "mcp", "text": "Why bounded MCP integer schemas prevent upstream 500s."})
+                weighted_plan = app.call_tool(
+                    "x_daily_orchestrate_plan",
+                    {
+                        "goals": {"publish_post": 1, "like_post": 0, "follow_profile": 0, "repost_post": 0, "reply_post": 0},
+                        "account_snapshot": {"posts_count": 50},
+                    },
+                )
+                self.assertTrue(weighted_plan["ok"])
+                self.assertEqual(weighted_plan["data"]["operations"][0]["topic"], "mcp")
+
+                # Queue a 3-tweet thread under 'mcp' and run plan -> prepare -> execute chaining URLs.
+                thr = app.call_tool(
+                    "x_content_queue",
+                    {
+                        "action": "add",
+                        "kind": "thread",
+                        "topic": "mcp",
+                        "tweets": [
+                            "1/ How we kept X MCP automation safe under strict browser pacing.",
+                            "2/ Every write goes through prepare -> confirmation -> leased claim.",
+                            "3/ Follow-ups chain dynamically onto the published status URL.",
+                        ],
+                    },
+                )
+                self.assertTrue(thr["ok"])
+                self.assertEqual(len(thr["data"]["item"]["tweets"]), 3)
+
+                plan = app.call_tool(
+                    "x_daily_orchestrate_plan",
+                    {
+                        "goals": {"publish_post": 1, "reply_post": 2, "like_post": 0, "follow_profile": 0, "repost_post": 0},
+                        "account_snapshot": {"posts_count": 50},
+                    },
+                )
+                self.assertTrue(plan["ok"])
+                ops = plan["data"]["operations"]
+                self.assertEqual([op["action"] for op in ops[:3]], ["publish_post", "reply_post", "reply_post"])
+                self.assertTrue(ops[1]["reply_to_previous_thread_step"])
+
+                prep = app.call_tool("x_daily_orchestrate_prepare", {"plan": plan["data"]})
+                self.assertTrue(prep["ok"])
+
+                mock_browser = MagicMock()
+                mock_browser.browser_family = "chromium"
+                mock_browser.execute_x_publish.return_value = {
+                    "verified": True,
+                    "changed": True,
+                    "state": "published",
+                    "post_url": "https://x.com/guoz7777/status/1001",
+                }
+                mock_browser.execute_x_action.side_effect = [
+                    {"verified": True, "changed": True, "state": "replied", "post_url": "https://x.com/guoz7777/status/1002"},
+                    {"verified": True, "changed": True, "state": "replied", "post_url": "https://x.com/guoz7777/status/1003"},
+                ]
+                with patch.object(app, "_browser_for", return_value=mock_browser):
+                    exe = app.call_tool(
+                        "x_daily_orchestrate_execute",
+                        {
+                            "batch_id": prep["data"]["batch_id"],
+                            "confirmation": prep["data"]["confirmation_phrase"],
+                            "respect_pacing": False,
+                        },
+                    )
+                self.assertTrue(exe["ok"])
+                self.assertEqual(exe["data"]["verified_changed"], 3)
+                self.assertEqual(mock_browser.execute_x_action.call_args_list[0].kwargs["post_url"], "https://x.com/guoz7777/status/1001")
+                self.assertEqual(mock_browser.execute_x_action.call_args_list[1].kwargs["post_url"], "https://x.com/guoz7777/status/1002")
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()
