@@ -15,6 +15,7 @@ from account_orchestrator import (  # noqa: E402
     build_daily_orchestration_plan,
     evaluate_account_health,
     evaluate_circuit_breaker,
+    infer_owner_profile,
 )
 from server import StarterError, XStarter, handle_message  # noqa: E402
 
@@ -551,6 +552,17 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 sp = app.call_tool("x_autopilot", {"action": "scheduler_stop"})
                 self.assertTrue(sp["ok"])
                 self.assertFalse(sp["data"]["scheduler"]["running"])
+
+                inferred = infer_owner_profile(
+                    [
+                        {"text": "Building an AI Agent with MCP today"},
+                        {"text": "MCP tool schemas and Agent orchestration"},
+                    ],
+                    username="guoz7777",
+                )
+                self.assertIn("Agent", inferred["persona_topics"])
+                self.assertIn("MCP", inferred["persona_topics"])
+                self.assertTrue(inferred["search_query"])
             finally:
                 app.close()
 

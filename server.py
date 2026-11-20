@@ -1610,7 +1610,7 @@ class XStarter:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "ops_summary", "scheduler_start", "scheduler_stop"]},
+                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "ops_summary", "scheduler_start", "scheduler_stop", "infer_persona"]},
                         "days": {"type": "integer", "minimum": 1, "maximum": 30, "default": 7},
                         "active_hours": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 24}},
                         "max_per_wave": {"type": "integer", "minimum": 1, "maximum": 10, "default": 4},
@@ -3813,6 +3813,26 @@ class XStarter:
             if action == "scheduler_stop":
                 stopped_now = self._scheduler.stop() if self._scheduler is not None else False
                 return {"stopped": stopped_now, "scheduler": self._scheduler.status() if self._scheduler is not None else {"running": False}}
+            if action == "infer_persona":
+                ledger = self._bridge().read_ledger_snapshot()
+                username = str(arguments.get("username") or ledger.get("account_binding") or "").strip().lstrip("@")
+                own_posts: list[dict[str, Any]] = []
+                if self.mode == "browser":
+                    browser = self._browser_for(arguments)
+                    if not username:
+                        acct = browser_read.read_account(browser)
+                        username = str(acct.get("username") or "").strip()
+                    if username:
+                        try:
+                            own_posts = browser_read.read_user_posts(
+                                browser, username, limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                            ).get("posts") or []
+                        except (ExecutorError, browser_read.ReadError):
+                            own_posts = []
+                inferred = account_orchestrator.infer_owner_profile(own_posts, ledger=ledger, username=username)
+                inferred["username"] = username or None
+                trace.append(_event("x_adapter", "autopilot_persona_inferred", username=username, topics=len(inferred["persona_topics"])))
+                return inferred
             if action == "prepare":
                 res = store.prepare_window(
                     days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),
@@ -3858,27 +3878,55 @@ class XStarter:
                     )
                 window = status["active_window"]
                 max_wave = int(window.get("max_per_wave", 4))
+                persona_topics = list(window.get("persona_topics") or [])
+                exclude_keywords = list(window.get("exclude_keywords") or [])
+                search_query = window.get("search_query")
+                own_username = str(ledger.get("account_binding") or "").strip().lstrip("@")
                 timeline_posts = arguments.get("timeline_posts")
                 if timeline_posts is None and self.mode == "browser":
                     try:
-                        if window.get("search_query"):
-                            timeline_posts = self._x_search_posts({"query": window["search_query"], "limit": 10}, trace).get("posts")
+                        browser = self._browser_for(arguments)
+                        if not persona_topics and not search_query:
+                            if not own_username:
+                                own_username = str((browser_read.read_account(browser) or {}).get("username") or "").strip()
+                            if own_username:
+                                own_posts = browser_read.read_user_posts(
+                                    browser, own_username, limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                ).get("posts") or []
+                                inferred = account_orchestrator.infer_owner_profile(own_posts, ledger=ledger, username=own_username)
+                                persona_topics = inferred["persona_topics"]
+                                exclude_keywords = exclude_keywords or inferred["exclude_keywords"]
+                                search_query = inferred["search_query"]
+                        if search_query:
+                            timeline_posts = browser_read.read_search_posts(
+                                browser, str(search_query), limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                            ).get("posts")
                         else:
-                            browser = self._browser_for(arguments)
                             timeline_posts = browser_read.read_timeline(
                                 browser, limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
                             ).get("posts")
                     except (StarterError, ExecutorError, browser_read.ReadError):
                         timeline_posts = []
+                follow_candidates = arguments.get("follow_candidates")
+                if follow_candidates is None and timeline_posts:
+                    seen_authors: set[str] = set()
+                    derived: list[dict[str, Any]] = []
+                    for post in timeline_posts:
+                        author = str(post.get("author") or "").strip().lstrip("@")
+                        if not author or author.casefold() == own_username.casefold() or author.casefold() in seen_authors:
+                            continue
+                        seen_authors.add(author.casefold())
+                        derived.append({"handle": author, "source": "proactive_discovery"})
+                    follow_candidates = derived
                 plan = account_orchestrator.build_daily_orchestration_plan(
                     ledger,
                     goals=window.get("daily_goals"),
                     timeline_posts=timeline_posts,
-                    follow_candidates=arguments.get("follow_candidates"),
+                    follow_candidates=follow_candidates,
                     content_queue=self._content_queue().list(),
                     account_snapshot=arguments.get("account_snapshot"),
-                    persona_topics=window.get("persona_topics"),
-                    exclude_keywords=window.get("exclude_keywords"),
+                    persona_topics=persona_topics,
+                    exclude_keywords=exclude_keywords,
                 )
                 if plan.get("blocked"):
                     store.stop_window(reason=f"circuit_breaker:{plan.get('reason')}")

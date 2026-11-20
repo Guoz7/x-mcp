@@ -294,6 +294,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       </div>
     </div>
     <div class="row" style="margin-top:12px;">
+      <button onclick="inferPersona()">0. 自动分析我的习惯</button>
       <button class="primary" onclick="prepareAutopilot()">1. 生成 7 天托管授权</button>
       <input id="apConfirmInput" placeholder="输入授权短语（如 AUTOPILOT A1B2C3）" style="max-width:250px;" disabled>
       <button id="btnApActivate" onclick="activateAutopilot()" disabled>2. 启用托管</button>
@@ -616,6 +617,20 @@ async function refreshAutopilot() {
       <span class="mono muted">${esc(w.at || '')}</span>
     </div>
   `).join('') || '<div class="muted">暂无托管波次记录。</div>';
+}
+
+async function inferPersona() {
+  showToast('apToast', true, '正在读取你的历史推文与账本，自动分析赛道习惯...');
+  const res = await callTool('x_autopilot', { action: 'infer_persona' });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '习惯分析失败');
+  const d = res.data;
+  if (Array.isArray(d.persona_topics) && d.persona_topics.length) {
+    document.getElementById('personaTopics').value = d.persona_topics.join(', ');
+  }
+  if (d.search_query) {
+    document.getElementById('searchQuery').value = d.search_query;
+  }
+  showToast('apToast', true, `已自动总结习惯（${d.style_notes?.language || 'auto'}，均值 ${d.style_notes?.avg_length || 0} 字）：关键词 [${(d.persona_topics || []).slice(0, 5).join(', ')}]，建议搜索「${d.search_query || ''}」。`);
 }
 
 async function prepareAutopilot() {

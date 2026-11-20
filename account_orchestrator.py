@@ -660,6 +660,86 @@ def score_follow_candidate(cand: dict[str, Any]) -> tuple[int, str]:
     return (score, handle)
 
 
+_STOPWORDS = frozenset({
+    "the", "and", "for", "that", "this", "with", "from", "have", "are", "was", "were",
+    "you", "your", "just", "will", "not", "but", "can", "all", "one", "out", "about",
+    "https", "http", "com", "status", "nov", "oct", "dec", "jan", "feb", "mar", "apr",
+    "may", "jun", "jul", "aug", "sep", "的", "了", "在", "是", "我", "有", "和", "就",
+    "不", "人", "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去", "你",
+    "会", "着", "没有", "看", "好", "自己", "这", "怎么", "以后", "最近", "什么",
+})
+
+
+def infer_owner_profile(
+    own_posts: list[dict[str, Any]],
+    *,
+    ledger: dict[str, Any] | None = None,
+    username: str | None = None,
+) -> dict[str, Any]:
+    """Infer owner topics, search query, active hours, and writing style from own posts."""
+    counts: dict[str, int] = {}
+    lengths: list[int] = []
+    zh_chars = 0
+    en_chars = 0
+    handle_cf = (username or "").strip().lstrip("@").casefold()
+
+    for post in own_posts or []:
+        raw = str(post.get("text") or "").strip()
+        if not raw:
+            continue
+        lengths.append(len(raw))
+        for ch in raw:
+            if "\u4e00" <= ch <= "\u9fff":
+                zh_chars += 1
+            elif ch.isascii() and ch.isalpha():
+                en_chars += 1
+        # Extract ASCII tech/domain words (>=2 chars) and 2-4 char Chinese terms.
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9_+-]{1,20}", raw):
+            low = tok.casefold()
+            if low in _STOPWORDS or low == handle_cf or low.isdigit():
+                continue
+            counts[tok] = counts.get(tok, 0) + 1
+        for tok in re.findall(r"[\u4e00-\u9fff]{2,4}", raw):
+            if tok in _STOPWORDS:
+                continue
+            counts[tok] = counts.get(tok, 0) + 1
+
+    ranked = sorted(counts.items(), key=lambda kv: (kv[1], len(kv[0])), reverse=True)
+    topics = [k for k, _ in ranked[:8]] or ["AI", "Agent", "MCP"]
+    ascii_topics = [k for k in topics if k.isascii()]
+    search_query = " ".join(ascii_topics[:2]) if len(ascii_topics) >= 2 else " ".join(topics[:2])
+
+    hours: list[int] = []
+    if isinstance(ledger, dict):
+        for action in (ledger.get("actions") or {}).values():
+            if not isinstance(action, dict) or action.get("status") != "completed":
+                continue
+            ep = _parse_epoch(action.get("completed_at"))
+            if ep is not None:
+                hours.append(datetime.fromtimestamp(ep, LOCAL_TIMEZONE).hour)
+    if hours:
+        start_h = max(7, min(hours) - 1)
+        end_h = min(23, max(hours) + 2)
+        if end_h <= start_h:
+            start_h, end_h = 9, 22
+    else:
+        start_h, end_h = 9, 22
+
+    avg_len = round(sum(lengths) / len(lengths)) if lengths else 0
+    lang = "zh+en" if (zh_chars > 10 and en_chars > 10) else ("zh" if zh_chars >= en_chars else "en")
+    return {
+        "persona_topics": topics,
+        "exclude_keywords": ["airdrop", "giveaway", "抽奖", "广告"],
+        "search_query": search_query,
+        "active_hours": [start_h, end_h],
+        "style_notes": {
+            "sample_posts": len(lengths),
+            "avg_length": avg_len,
+            "language": lang,
+        },
+    }
+
+
 def score_post_relevance(
     post: dict[str, Any],
     *,
