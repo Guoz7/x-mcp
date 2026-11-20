@@ -271,6 +271,14 @@ async function callTool(tool, args = {}) {
   return res.json();
 }
 
+function fmtDuration(sec) {
+  const s = Math.max(0, Math.round(Number(sec) || 0));
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m} 分 ${r} 秒` : `${m} 分钟`;
+}
+
 function showToast(id, ok, msg) {
   const el = document.getElementById(id);
   el.className = 'toast show ' + (ok ? 'ok' : 'err');
@@ -350,6 +358,7 @@ async function addQueueItem() {
   const res = await callTool('x_content_queue', { action: 'add', kind: 'original_post', text, topic: topic || undefined });
   if (!res.ok) return showToast('queueToast', false, res.error?.message || '添加失败');
   document.getElementById('postText').value = '';
+  document.getElementById('postTopic').value = '';
   document.getElementById('charCount').textContent = '0 / 280';
   showToast('queueToast', true, '已加入待发队列：' + res.data.item.item_id);
   refreshAll();
@@ -411,7 +420,15 @@ async function planDaily() {
   if (res.data.blocked) {
     showToast('orchToast', false, '熔断器阻断：' + res.data.reason);
   } else {
-    showToast('orchToast', true, `已生成 ${res.data.operation_count} 步安全编排（预计耗时约 ${Math.round(res.data.estimated_duration_seconds / 60)} 分钟）。`);
+    const missing = [];
+    if ((goals.like_post > 0 || goals.repost_post > 0) && state.timelinePosts.length === 0) {
+      missing.push('尚未抓取主页时间线（请先点右上角「抓取主页时间线」）');
+    }
+    if (goals.follow_profile > 0 && state.followCandidates.length === 0) {
+      missing.push('尚未读取关注候选（请先点右上角「读取关注候选」）');
+    }
+    const hint = missing.length ? '；提示：' + missing.join('，') : '';
+    showToast('orchToast', true, `已生成 ${res.data.operation_count} 步安全编排（预计耗时约 ${fmtDuration(res.data.estimated_duration_seconds)}）${hint}。`);
   }
   document.getElementById('planList').innerHTML = (res.data.operations || []).map(op => `
     <div class="item">
@@ -449,6 +466,14 @@ async function executeDaily() {
   }
   const d = res.data;
   showToast('orchToast', true, `执行完成：处理 ${d.processed}/${d.planned}，已复验成功 ${d.verified_changed} 项${d.stop_reason ? '（停止原因: ' + d.stop_reason + '）' : ''}。`);
+  if (Array.isArray(d.results) && d.results.length) {
+    document.getElementById('planList').innerHTML = d.results.map(r => `
+      <div class="item">
+        <div><span class="pill ${r.status === 'completed' ? 'ok' : 'danger'}">${esc(r.status)}</span> <strong>${esc(r.type)}</strong> · <span class="muted">${esc(r.result?.post_url || r.result?.profile_url || r.error?.message || '')}</span></div>
+        <span class="mono muted">${esc(r.action_id)}</span>
+      </div>
+    `).join('');
+  }
   refreshAll();
 }
 
