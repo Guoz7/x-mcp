@@ -169,28 +169,37 @@ class ContentQueueAndPlannerTests(unittest.TestCase):
         }
         plan = build_daily_orchestration_plan(
             ledger,
-            goals={"publish_post": 1, "like_post": 2, "follow_profile": 2, "repost_post": 1},
-            content_queue=[{"item_id": "cq_1", "kind": "original_post", "status": "queued", "text": "Daily builder log"}],
+            goals={"publish_post": 1, "like_post": 2, "follow_profile": 10, "repost_post": 1, "reply_post": 1},
+            content_queue=[
+                {"item_id": "cq_1", "kind": "original_post", "status": "queued", "text": "Daily builder log"},
+                {"item_id": "cq_2", "kind": "reply", "status": "queued", "text": "Great point!", "target_url": "https://x.com/eve/status/103"},
+            ],
             timeline_posts=[
                 {"url": "https://x.com/bob/status/100", "author": "bob", "text": "dup"},
                 {"url": "https://x.com/carol/status/101", "author": "carol", "text": "post 1"},
                 {"url": "https://x.com/dave/status/102", "author": "dave", "text": "post 2"},
                 {"url": "https://x.com/eve/status/103", "author": "eve", "text": "post 3"},
+                {"url": "https://x.com/frank/status/104", "author": "frank", "text": "post 4"},
             ],
             follow_candidates=[
                 {"handle": "already_followed"},
-                {"handle": "new_friend_1"},
-                {"handle": "new_friend_2"},
+                {"handle": "big_account", "followers_count": 50000, "following_count": 100},
+                {"handle": "new_friend_1", "mutual_verified": True, "bio": "builder", "followers_count": 300, "following_count": 280},
+                {"handle": "new_friend_2", "followers_count": 200, "following_count": 250},
             ],
             seed=42,
         )
         self.assertFalse(plan["blocked"])
         self.assertEqual(plan["status"], "planned_not_executed")
-        self.assertEqual(plan["counts"], {"publish_post": 1, "like_post": 2, "follow_profile": 2, "repost_post": 1})
+        # Warmup stage (posts < 10) caps follow_profile at 5 even though 10 were requested.
+        self.assertEqual(plan["stage"], "warmup")
+        self.assertEqual(plan["counts"], {"publish_post": 1, "like_post": 2, "follow_profile": 3, "repost_post": 1, "reply_post": 1})
         urls = [op.get("url") for op in plan["operations"] if op.get("url")]
         self.assertNotIn("https://x.com/bob/status/100", urls)
         handles = [op.get("handle") for op in plan["operations"] if op.get("handle")]
         self.assertNotIn("already_followed", handles)
+        # Highest-scored candidate (new_friend_1) must come before big_account.
+        self.assertLess(handles.index("new_friend_1"), handles.index("big_account"))
 
 
 class DailyOrchestratorMcpTests(unittest.TestCase):
@@ -243,7 +252,7 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             mock_browser = MagicMock()
             mock_browser.browser_family = "chromium"
 
-            def fake_publish(*, text, action_id, claim_token, lease_expires_epoch):
+            def fake_publish(*, text, expected_username, action_id, claim_token, lease_expires_epoch):
                 import hashlib
                 return {
                     "post_url": "https://x.com/guoz7777/status/777",
@@ -364,6 +373,62 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 srv.shutdown()
                 srv.server_close()
+
+    def test_autopilot_window_run_wave_and_ops_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = XStarter(
+                mode="browser",
+                environ={
+                    "X_STARTER_MODE": "browser",
+                    "X_STARTER_ENABLE_BROWSER": "1",
+                    "X_STARTER_STATE_DIR": tmp,
+                },
+            )
+            prep = app.call_tool("x_autopilot", {"action": "prepare", "days": 7, "max_per_wave": 2})
+            self.assertTrue(prep["ok"])
+            act = app.call_tool(
+                "x_autopilot",
+                {
+                    "action": "activate",
+                    "window_id": prep["data"]["window_id"],
+                    "confirmation": prep["data"]["confirmation_phrase"],
+                },
+            )
+            self.assertTrue(act["ok"])
+            self.assertTrue(act["data"]["enabled"])
+
+            mock_browser = MagicMock()
+            mock_browser.browser_family = "chromium"
+            mock_browser.execute_x_action.side_effect = lambda *, action_type, post_url, author, text, action_id, claim_token, lease_expires_epoch: (
+                {"post_url": post_url, "author": author, "state": "liked", "verified": True, "changed": True}
+                if action_type == "like_post"
+                else {"profile_url": post_url, "handle": author, "state": "following", "verified": True, "changed": True, "mutual_verified": True}
+            )
+            app._browser_for = lambda _args: mock_browser
+
+            wave = app.call_tool(
+                "x_autopilot",
+                {
+                    "action": "run_wave",
+                    "force": True,
+                    "respect_pacing": False,
+                    "timeline_posts": [{"url": "https://x.com/alice/status/888", "author": "alice", "text": "hi"}],
+                    "follow_candidates": [{"handle": "bob", "mutual_verified": True}],
+                },
+            )
+            self.assertTrue(wave["ok"])
+            self.assertTrue(wave["data"]["ran"])
+            self.assertEqual(wave["data"]["execution"]["verified_changed"], 2)
+
+            summary = app.call_tool("x_autopilot", {"action": "ops_summary"})
+            self.assertTrue(summary["ok"])
+            self.assertEqual(summary["data"]["totals"]["completed"], 2)
+            self.assertEqual(summary["data"]["follow_funnel"]["verified_follows"], 1)
+            self.assertEqual(len(summary["data"]["autopilot"]["recent_waves"]), 1)
+
+            stopped = app.call_tool("x_autopilot", {"action": "stop"})
+            self.assertTrue(stopped["ok"])
+            self.assertFalse(stopped["data"]["enabled"])
 
 
 if __name__ == "__main__":

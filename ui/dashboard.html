@@ -255,6 +255,41 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     <div id="orchToast" class="toast"></div>
     <div id="planList" class="list"></div>
   </section>
+
+  <!-- 4. Bounded Autopilot & 7-Day Ops Summary -->
+  <section class="card">
+    <h2>
+      <span>自动运维托管（一次授权 · 分波次错峰执行）与近 7 日简报</span>
+      <span id="apPill" class="pill warn">未启用</span>
+    </h2>
+    <div class="grid-4">
+      <div class="stat">
+        <div class="stat-label">7 日已验证成功</div>
+        <div class="stat-val" id="opsCompleted">0</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">7 日不确定率</div>
+        <div class="stat-val" id="opsUncertain">0%</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">已关注 / 回关率</div>
+        <div class="stat-val" id="opsFollowBack">0 / 0%</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">每波上限 / 间隔</div>
+        <div class="stat-val" id="opsWaveCfg">4 次 · 90m</div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:12px;">
+      <button class="primary" onclick="prepareAutopilot()">1. 生成 7 天托管授权</button>
+      <input id="apConfirmInput" placeholder="输入授权短语（如 AUTOPILOT A1B2C3）" style="max-width:250px;" disabled>
+      <button id="btnApActivate" onclick="activateAutopilot()" disabled>2. 启用托管</button>
+      <button id="btnApRunWave" onclick="runAutopilotWave()" disabled>立即跑一小波</button>
+      <button id="btnApStop" onclick="stopAutopilot()" disabled>紧急停机</button>
+    </div>
+    <div id="apToast" class="toast"></div>
+    <div id="apWaves" class="list"></div>
+  </section>
 </main>
 
 <script>
@@ -448,6 +483,7 @@ async function planDaily() {
   if (res.data.blocked) {
     showToast('orchToast', false, '熔断器阻断：' + res.data.reason);
   } else {
+    const stageLabel = res.data.stage === 'warmup' ? '养号期（保守上限）' : '成长期';
     const missing = [];
     if ((goals.like_post > 0 || goals.repost_post > 0) && state.timelinePosts.length === 0) {
       missing.push('尚未抓取主页时间线（请先点右上角「抓取主页时间线」）');
@@ -456,7 +492,7 @@ async function planDaily() {
       missing.push('尚未读取关注候选（请先点右上角「读取关注候选」）');
     }
     const hint = missing.length ? '；提示：' + missing.join('，') : '';
-    showToast('orchToast', true, `已生成 ${res.data.operation_count} 步安全编排（预计耗时约 ${fmtDuration(res.data.estimated_duration_seconds)}）${hint}。`);
+    showToast('orchToast', true, `[${stageLabel}] 已生成 ${res.data.operation_count} 步安全编排（预计耗时约 ${fmtDuration(res.data.estimated_duration_seconds)}）${hint}。`);
   }
   document.getElementById('planList').innerHTML = (res.data.operations || []).map(op => `
     <div class="item">
@@ -505,9 +541,87 @@ async function executeDaily() {
   refreshAll();
 }
 
+let apPrepared = null;
+
+async function refreshAutopilot() {
+  const res = await callTool('x_autopilot', { action: 'ops_summary' });
+  if (!res.ok) return;
+  const d = res.data;
+  document.getElementById('opsCompleted').textContent = d.totals?.completed ?? 0;
+  document.getElementById('opsUncertain').textContent = Math.round((d.uncertain_rate || 0) * 100) + '%';
+  document.getElementById('opsFollowBack').textContent = `${d.follow_funnel?.verified_follows ?? 0} / ${Math.round((d.follow_funnel?.follow_back_rate || 0) * 100)}%`;
+
+  const ap = d.autopilot || {};
+  const pill = document.getElementById('apPill');
+  const enabled = Boolean(ap.enabled);
+  pill.textContent = enabled ? '托管运行中' : '未启用';
+  pill.className = 'pill ' + (enabled ? 'ok' : 'warn');
+  document.getElementById('btnApRunWave').disabled = !enabled;
+  document.getElementById('btnApStop').disabled = !enabled;
+  if (ap.active_window) {
+    document.getElementById('opsWaveCfg').textContent = `${ap.active_window.max_per_wave} 次 · ${ap.active_window.min_wave_interval_minutes}m`;
+  }
+  document.getElementById('apWaves').innerHTML = (ap.recent_waves || []).slice().reverse().map(w => `
+    <div class="item">
+      <div><strong>${esc(w.batch_id || 'wave')}</strong> · 处理 ${w.processed ?? 0}，成功 ${w.verified_changed ?? 0}${w.stop_reason ? ' · ' + esc(w.stop_reason) : ''}</div>
+      <span class="mono muted">${esc(w.at || '')}</span>
+    </div>
+  `).join('') || '<div class="muted">暂无托管波次记录。</div>';
+}
+
+async function prepareAutopilot() {
+  const res = await callTool('x_autopilot', { action: 'prepare', days: 7, max_per_wave: 4, min_wave_interval_minutes: 90 });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '生成授权失败');
+  apPrepared = res.data;
+  document.getElementById('apConfirmInput').disabled = false;
+  document.getElementById('apConfirmInput').value = '';
+  document.getElementById('btnApActivate').disabled = false;
+  showToast('apToast', true, `请在输入框填入授权短语并点击「启用托管」：${res.data.confirmation_phrase}`);
+}
+
+async function activateAutopilot() {
+  if (!apPrepared) return;
+  const confirmation = document.getElementById('apConfirmInput').value.trim();
+  const res = await callTool('x_autopilot', { action: 'activate', window_id: apPrepared.window_id, confirmation });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '启用失败');
+  apPrepared = null;
+  document.getElementById('apConfirmInput').disabled = true;
+  document.getElementById('btnApActivate').disabled = true;
+  showToast('apToast', true, '7 天有界自动运维托管已启用。');
+  refreshAutopilot();
+}
+
+async function runAutopilotWave() {
+  showToast('apToast', true, '正在执行一小波托管任务...');
+  const res = await callTool('x_autopilot', {
+    action: 'run_wave',
+    force: true,
+    respect_pacing: false,
+    timeline_posts: state.timelinePosts,
+    follow_candidates: state.followCandidates,
+    account_snapshot: state.accountSnapshot || undefined,
+  });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '波次执行失败');
+  if (!res.data.ran) {
+    showToast('apToast', false, '未执行波次：' + res.data.reason);
+  } else {
+    const exe = res.data.execution;
+    showToast('apToast', true, `波次完成：处理 ${exe.processed}/${exe.planned}，成功 ${exe.verified_changed}${exe.stop_reason ? '（' + exe.stop_reason + '）' : ''}`);
+  }
+  refreshAll();
+}
+
+async function stopAutopilot() {
+  const res = await callTool('x_autopilot', { action: 'stop' });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '停机失败');
+  showToast('apToast', true, '托管已停机。');
+  refreshAutopilot();
+}
+
 function refreshAll() {
   refreshHealth();
   refreshQueue();
+  refreshAutopilot();
 }
 
 document.getElementById('postText').addEventListener('input', e => {

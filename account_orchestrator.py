@@ -568,6 +568,27 @@ def _seen_ledger_targets(ledger: dict[str, Any]) -> tuple[set[str], set[str]]:
     return handles, urls
 
 
+def score_follow_candidate(cand: dict[str, Any]) -> tuple[int, str]:
+    """Score a follow candidate for reciprocal growth likelihood (higher is better)."""
+    score = 0
+    if cand.get("mutual_verified") is True:
+        score += 40
+    if str(cand.get("bio") or "").strip():
+        score += 10
+    if cand.get("recent_post_at") or cand.get("active") is True:
+        score += 10
+    followers = cand.get("followers_count")
+    following = cand.get("following_count")
+    if isinstance(followers, (int, float)) and isinstance(following, (int, float)) and following > 0:
+        ratio = followers / following
+        if 0.2 <= ratio <= 3.0:
+            score += 25
+        elif followers > 10000 and ratio > 10.0:
+            score -= 25
+    handle = str(cand.get("handle") or cand.get("username") or "").strip().lstrip("@").casefold()
+    return (score, handle)
+
+
 def build_daily_orchestration_plan(
     ledger: dict[str, Any],
     *,
@@ -608,11 +629,19 @@ def build_daily_orchestration_plan(
         "like_post": 10,
         "follow_profile": 5,
         "repost_post": 3,
+        "reply_post": 2,
     }
+    warmup_ready = bool(health["warmup"]["ready"])
+    stage = "growth" if warmup_ready else "warmup"
+    stage_caps = (
+        {"publish_post": 5, "like_post": 60, "follow_profile": 25, "repost_post": 40, "reply_post": 15}
+        if warmup_ready
+        else {"publish_post": 5, "like_post": 15, "follow_profile": 5, "repost_post": 10, "reply_post": 3}
+    )
     remaining = health["today"]["remaining_safe"]
     capped = {
-        kind: max(0, min(int(requested.get(kind, 0)), int(remaining.get(kind, 0))))
-        for kind in ("publish_post", "like_post", "follow_profile", "repost_post")
+        kind: max(0, min(int(requested.get(kind, 0)), int(remaining.get(kind, 0)), stage_caps[kind]))
+        for kind in ("publish_post", "like_post", "follow_profile", "repost_post", "reply_post")
     }
 
     seen_handles, seen_urls = _seen_ledger_targets(ledger)
@@ -623,23 +652,37 @@ def build_daily_orchestration_plan(
         "like_post": [],
         "follow_profile": [],
         "repost_post": [],
+        "reply_post": [],
     }
 
-    # 1. Due original posts from content queue.
+    # 1. Due original posts and replies from content queue.
     for item in (content_queue or []):
-        if len(buckets["publish_post"]) >= capped["publish_post"]:
-            break
-        if item.get("status") != "queued" or item.get("kind") != "original_post":
+        if item.get("status") != "queued":
             continue
         sched = item.get("scheduled_after_epoch")
         if sched is not None and float(sched) > now:
             continue
-        buckets["publish_post"].append({
-            "action": "publish_post",
-            "text": item["text"],
-            "queue_item_id": item.get("item_id"),
-            "topic": item.get("topic"),
-        })
+        kind = item.get("kind")
+        if kind == "original_post" and len(buckets["publish_post"]) < capped["publish_post"]:
+            buckets["publish_post"].append({
+                "action": "publish_post",
+                "text": item["text"],
+                "queue_item_id": item.get("item_id"),
+                "topic": item.get("topic"),
+            })
+        elif kind == "reply" and len(buckets["reply_post"]) < capped["reply_post"] and item.get("target_url"):
+            match = _STATUS_URL_RE.match(str(item["target_url"]).strip())
+            if match:
+                canonical = f"https://x.com/{match.group(1).casefold()}/status/{match.group(2)}"
+                if canonical not in seen_urls:
+                    seen_urls.add(canonical)
+                    buckets["reply_post"].append({
+                        "action": "reply_post",
+                        "url": canonical,
+                        "author": match.group(1),
+                        "text": item["text"],
+                        "queue_item_id": item.get("item_id"),
+                    })
 
     # 2. Deduplicated timeline posts for likes and reposts (prefer distinct targets).
     clean_posts: list[dict[str, str]] = []
@@ -677,13 +720,16 @@ def build_daily_orchestration_plan(
                 "text_preview": post["text_preview"],
             })
 
-    # 3. Deduplicated follow candidates.
+    # 3. Deduplicated & scored follow candidates (prioritize reciprocal/active accounts).
+    ranked_cands = sorted(
+        [c for c in (follow_candidates or []) if isinstance(c, dict)],
+        key=score_follow_candidate,
+        reverse=True,
+    )
     local_seen_handles = set(seen_handles)
-    for cand in (follow_candidates or []):
+    for cand in ranked_cands:
         if len(buckets["follow_profile"]) >= capped["follow_profile"]:
             break
-        if not isinstance(cand, dict):
-            continue
         handle = str(cand.get("handle") or cand.get("username") or "").strip().lstrip("@")
         if not _HANDLE_RE.match(handle):
             continue
@@ -691,10 +737,12 @@ def build_daily_orchestration_plan(
         if key in local_seen_handles:
             continue
         local_seen_handles.add(key)
+        score, _ = score_follow_candidate(cand)
         buckets["follow_profile"].append({
             "action": "follow_profile",
             "handle": handle,
             "profile_url": f"https://x.com/{handle}",
+            "candidate_score": score,
             "source": str(cand.get("source") or "follow_candidates"),
         })
 
@@ -702,7 +750,7 @@ def build_daily_orchestration_plan(
     ordered: list[dict[str, Any]] = []
     if buckets["publish_post"]:
         ordered.append(buckets["publish_post"].pop(0))
-    order_cycle = ("like_post", "follow_profile", "repost_post", "publish_post")
+    order_cycle = ("like_post", "reply_post", "follow_profile", "repost_post", "publish_post")
     while any(buckets.values()):
         for kind in order_cycle:
             if buckets[kind]:
@@ -724,11 +772,12 @@ def build_daily_orchestration_plan(
 
     counts = {
         kind: sum(1 for op in operations if op["action"] == kind)
-        for kind in ("publish_post", "like_post", "follow_profile", "repost_post")
+        for kind in ("publish_post", "like_post", "follow_profile", "repost_post", "reply_post")
     }
     return {
         "status": "planned_not_executed",
         "blocked": False,
+        "stage": stage,
         "plan_id": "daily_" + secrets.token_hex(6),
         "health": health,
         "counts": counts,

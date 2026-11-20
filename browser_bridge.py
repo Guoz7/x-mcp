@@ -1014,7 +1014,7 @@ class BrowserBridge:
         operations = plan.get("operations")
         if not isinstance(operations, list) or not 1 <= len(operations) <= 150:
             raise BridgeError("INVALID_BATCH", "The daily batch must contain from 1 to 150 operations.")
-        allowed = {"publish_post", "like_post", "repost_post", "follow_profile"}
+        allowed = {"publish_post", "like_post", "repost_post", "follow_profile", "reply_post"}
         counts = {kind: 0 for kind in allowed}
         for op in operations:
             if not isinstance(op, dict) or op.get("action") not in allowed:
@@ -1027,6 +1027,11 @@ class BrowserBridge:
                     raise BridgeError("INVALID_BATCH", "Each publish_post operation needs 1-280 chars of text.")
             elif kind in {"like_post", "repost_post"}:
                 _x_post_url_parts(str(op.get("url") or ""))
+            elif kind == "reply_post":
+                _x_post_url_parts(str(op.get("url") or ""))
+                text = str(op.get("text") or "").strip()
+                if not text or len(text) > 280:
+                    raise BridgeError("INVALID_BATCH", "Each reply_post operation needs 1-280 chars of text.")
             elif kind == "follow_profile":
                 handle = str(op.get("handle") or "").strip().lstrip("@")
                 if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
@@ -1114,7 +1119,7 @@ class BrowserBridge:
                         "expected_username": expected_username,
                         "queue_item_id": op.get("queue_item_id"),
                     }
-                elif kind in {"like_post", "repost_post"}:
+                elif kind in {"like_post", "repost_post", "reply_post"}:
                     author, status_id = _x_post_url_parts(str(op["url"]))
                     canonical = f"https://x.com/{author}/status/{status_id}"
                     payload = {
@@ -1124,6 +1129,11 @@ class BrowserBridge:
                         "author": author,
                         "status_id": status_id,
                     }
+                    if kind == "reply_post":
+                        text = str(op["text"]).strip()
+                        payload["text"] = text
+                        payload["text_sha256"] = _text_digest(text)
+                        payload["queue_item_id"] = op.get("queue_item_id")
                 else:
                     handle = str(op["handle"]).strip().lstrip("@")
                     profile_url = str(op.get("profile_url") or f"https://x.com/{handle}")

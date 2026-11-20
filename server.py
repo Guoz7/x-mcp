@@ -65,6 +65,7 @@ import composer  # noqa: E402
 import interaction_batch  # noqa: E402
 import follow_batch  # noqa: E402
 import account_orchestrator  # noqa: E402
+import autopilot_ops  # noqa: E402
 
 
 class StarterError(Exception):
@@ -1595,6 +1596,35 @@ class XStarter:
                 "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
             },
             {
+                "name": "x_autopilot",
+                "title": "Manage bounded autopilot ops and 7-day summary",
+                "description": (
+                    "Prepare, activate, stop, inspect, or run one micro-wave of a bounded autopilot "
+                    "maintenance window, or return a 7-day ops and follow-back summary."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "ops_summary"]},
+                        "days": {"type": "integer", "minimum": 1, "maximum": 30, "default": 7},
+                        "active_hours": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 24}},
+                        "max_per_wave": {"type": "integer", "minimum": 1, "maximum": 10, "default": 4},
+                        "min_wave_interval_minutes": {"type": "integer", "minimum": 15, "maximum": 720, "default": 90},
+                        "daily_goals": {"type": "object"},
+                        "window_id": {"type": "string", "maxLength": 40},
+                        "confirmation": {"type": "string", "maxLength": 40},
+                        "timeline_posts": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "follow_candidates": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "account_snapshot": {"type": "object"},
+                        "force": {"type": "boolean", "default": False},
+                        "respect_pacing": {"type": "boolean", "default": True},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+            },
+            {
                 "name": "account_summary",
                 "title": "Inspect X account",
                 "description": (
@@ -1825,6 +1855,8 @@ class XStarter:
                 data = self._x_daily_orchestrate_prepare(scoped, trace)
             elif name == "x_daily_orchestrate_execute":
                 data = self._x_daily_orchestrate_execute(scoped, trace)
+            elif name == "x_autopilot":
+                data = self._x_autopilot(scoped, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -3514,24 +3546,19 @@ class XStarter:
                 )
                 kind = action["type"]
                 if kind == "publish_post":
-                    if hasattr(browser, "execute_x_publish"):
-                        raw = browser.execute_x_publish(
-                            text=str(payload.get("text") or ""),
-                            action_id=action["action_id"],
-                            claim_token=action["claim_token"],
-                            lease_expires_epoch=verified["lease_expires_epoch"],
-                        )
-                    else:
-                        raise ExecutorError(
-                            "PUBLISH_REQUIRES_COMPOSER_FLOW",
-                            "publish_post requires the interactive composer flow (x_post_prepare / x_post_publish).",
-                        )
-                elif kind in {"like_post", "repost_post"}:
+                    raw = browser.execute_x_publish(
+                        text=str(payload.get("text") or ""),
+                        expected_username=str(payload.get("expected_username") or ""),
+                        action_id=action["action_id"],
+                        claim_token=action["claim_token"],
+                        lease_expires_epoch=verified["lease_expires_epoch"],
+                    )
+                elif kind in {"like_post", "repost_post", "reply_post"}:
                     raw = browser.execute_x_action(
                         action_type=kind,
                         post_url=str(payload.get("post_url") or payload.get("url") or ""),
                         author=str(payload.get("author") or ""),
-                        text=None,
+                        text=str(payload.get("text")) if kind == "reply_post" else None,
                         action_id=action["action_id"],
                         claim_token=action["claim_token"],
                         lease_expires_epoch=verified["lease_expires_epoch"],
@@ -3651,6 +3678,106 @@ class XStarter:
             "results": results,
             "elapsed_seconds": round(time.monotonic() - started, 3),
         }
+
+    def _autopilot_store(self) -> autopilot_ops.AutopilotStore:
+        return autopilot_ops.AutopilotStore(self._bridge().path.parent)
+
+    def _x_autopilot(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        action = _required_string(arguments, "action", max_length=24)
+        store = self._autopilot_store()
+        try:
+            if action == "status":
+                res = store.status()
+                trace.append(_event("x_adapter", "autopilot_status_read", enabled=res["enabled"], external_call=False))
+                return res
+            if action == "ops_summary":
+                ledger = self._bridge().read_ledger_snapshot()
+                res = autopilot_ops.build_ops_summary(ledger, store.status())
+                trace.append(_event("x_adapter", "autopilot_ops_summary_read", external_call=False))
+                return res
+            if action == "prepare":
+                res = store.prepare_window(
+                    days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),
+                    active_hours=arguments.get("active_hours") or [9, 22],
+                    max_per_wave=_bounded_int(arguments, "max_per_wave", default=4, minimum=1, maximum=10),
+                    min_wave_interval_minutes=_bounded_int(arguments, "min_wave_interval_minutes", default=90, minimum=15, maximum=720),
+                    daily_goals=arguments.get("daily_goals"),
+                )
+                trace.append(_event("auth_boundary", "autopilot_window_prepared", window_id=res["window_id"], external_call=False))
+                return res
+            if action == "activate":
+                window_id = _required_string(arguments, "window_id", max_length=40)
+                confirmation = _required_string(arguments, "confirmation", max_length=40)
+                res = store.activate_window(window_id, confirmation)
+                trace.append(_event("auth_boundary", "autopilot_window_activated", window_id=window_id, external_call=False))
+                return res
+            if action == "stop":
+                res = store.stop_window(reason="manual_stop")
+                trace.append(_event("auth_boundary", "autopilot_window_stopped", external_call=False))
+                return res
+            if action == "run_wave":
+                status = store.status()
+                if not status.get("enabled"):
+                    raise StarterError("AUTOPILOT_NOT_ENABLED", "Activate an autopilot window before running a wave.")
+                force = bool(arguments.get("force", False))
+                if not force and not status.get("wave_due"):
+                    return {
+                        "ran": False,
+                        "reason": "OUTSIDE_ACTIVE_HOURS" if not status.get("in_active_hours") else "WAVE_INTERVAL_NOT_ELAPSED",
+                        "autopilot": status,
+                    }
+                ledger = self._bridge().read_ledger_snapshot()
+                breaker = account_orchestrator.evaluate_circuit_breaker(ledger)
+                if not breaker["allow_write"]:
+                    store.stop_window(reason=f"circuit_breaker:{breaker['reason']}")
+                    raise StarterError(
+                        "ACCOUNT_COOLDOWN",
+                        f"Autopilot halted by circuit breaker ({breaker['reason']}).",
+                        details=breaker,
+                    )
+                window = status["active_window"]
+                max_wave = int(window.get("max_per_wave", 4))
+                plan = account_orchestrator.build_daily_orchestration_plan(
+                    ledger,
+                    goals=window.get("daily_goals"),
+                    timeline_posts=arguments.get("timeline_posts"),
+                    follow_candidates=arguments.get("follow_candidates"),
+                    content_queue=self._content_queue().list(),
+                    account_snapshot=arguments.get("account_snapshot"),
+                )
+                if plan.get("blocked"):
+                    store.stop_window(reason=f"circuit_breaker:{plan.get('reason')}")
+                    raise StarterError("ACCOUNT_COOLDOWN", f"Autopilot halted ({plan.get('reason')}).", details=plan)
+                ops = list(plan.get("operations") or [])[:max_wave]
+                if not ops:
+                    return {"ran": False, "reason": "NO_ELIGIBLE_OPERATIONS", "stage": plan.get("stage"), "autopilot": status}
+                wave_plan = {**plan, "operations": ops, "operation_count": len(ops)}
+                session_id = arguments.get("_mcp_session_id")
+                prep = self._bridge().prepare_daily_batch(wave_plan, session_id=session_id, ttl_seconds=600)
+                exe = self._x_daily_orchestrate_execute(
+                    {
+                        "batch_id": prep["batch_id"],
+                        "confirmation": prep["confirmation_phrase"],
+                        "action_limit": max_wave,
+                        "respect_pacing": bool(arguments.get("respect_pacing", True)),
+                        "_mcp_session_id": session_id,
+                    },
+                    trace,
+                )
+                if str(exe.get("stop_reason") or "").startswith("REFUSAL_CIRCUIT_BREAKER"):
+                    store.stop_window(reason=str(exe["stop_reason"]))
+                store.record_wave({
+                    "batch_id": exe["batch_id"],
+                    "processed": exe["processed"],
+                    "verified_changed": exe["verified_changed"],
+                    "stop_reason": exe["stop_reason"],
+                })
+                return {"ran": True, "stage": plan.get("stage"), "execution": exe}
+        except autopilot_ops.AutopilotError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        raise StarterError("INVALID_ARGUMENT", "action must be status, prepare, activate, stop, run_wave, or ops_summary.")
 
     def _require_connected(self) -> None:
         if not self.connected:
@@ -5526,6 +5653,7 @@ def make_http_handler(
                     "x_daily_orchestrate_plan",
                     "x_daily_orchestrate_prepare",
                     "x_daily_orchestrate_execute",
+                    "x_autopilot",
                     "x_compose_check",
                 }
                 if tool not in allowed_ui_tools:

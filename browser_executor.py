@@ -1186,6 +1186,105 @@ class Browser:
                 "The X action executor failed before its postcondition was proven.",
             ) from exc
 
+    def execute_x_publish(
+        self,
+        *,
+        text: str,
+        expected_username: str,
+        action_id: str,
+        claim_token: str,
+        lease_expires_epoch: float,
+    ) -> dict[str, Any]:
+        """Publish one confirmed original post and verify it on the owner's profile."""
+        cleaned = str(text or "").strip()
+        if not cleaned or len(cleaned) > 280:
+            raise ExecutorError("INVALID_ARGUMENT", "publish_post requires 1 to 280 characters of text.")
+        handle = str(expected_username or "").strip().lstrip("@")
+        if not handle:
+            raise ExecutorError("ACCOUNT_REQUIRED", "publish_post requires an observed expected_username.")
+        try:
+            return self._run_on_worker(
+                lambda: self._execute_x_publish_impl(
+                    text=cleaned,
+                    expected_username=handle,
+                    action_id=action_id,
+                    claim_token=claim_token,
+                    lease_expires_epoch=lease_expires_epoch,
+                ),
+                timeout=max(30.0, min(self.start_timeout + 30.0, 180.0)),
+            )
+        except ExecutorError:
+            raise
+        except Exception as exc:
+            raise ExecutorError(
+                "ACTION_UNCERTAIN",
+                "The X publish executor failed before its postcondition was proven.",
+            ) from exc
+
+    def _execute_x_publish_impl(
+        self,
+        *,
+        text: str,
+        expected_username: str,
+        action_id: str,
+        claim_token: str,
+        lease_expires_epoch: float,
+    ) -> dict[str, Any]:
+        self._open_impl("https://x.com/compose/post")
+        if self._security_interstitial():
+            raise ExecutorError("X_SECURITY_INTERSTITIAL", "X requires owner verification; stop all writes.")
+
+        box = self.page.locator('[data-testid="tweetTextarea_0"]').first
+        try:
+            box.wait_for(state="visible", timeout=10000)
+        except Exception:
+            raise self._visual_fallback_error(
+                "The X compose textarea was not exposed.", page_kind="x_home"
+            ) from None
+
+        self._validate_x_grant(self.X_TYPE_ACTIONS)
+        box.click(timeout=5000)
+        box.fill(text)
+        self._consume_x_grant("typing")
+
+        btn = self.page.locator('[data-testid="tweetButton"]').first
+        try:
+            btn.wait_for(state="visible", timeout=5000)
+        except Exception:
+            raise self._visual_fallback_error(
+                "The X publish button was not exposed.", page_kind="x_home"
+            ) from None
+
+        self._validate_x_grant(frozenset({"publish_post"}))
+        btn.click(timeout=5000)
+        self._consume_x_grant("click")
+        self.page.wait_for_timeout(1500)
+
+        profile_url = f"https://x.com/{expected_username}"
+        self._open_impl(profile_url)
+        obs = self._observe_impl()
+        articles = obs.get("articles") or []
+        for article in articles[:5]:
+            article_text = str(article.get("text") or "")
+            if text[:40] not in article_text:
+                continue
+            for link in article.get("links") or []:
+                href = str(link)
+                if f"/{expected_username.lower()}/status/" in href.lower():
+                    return {
+                        "post_url": href.split("?")[0],
+                        "author": expected_username,
+                        "text": text,
+                        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                        "verified": True,
+                        "changed": True,
+                        "locator_strategy": "dom",
+                    }
+        raise ExecutorError(
+            "ACTION_UNCERTAIN",
+            "The post was submitted, but its canonical status URL was not proven on the profile.",
+        )
+
     def execute_douyin_action(
         self,
         *,
