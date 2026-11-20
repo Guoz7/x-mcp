@@ -44,6 +44,21 @@
 禁止：自动扩大目标数量、自动重试不确定动作、读取凭据、使用通用点击绕过确认、把模拟结果写成真实结果。
 ```
 
+## 个人账号养号与日常自动运维模板
+
+适合让 Agent 帮你管理个人 X 账号的健康度、内容队列与分阶段安全互动：
+
+```text
+使用 xstarter MCP 管理我的个人 X 账号日常运维。
+
+流程：
+1. 调用 tools/list 确认已加载 x_account_health、x_content_queue、x_daily_orchestrate_* 与 x_autopilot。
+2. 先调用 x_owner_read(target="account") 与 x_account_health，汇报当前健康分、养号阶段（ghost / light_engage / content_build / growth）、熔断状态和今日剩余安全配额。
+3. 如需准备待发内容，调用 x_content_queue(action="add", kind="original_post", ...)（养号未完成前不带外链、不发重复文案）。
+4. 调用 x_owner_read(target="timeline") 与 x_follow_candidates_read 获取最新候选，再调用 x_daily_orchestrate_plan 生成当日安全编排（自动按阶段限流、打分排序并去重）。
+5. 若要单次执行：调用 x_daily_orchestrate_prepare，向我展示确认短语，待我确认后再执行 x_daily_orchestrate_execute；若要开启 7 天有界托管：调用 x_autopilot(action="prepare")，待我确认后 activate，后续按波次调用 run_wave 与 ops_summary 汇报 7 日成效与回关率。
+```
+
 ## 安装
 
 - GitHub：<https://github.com/Guoz7/x-mcp>
