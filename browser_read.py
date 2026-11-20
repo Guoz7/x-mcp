@@ -244,7 +244,15 @@ def read_account(browser: Browser, *, base_url: str | None = None) -> dict[str, 
         # Fall back to what is actually on screen and label it, rather than
         # inventing a total the page never showed.
         posts_count, count_source = len(recent), "visible_article_count"
-    display_name = str(profile.get("profile_display_name") or handle).strip()
+    raw_display = str(profile.get("profile_display_name") or "").strip()
+    if not raw_display:
+        lines = [ln.strip() for ln in str(profile.get("text") or "").splitlines() if ln.strip()]
+        target_handle = f"@{handle}".casefold()
+        for idx, line in enumerate(lines):
+            if line.casefold() == target_handle and idx > 0:
+                raw_display = lines[idx - 1]
+                break
+    display_name = (raw_display or handle).strip()
     return {
         "username": projection.get("screen_name") or handle,
         "user_id": str(projection["user_id"]),

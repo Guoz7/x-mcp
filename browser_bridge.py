@@ -24,7 +24,10 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-import douyin_bridge
+try:
+    import douyin_bridge
+except ImportError:
+    douyin_bridge = None  # type: ignore[assignment]
 
 
 VIEWPORT_CLASSES = ("mobile", "tablet", "desktop")
@@ -220,7 +223,8 @@ def _compatibility_contract(
     return {
         "schema": (
             "douyin-browser-context/v1"
-            if action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values()
+            if douyin_bridge is not None
+            and action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values()
             else "x-starter-browser-context/v1"
         ),
         "viewport_classes": list(VIEWPORT_CLASSES),
@@ -991,6 +995,231 @@ class BrowserBridge:
                     {"chunk": key, **chunks[key]}
                     for key in sorted(chunks)
                 ],
+                "results": results,
+            }
+
+    def read_ledger_snapshot(self) -> dict[str, Any]:
+        """Return a thread-safe snapshot of the durable browser bridge ledger."""
+        with self._lock:
+            return self._read()
+
+    def prepare_daily_batch(
+        self, plan: dict[str, Any], *, session_id: str | None = None, ttl_seconds: int = 600
+    ) -> dict[str, Any]:
+        """Create a confirmed daily orchestration batch without touching X."""
+        from account_orchestrator import evaluate_circuit_breaker
+
+        if not isinstance(plan, dict) or plan.get("status") != "planned_not_executed":
+            raise BridgeError("INVALID_BATCH", "Prepare requires a daily orchestration planner result.")
+        operations = plan.get("operations")
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 150:
+            raise BridgeError("INVALID_BATCH", "The daily batch must contain from 1 to 150 operations.")
+        allowed = {"publish_post", "like_post", "repost_post", "follow_profile"}
+        counts = {kind: 0 for kind in allowed}
+        for op in operations:
+            if not isinstance(op, dict) or op.get("action") not in allowed:
+                raise BridgeError("INVALID_BATCH", "The daily batch contains an unsupported operation.")
+            kind = str(op["action"])
+            counts[kind] += 1
+            if kind == "publish_post":
+                text = str(op.get("text") or "").strip()
+                if not text or len(text) > 280:
+                    raise BridgeError("INVALID_BATCH", "Each publish_post operation needs 1-280 chars of text.")
+            elif kind in {"like_post", "repost_post"}:
+                _x_post_url_parts(str(op.get("url") or ""))
+            elif kind == "follow_profile":
+                handle = str(op.get("handle") or "").strip().lstrip("@")
+                if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+                    raise BridgeError("INVALID_BATCH", "Each follow_profile operation needs a valid handle.")
+                _x_profile_url_parts(str(op.get("profile_url") or f"https://x.com/{handle}"))
+
+        now = self._now()
+        with self._lock:
+            data = self._read()
+            breaker = evaluate_circuit_breaker(data, now_epoch=now)
+            if not breaker["allow_write"]:
+                raise BridgeError(
+                    "ACCOUNT_COOLDOWN",
+                    f"Account writes are blocked by circuit breaker ({breaker['reason']}).",
+                    details=breaker,
+                )
+            batch_id = "daily_batch_" + uuid_hex()
+            phrase = "DAILY " + secrets.token_hex(3).upper()
+            record = {
+                "batch_id": batch_id,
+                "kind": "daily_orchestration",
+                "state": "prepared",
+                "created_at": _now_iso(now),
+                "expires_epoch": now + max(60, min(int(ttl_seconds), 600)),
+                "confirmation_phrase": phrase,
+                "operations": operations,
+                "session_id": session_id,
+                "action_ids": [],
+            }
+            data.setdefault("batches", {})[batch_id] = record
+            self._append_evidence(
+                data,
+                "daily_batch_prepared",
+                batch_id,
+                {"operation_count": len(operations), "counts": counts},
+            )
+            self._write(data)
+        return {
+            "batch_id": batch_id,
+            "state": "prepared",
+            "expires_at": _now_iso(record["expires_epoch"]),
+            "confirmation_phrase": phrase,
+            "operation_count": len(operations),
+            "counts": counts,
+        }
+
+    def queue_daily_batch(
+        self, batch_id: str, confirmation: str, *, session_id: str | None = None
+    ) -> dict[str, Any]:
+        """Queue independently leased actions for a confirmed daily orchestration batch."""
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if (
+                not isinstance(record, dict)
+                or record.get("kind") != "daily_orchestration"
+                or not self._scope_ok(record, session_id)
+            ):
+                raise BridgeError("BATCH_NOT_FOUND", "The daily batch does not exist.")
+            if record.get("state") != "prepared":
+                raise BridgeError("BATCH_NOT_READY", "The daily batch is not prepared.")
+            if self._now() > float(record["expires_epoch"]):
+                record["state"] = "expired"
+                self._write(data)
+                raise BridgeError("BATCH_EXPIRED", "The daily batch confirmation expired.")
+            if confirmation != record["confirmation_phrase"]:
+                raise BridgeError("CONFIRMATION_MISMATCH", "The confirmation phrase does not match.")
+
+            action_ids: list[str] = []
+            for idx, op in enumerate(record["operations"]):
+                kind = str(op["action"])
+                common_meta = {
+                    "batch_id": batch_id,
+                    "sequence": int(op.get("step_index") or (idx + 1)),
+                    "step_index": op.get("step_index"),
+                    "delay_before_seconds": int(op.get("delay_before_seconds", 0) or 0),
+                }
+                if kind == "publish_post":
+                    text = str(op["text"]).strip()
+                    expected_username = str(op.get("expected_username") or data.get("account_binding") or "").strip().lstrip("@")
+                    payload = {
+                        **common_meta,
+                        "text": text,
+                        "text_sha256": _text_digest(text),
+                        "expected_username": expected_username,
+                        "queue_item_id": op.get("queue_item_id"),
+                    }
+                elif kind in {"like_post", "repost_post"}:
+                    author, status_id = _x_post_url_parts(str(op["url"]))
+                    canonical = f"https://x.com/{author}/status/{status_id}"
+                    payload = {
+                        **common_meta,
+                        "post_url": canonical,
+                        "url": canonical,
+                        "author": author,
+                        "status_id": status_id,
+                    }
+                else:
+                    handle = str(op["handle"]).strip().lstrip("@")
+                    profile_url = str(op.get("profile_url") or f"https://x.com/{handle}")
+                    payload = {
+                        **common_meta,
+                        "handle": handle,
+                        "profile_url": profile_url,
+                    }
+                action = self._new_action(data, action_type=kind, payload=payload, session_id=session_id)
+                action["batch_id"] = batch_id
+                action_ids.append(action["action_id"])
+
+            record["state"] = "queued"
+            record["action_ids"] = action_ids
+            self._append_evidence(data, "daily_batch_queued", batch_id, {"action_count": len(action_ids)})
+            self._write(data)
+        return {"batch_id": batch_id, "state": "queued", "operation_count": len(action_ids), "action_ids": action_ids}
+
+    def validate_daily_batch_confirmation(
+        self, batch_id: str, confirmation: str, *, session_id: str | None = None
+    ) -> None:
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if (
+                not isinstance(record, dict)
+                or record.get("kind") != "daily_orchestration"
+                or not self._scope_ok(record, session_id)
+            ):
+                raise BridgeError("BATCH_NOT_FOUND", "The daily batch does not exist.")
+            if confirmation != record.get("confirmation_phrase"):
+                raise BridgeError("CONFIRMATION_MISMATCH", "The confirmation phrase does not match.")
+            if record.get("state") == "prepared" and self._now() > float(record["expires_epoch"]):
+                record["state"] = "expired"
+                self._write(data)
+                raise BridgeError("BATCH_EXPIRED", "The daily batch confirmation expired.")
+            if record.get("state") not in {"prepared", "queued", "partial"}:
+                raise BridgeError(
+                    "BATCH_NOT_READY",
+                    "The daily batch is not ready for execution.",
+                    details={"state": record.get("state")},
+                )
+
+    def daily_batch_status(self, batch_id: str, *, session_id: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            data = self._read()
+            record = data.get("batches", {}).get(batch_id)
+            if (
+                not isinstance(record, dict)
+                or record.get("kind") != "daily_orchestration"
+                or not self._scope_ok(record, session_id)
+            ):
+                raise BridgeError("BATCH_NOT_FOUND", "The daily batch does not exist.")
+            action_ids = list(record.get("action_ids") or [])
+            if not action_ids:
+                return {
+                    "batch_id": batch_id,
+                    "state": record.get("state"),
+                    "planned": len(record.get("operations") or []),
+                    "counts": {"pending": 0, "claimed": 0, "completed": 0, "uncertain": 0, "failed": 0},
+                    "changed": 0,
+                    "remaining": 0,
+                    "results": [],
+                }
+            actions = [data["actions"][aid] for aid in action_ids if aid in data["actions"]]
+            counts = {"pending": 0, "claimed": 0, "completed": 0, "uncertain": 0, "failed": 0}
+            changed = 0
+            results: list[dict[str, Any]] = []
+            for action in actions:
+                status = str(action.get("status", "pending"))
+                counts[status] = counts.get(status, 0) + 1
+                result = action.get("result")
+                if isinstance(result, dict) and result.get("changed") is True:
+                    changed += 1
+                results.append({
+                    "action_id": action["action_id"],
+                    "type": action["type"],
+                    "status": status,
+                    "result": result if status == "completed" else None,
+                    "error": action.get("error"),
+                })
+            if counts["pending"] or counts["claimed"]:
+                state = "queued"
+            elif counts["uncertain"] or counts["failed"]:
+                state = "partial"
+            else:
+                state = "completed"
+            record["state"] = state
+            self._write(data)
+            return {
+                "batch_id": batch_id,
+                "state": state,
+                "planned": len(action_ids),
+                "counts": counts,
+                "changed": changed,
+                "remaining": counts["pending"] + counts["claimed"],
                 "results": results,
             }
 
@@ -1935,7 +2164,7 @@ class BrowserBridge:
                 "verified": True,
                 "changed": bool(result.get("changed", True)),
             }
-        if action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values():
+        if douyin_bridge is not None and action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values():
             action = next(
                 key for key, value in douyin_bridge.ACTION_TYPES_BY_TOOL.items()
                 if value == action_type
@@ -2282,7 +2511,7 @@ def _action_contract(action_type: str) -> tuple[dict[str, Any], dict[str, Any]]:
                 },
             },
         )
-    if action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values():
+    if douyin_bridge is not None and action_type in douyin_bridge.ACTION_TYPES_BY_TOOL.values():
         action = next(
             key for key, value in douyin_bridge.ACTION_TYPES_BY_TOOL.items()
             if value == action_type

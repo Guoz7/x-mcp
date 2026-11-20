@@ -150,9 +150,9 @@ class BrowserCompatibilityContractTests(unittest.TestCase):
             bridge.complete_action(
                 action_id=firefox["action_id"],
                 claim_token=firefox["claim_token"],
-                outcome="uncertain",
-                result=None,
-                error={"code": "CONTROLLED_EXPERIMENT"},
+                outcome="succeeded",
+                result={"username": "guoz7777", "user_id": "1597769294179627010"},
+                error=None,
                 executor_context={"browser_family": "chromium"},
             )
         self.assertEqual(caught.exception.code, "BROWSER_FAMILY_NOT_ALLOWED")

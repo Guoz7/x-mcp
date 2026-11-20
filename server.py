@@ -64,8 +64,7 @@ from write_store import WriteStore, WriteStoreError  # noqa: E402
 import composer  # noqa: E402
 import interaction_batch  # noqa: E402
 import follow_batch  # noqa: E402
-import douyin_batch  # noqa: E402
-import douyin_bridge  # noqa: E402
+import account_orchestrator  # noqa: E402
 
 
 class StarterError(Exception):
@@ -1497,70 +1496,97 @@ class XStarter:
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
             },
             {
-                "name": "douyin_batch_plan",
-                "title": "Plan a bounded Douyin interaction batch",
+                "name": "x_account_health",
+                "title": "Inspect personal X account health and standing score",
                 "description": (
-                    "Plan up to 500 Douyin follows, likes, comments, or favorites from visible observations. "
-                    "Planning is read-only. Every action carries target evidence and a required postcondition check."
+                    "Evaluate durable ledger history, safe pacing budget, warmup readiness, "
+                    "circuit breaker state, and a 0-100 standing score with recommended next maintenance actions."
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "targets": {"type": "array", "minItems": 1, "maxItems": 500, "items": {"type": "object"}},
-                        "chunk_size": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
-                        "budget_seconds": {"type": "integer", "minimum": 1, "maximum": 600, "default": 600},
-                        "allowed_actions": {"type": "array", "items": {"type": "string"}},
+                        "account_snapshot": {"type": "object"},
                     },
-                    "required": ["targets"],
                     "additionalProperties": False,
                 },
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
             },
             {
-                "name": "douyin_batch_prepare",
-                "title": "Prepare a Douyin interaction batch",
-                "description": "Create an expiring confirmation record for a Douyin plan. This does not open Douyin or write state.",
+                "name": "x_content_queue",
+                "title": "Manage personal X content queue",
+                "description": (
+                    "Add, list, remove, or list due original posts and replies in the durable content queue."
+                ),
                 "inputSchema": {
                     "type": "object",
-                    "properties": {"plan": {"type": "object"}, "ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 600}},
+                    "properties": {
+                        "action": {"type": "string", "enum": ["add", "list", "remove", "due"]},
+                        "kind": {"type": "string", "enum": ["original_post", "reply"], "default": "original_post"},
+                        "text": {"type": "string", "maxLength": 280},
+                        "topic": {"type": "string", "maxLength": 80},
+                        "target_url": {"type": "string", "maxLength": 300},
+                        "scheduled_after_epoch": {"type": "number", "minimum": 0, "maximum": 4102444800},
+                        "item_id": {"type": "string", "maxLength": 40},
+                        "status": {"type": "string", "enum": ["queued", "published", "cancelled"]},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
+                "name": "x_daily_orchestrate_plan",
+                "title": "Plan a safe-paced daily X account maintenance wave",
+                "description": (
+                    "Build a deduplicated, circuit-breaker-checked, safe-paced daily plan combining "
+                    "due original posts, timeline likes/reposts, and follow candidates."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "goals": {"type": "object"},
+                        "timeline_posts": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "follow_candidates": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "account_snapshot": {"type": "object"},
+                        "seed": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+                    },
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
+                "name": "x_daily_orchestrate_prepare",
+                "title": "Prepare a daily X maintenance batch for confirmation",
+                "description": (
+                    "Validate a daily orchestration plan against the circuit breaker and safe limits, "
+                    "and return an expiring confirmation phrase without touching X."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "plan": {"type": "object"},
+                        "ttl_seconds": {"type": "integer", "minimum": 60, "maximum": 600, "default": 600},
+                    },
                     "required": ["plan"],
                     "additionalProperties": False,
                 },
                 "annotations": {"readOnlyHint": True, "idempotentHint": False, "openWorldHint": False},
             },
             {
-                "name": "douyin_batch_start",
-                "title": "Start a confirmed Douyin interaction batch",
-                "description": "Queue one leased action per Douyin target after exact confirmation.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"batch_id": {"type": "string", "maxLength": 80}, "confirmation": {"type": "string", "maxLength": 40}},
-                    "required": ["batch_id", "confirmation"],
-                    "additionalProperties": False,
-                },
-                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
-            },
-            {
-                "name": "douyin_batch_status",
-                "title": "Read Douyin interaction batch progress",
-                "description": "Return completed, uncertain, failed, and pending Douyin actions without retrying them.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {"batch_id": {"type": "string", "maxLength": 80}},
-                    "required": ["batch_id"],
-                    "additionalProperties": False,
-                },
-                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False},
-            },
-            {
-                "name": "douyin_batch_execute",
-                "title": "Execute a confirmed Douyin interaction batch",
-                "description": "Execute leased Douyin actions with the built-in browser executor. Stop when the target or postcondition is uncertain; live logged-in Douyin validation is still required.",
+                "name": "x_daily_orchestrate_execute",
+                "title": "Execute a confirmed daily X maintenance batch",
+                "description": (
+                    "Execute a confirmed daily orchestration batch using single-use leases and page verification. "
+                    "Halts immediately on any refusal (141/37/283/161) or uncertain streak."
+                ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "batch_id": {"type": "string", "maxLength": 80},
                         "confirmation": {"type": "string", "maxLength": 40},
+                        "action_limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 15},
+                        "deadline_seconds": {"type": "integer", "minimum": 1, "maximum": 1155, "default": 1155},
+                        "respect_pacing": {"type": "boolean", "default": True},
                         "failure_policy": {"type": "string", "enum": ["stop", "continue"], "default": "stop"},
                     },
                     "required": ["batch_id", "confirmation"],
@@ -1789,16 +1815,16 @@ class XStarter:
                 data = self._x_follow_batch_execute(scoped, trace)
             elif name == "x_follow_batch_status":
                 data = self._x_follow_batch_status(scoped, trace)
-            elif name == "douyin_batch_plan":
-                data = self._douyin_batch_plan(arguments, trace)
-            elif name == "douyin_batch_prepare":
-                data = self._douyin_batch_prepare(scoped, trace)
-            elif name == "douyin_batch_start":
-                data = self._douyin_batch_start(scoped, trace)
-            elif name == "douyin_batch_status":
-                data = self._douyin_batch_status(scoped, trace)
-            elif name == "douyin_batch_execute":
-                data = self._douyin_batch_execute(scoped, trace)
+            elif name == "x_account_health":
+                data = self._x_account_health(arguments, trace)
+            elif name == "x_content_queue":
+                data = self._x_content_queue(arguments, trace)
+            elif name == "x_daily_orchestrate_plan":
+                data = self._x_daily_orchestrate_plan(arguments, trace)
+            elif name == "x_daily_orchestrate_prepare":
+                data = self._x_daily_orchestrate_prepare(scoped, trace)
+            elif name == "x_daily_orchestrate_execute":
+                data = self._x_daily_orchestrate_execute(scoped, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -2680,6 +2706,7 @@ class XStarter:
             if isinstance(chunk, bool) or not isinstance(chunk, int) or not 1 <= chunk <= 100:
                 raise StarterError("INVALID_ARGUMENT", "chunk must be an integer from 1 to 100.")
         session_id = arguments.get("_mcp_session_id")
+        self._assert_circuit_breaker_allows_writes()
         try:
             self._bridge().validate_interaction_batch_confirmation(batch_id, confirmation, session_id=session_id)
             queued = self._bridge().queue_interaction_batch(
@@ -3056,6 +3083,7 @@ class XStarter:
             ):
                 raise StarterError("INVALID_ARGUMENT", "action_limit must be an integer from 1 to 50.")
         session_id = arguments.get("_mcp_session_id")
+        self._assert_circuit_breaker_allows_writes()
         try:
             # Resume calls must enforce the same confirmation and expiry gate
             # as the initial queue call.
@@ -3280,136 +3308,339 @@ class XStarter:
         trace.append(_event("browser_executor", "follow_batch_status_read", batch_id=batch_id, state=result["state"], remaining=result["remaining"]))
         return result
 
-    def _douyin_batch_plan(
-        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        try:
-            result = douyin_batch.plan_batch(
-                arguments.get("targets"),
-                chunk_size=_bounded_int(arguments, "chunk_size", default=20, minimum=1, maximum=50),
-                budget_seconds=_bounded_int(arguments, "budget_seconds", default=600, minimum=1, maximum=600),
-                allowed_actions=arguments.get("allowed_actions"),
-            )
-        except douyin_batch.DouyinBatchPlanError as exc:
-            raise StarterError("INVALID_DOUYIN_BATCH", str(exc)) from None
-        trace.append(_event("douyin_adapter", "batch_planned", operations=result["operation_count"], external_call=False))
-        return result
+    def _content_queue(self) -> account_orchestrator.ContentQueueStore:
+        return account_orchestrator.ContentQueueStore(self._bridge().path.parent)
 
-    def _douyin_batch_prepare(
+    def _assert_circuit_breaker_allows_writes(self) -> None:
+        ledger = self._bridge().read_ledger_snapshot()
+        breaker = account_orchestrator.evaluate_circuit_breaker(ledger)
+        if not breaker["allow_write"]:
+            raise StarterError(
+                "ACCOUNT_COOLDOWN",
+                f"Account writes are blocked by circuit breaker ({breaker['reason']}).",
+                details=breaker,
+            )
+
+    def _x_account_health(
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]
     ) -> dict[str, Any]:
+        snapshot = arguments.get("account_snapshot")
+        if snapshot is not None and not isinstance(snapshot, dict):
+            raise StarterError("INVALID_ARGUMENT", "account_snapshot must be an object.")
+        ledger = self._bridge().read_ledger_snapshot()
+        queue_items = self._content_queue().list()
+        report = account_orchestrator.evaluate_account_health(
+            ledger,
+            account_snapshot=snapshot,
+            content_queue=queue_items,
+        )
+        trace.append(
+            _event(
+                "x_adapter",
+                "account_health_evaluated",
+                standing_score=report["standing_score"],
+                account_status=report["account_status"],
+                external_call=False,
+            )
+        )
+        return report
+
+    def _x_content_queue(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        action = _required_string(arguments, "action", max_length=20)
+        store = self._content_queue()
         try:
-            result = self._bridge().prepare_douyin_batch(
+            if action == "add":
+                item = store.add(
+                    kind=str(arguments.get("kind") or "original_post"),
+                    text=str(arguments.get("text") or ""),
+                    topic=arguments.get("topic"),
+                    target_url=arguments.get("target_url"),
+                    scheduled_after_epoch=arguments.get("scheduled_after_epoch"),
+                )
+                trace.append(_event("x_adapter", "content_queue_added", item_id=item["item_id"], external_call=False))
+                return {"action": "add", "item": item}
+            if action == "list":
+                status = arguments.get("status")
+                items = store.list(status=str(status) if status else None)
+                trace.append(_event("x_adapter", "content_queue_listed", count=len(items), external_call=False))
+                return {"action": "list", "count": len(items), "items": items}
+            if action == "due":
+                items = store.due()
+                trace.append(_event("x_adapter", "content_queue_due", count=len(items), external_call=False))
+                return {"action": "due", "count": len(items), "items": items}
+            if action == "remove":
+                item_id = _required_string(arguments, "item_id", max_length=40)
+                item = store.remove(item_id)
+                trace.append(_event("x_adapter", "content_queue_removed", item_id=item_id, external_call=False))
+                return {"action": "remove", "item": item}
+        except account_orchestrator.OrchestratorError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        raise StarterError("INVALID_ARGUMENT", "action must be add, list, remove, or due.")
+
+    def _x_daily_orchestrate_plan(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        goals = arguments.get("goals")
+        if goals is not None and not isinstance(goals, dict):
+            raise StarterError("INVALID_ARGUMENT", "goals must be an object.")
+        timeline_posts = arguments.get("timeline_posts")
+        if timeline_posts is not None and not isinstance(timeline_posts, list):
+            raise StarterError("INVALID_ARGUMENT", "timeline_posts must be an array.")
+        follow_candidates = arguments.get("follow_candidates")
+        if follow_candidates is not None and not isinstance(follow_candidates, list):
+            raise StarterError("INVALID_ARGUMENT", "follow_candidates must be an array.")
+        snapshot = arguments.get("account_snapshot")
+        if snapshot is not None and not isinstance(snapshot, dict):
+            raise StarterError("INVALID_ARGUMENT", "account_snapshot must be an object.")
+        seed = arguments.get("seed")
+        if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+            raise StarterError("INVALID_ARGUMENT", "seed must be an integer.")
+        ledger = self._bridge().read_ledger_snapshot()
+        queue_items = self._content_queue().list()
+        plan = account_orchestrator.build_daily_orchestration_plan(
+            ledger,
+            goals=goals,
+            timeline_posts=timeline_posts,
+            follow_candidates=follow_candidates,
+            content_queue=queue_items,
+            account_snapshot=snapshot,
+            seed=seed,
+        )
+        trace.append(
+            _event(
+                "x_adapter",
+                "daily_orchestration_planned",
+                operation_count=plan["operation_count"],
+                blocked=plan["blocked"],
+                external_call=False,
+            )
+        )
+        return plan
+
+    def _x_daily_orchestrate_prepare(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        ttl_seconds = _bounded_int(arguments, "ttl_seconds", default=600, minimum=60, maximum=600)
+        try:
+            result = self._bridge().prepare_daily_batch(
                 arguments.get("plan"),
                 session_id=arguments.get("_mcp_session_id"),
-                ttl_seconds=_bounded_int(arguments, "ttl_seconds", default=600, minimum=60, maximum=600),
+                ttl_seconds=ttl_seconds,
             )
         except BridgeError as exc:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
-        trace.append(_event("auth_boundary", "douyin_batch_prepared", batch_id=result["batch_id"], operation_count=result["operation_count"]))
+        trace.append(
+            _event(
+                "auth_boundary",
+                "daily_orchestration_prepared",
+                batch_id=result["batch_id"],
+                operation_count=result["operation_count"],
+            )
+        )
         return result
 
-    def _douyin_batch_start(
+    def _x_daily_orchestrate_execute(
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]
     ) -> dict[str, Any]:
         batch_id = _required_string(arguments, "batch_id", max_length=80)
         confirmation = _required_string(arguments, "confirmation", max_length=40)
-        try:
-            result = self._bridge().queue_douyin_batch(
-                batch_id, confirmation, session_id=arguments.get("_mcp_session_id")
-            )
-        except BridgeError as exc:
-            raise StarterError(exc.code, exc.message, details=exc.details) from None
-        trace.append(_event("auth_boundary", "douyin_batch_queued", batch_id=batch_id, operation_count=result["operation_count"]))
-        return result
-
-    def _douyin_batch_status(
-        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        batch_id = _required_string(arguments, "batch_id", max_length=80)
-        try:
-            result = self._bridge().douyin_batch_status(batch_id, session_id=arguments.get("_mcp_session_id"))
-        except BridgeError as exc:
-            raise StarterError(exc.code, exc.message, details=exc.details) from None
-        trace.append(_event("browser_bridge", "douyin_batch_status_read", batch_id=batch_id, state=result["state"], remaining=result["remaining"]))
-        return result
-
-    def _douyin_batch_execute(
-        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
-    ) -> dict[str, Any]:
-        batch_id = _required_string(arguments, "batch_id", max_length=80)
-        confirmation = _required_string(arguments, "confirmation", max_length=40)
+        action_limit = _bounded_int(arguments, "action_limit", default=15, minimum=1, maximum=50)
+        deadline_seconds = _bounded_int(arguments, "deadline_seconds", default=1155, minimum=1, maximum=1155)
+        respect_pacing = bool(arguments.get("respect_pacing", True))
         failure_policy = arguments.get("failure_policy", "stop")
         if failure_policy not in {"stop", "continue"}:
             raise StarterError("INVALID_ARGUMENT", "failure_policy must be stop or continue.")
         session_id = arguments.get("_mcp_session_id")
+        self._assert_circuit_breaker_allows_writes()
         bridge = self._bridge()
         try:
-            bridge.validate_douyin_batch_confirmation(batch_id, confirmation, session_id=session_id)
+            bridge.validate_daily_batch_confirmation(batch_id, confirmation, session_id=session_id)
             try:
-                queued = bridge.queue_douyin_batch(batch_id, confirmation, session_id=session_id)
+                queued = bridge.queue_daily_batch(batch_id, confirmation, session_id=session_id)
             except BridgeError as exc:
                 if exc.code != "BATCH_NOT_READY":
                     raise
-                state = bridge.douyin_batch_status(batch_id, session_id=session_id)
-                if state.get("state") not in {"queued", "partial"}:
+                existing = bridge.daily_batch_status(batch_id, session_id=session_id)
+                if existing.get("state") not in {"queued", "partial"}:
                     raise
-                queued = {"batch_id": batch_id, "operation_count": state["planned"], "action_ids": [item["action_id"] for item in state["results"]]}
+                queued = {
+                    "batch_id": batch_id,
+                    "operation_count": existing["planned"],
+                    "action_ids": [item["action_id"] for item in existing["results"]],
+                }
         except BridgeError as exc:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
 
+        from account_state import classify_refusal
+
         results: list[dict[str, Any]] = []
         started = time.monotonic()
-        for _ in queued["action_ids"]:
+        stop_reason = None
+        verified_changed = 0
+        uncertain_streak = 0
+        browser = None
+        queue_store = self._content_queue()
+
+        for index, _ in enumerate(queued["action_ids"]):
+            if index >= action_limit:
+                stop_reason = "ACTION_LIMIT_REACHED"
+                break
+            if time.monotonic() - started >= deadline_seconds:
+                stop_reason = "DEADLINE_REACHED"
+                break
             action = bridge.next_action(lease_seconds=300, session_id=session_id, batch_id=batch_id)
             if action is None:
                 break
-            browser = self._browser_for(arguments)
             payload = action.get("payload") or {}
+            delay = int(payload.get("delay_before_seconds") or 0)
+            if respect_pacing and delay > 0:
+                remaining_budget = max(0.0, deadline_seconds - (time.monotonic() - started))
+                if delay >= remaining_budget:
+                    stop_reason = "DEADLINE_REACHED"
+                    break
+                time.sleep(delay)
+
+            if browser is None:
+                browser = self._browser_for(arguments)
             try:
                 verified = bridge.verify_claim(action["action_id"], action["claim_token"], session_id=session_id)
-                browser.authorize_douyin_action(
-                    action_id=action["action_id"], claim_token=action["claim_token"],
-                    lease_expires_epoch=verified["lease_expires_epoch"], action_type=action["type"],
-                )
-                result = browser.execute_douyin_action(
-                    action_type=action["type"], target_url=str(payload.get("url")),
-                    target_id=str(payload.get("target_id")), text=payload.get("text"),
-                    action_id=action["action_id"], claim_token=action["claim_token"],
+                browser.authorize_x_action(
+                    action_id=action["action_id"],
+                    claim_token=action["claim_token"],
                     lease_expires_epoch=verified["lease_expires_epoch"],
+                    action_type=action["type"],
                 )
+                kind = action["type"]
+                if kind == "publish_post":
+                    raw = browser.execute_x_action(
+                        action_type="publish_post",
+                        text=str(payload.get("text") or ""),
+                        action_id=action["action_id"],
+                        claim_token=action["claim_token"],
+                        lease_expires_epoch=verified["lease_expires_epoch"],
+                    )
+                elif kind in {"like_post", "repost_post"}:
+                    raw = browser.execute_x_action(
+                        action_type=kind,
+                        post_url=str(payload.get("post_url") or payload.get("url") or ""),
+                        action_id=action["action_id"],
+                        claim_token=action["claim_token"],
+                        lease_expires_epoch=verified["lease_expires_epoch"],
+                    )
+                else:
+                    raw = browser.execute_x_action(
+                        action_type="follow_profile",
+                        profile_url=str(payload.get("profile_url") or ""),
+                        action_id=action["action_id"],
+                        claim_token=action["claim_token"],
+                        lease_expires_epoch=verified["lease_expires_epoch"],
+                    )
+
                 completed = bridge.complete_action(
-                    action_id=action["action_id"], claim_token=action["claim_token"],
-                    outcome="succeeded", result=result, error=None,
-                    executor_context={"browser_family": getattr(browser, "browser_family", "chromium"), "host": "douyin.com", "mode": "browser", "page_kind": "douyin_video"},
-                    locator_strategy=result.get("locator_strategy", "dom"), session_id=session_id,
+                    action_id=action["action_id"],
+                    claim_token=action["claim_token"],
+                    outcome="succeeded",
+                    result=raw,
+                    error=None,
+                    executor_context={
+                        "browser_family": getattr(browser, "browser_family", "chromium"),
+                        "host": "x.com",
+                        "mode": self.mode,
+                        "page_kind": "x_home" if kind == "publish_post" else ("x_profile" if kind == "follow_profile" else "x_status"),
+                    },
+                    locator_strategy=raw.get("locator_strategy", "dom"),
+                    session_id=session_id,
                 )
-                results.append({"action_id": action["action_id"], "status": completed["status"], "result": completed.get("result")})
+                uncertain_streak = 0
+                completed_result = completed.get("result")
+                if isinstance(completed_result, dict) and (
+                    completed_result.get("changed") is True
+                    or (kind == "publish_post" and completed_result.get("verified") is True)
+                ):
+                    verified_changed += 1
+                if kind == "publish_post" and payload.get("queue_item_id"):
+                    try:
+                        queue_store.mark_published(
+                            str(payload["queue_item_id"]),
+                            published_url=(completed.get("result") or {}).get("post_url"),
+                            action_id=action["action_id"],
+                        )
+                    except account_orchestrator.OrchestratorError:
+                        pass
+                results.append({
+                    "action_id": action["action_id"],
+                    "type": kind,
+                    "status": completed["status"],
+                    "result": completed.get("result"),
+                })
             except (BridgeError, ExecutorError, StarterError) as exc:
+                details = getattr(exc, "details", {}) or {}
+                rejection = details.get("rejection") if isinstance(details, dict) else None
+                verdict = classify_refusal(rejection if isinstance(rejection, dict) else None)
                 error = {
                     "code": getattr(exc, "code", "ACTION_UNCERTAIN"),
                     "message": str(exc),
-                    "details": getattr(exc, "details", {}),
+                    "details": details,
                 }
+                outcome = "failed" if verdict in {"suspended", "policy", "allowance"} else "uncertain"
                 try:
                     bridge.complete_action(
-                        action_id=action["action_id"], claim_token=action["claim_token"],
-                        outcome="uncertain", result=None, error=error,
-                        executor_context={"browser_family": getattr(browser, "browser_family", "chromium"), "host": "douyin.com", "mode": "browser", "page_kind": "douyin_video"},
+                        action_id=action["action_id"],
+                        claim_token=action["claim_token"],
+                        outcome=outcome,
+                        result=None,
+                        error=error,
+                        executor_context={
+                            "browser_family": getattr(browser, "browser_family", "chromium"),
+                            "host": "x.com",
+                            "mode": self.mode,
+                            "page_kind": "x_unknown",
+                        },
                         session_id=session_id,
                     )
                 except BridgeError:
                     pass
-                results.append({"action_id": action["action_id"], "status": "uncertain", "error": error})
-                if failure_policy == "stop":
+                results.append({
+                    "action_id": action["action_id"],
+                    "type": action["type"],
+                    "status": outcome,
+                    "error": error,
+                })
+                if verdict in {"suspended", "policy", "allowance"}:
+                    stop_reason = f"REFUSAL_CIRCUIT_BREAKER_{verdict.upper()}"
                     break
-        trace.append(_event("browser_executor", "douyin_batch_executed", batch_id=batch_id, actions=len(results)))
+                if outcome == "uncertain":
+                    uncertain_streak += 1
+                    if uncertain_streak >= 2:
+                        stop_reason = "UNCERTAIN_STREAK_CIRCUIT_BREAKER"
+                        break
+                if failure_policy == "stop":
+                    stop_reason = error["code"]
+                    break
+
+        status_after = bridge.daily_batch_status(batch_id, session_id=session_id)
+        trace.append(
+            _event(
+                "browser_executor",
+                "daily_orchestration_executed",
+                batch_id=batch_id,
+                processed=len(results),
+                verified_changed=verified_changed,
+                stop_reason=stop_reason,
+            )
+        )
         return {
-            "batch_id": batch_id, "planned": queued["operation_count"], "processed": len(results),
-            "results": results, "elapsed_seconds": round(time.monotonic() - started, 3),
-            "stopped_on_uncertainty": any(item["status"] == "uncertain" for item in results),
-            "failure_policy": failure_policy, "browser_closed": False,
-            "disclosure": "The built-in Douyin executor is implemented but has not been validated against a live logged-in Douyin session. Each action still requires a fresh target check and a proven postcondition; otherwise it is recorded as uncertain.",
+            "batch_id": batch_id,
+            "planned": queued["operation_count"],
+            "processed": len(results),
+            "verified_changed": verified_changed,
+            "stop_reason": stop_reason,
+            "status": status_after["state"],
+            "remaining": status_after["remaining"],
+            "results": results,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
         }
 
     def _require_connected(self) -> None:
