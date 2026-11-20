@@ -481,6 +481,56 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             self.assertTrue(stopped["ok"])
             self.assertFalse(stopped["data"]["enabled"])
 
+    def test_topic_relevance_filter_search_and_scheduler(self) -> None:
+        ledger = {"account_binding": "guoz7777", "actions": {}}
+        plan = build_daily_orchestration_plan(
+            ledger,
+            goals={"publish_post": 0, "like_post": 2, "follow_profile": 0},
+            timeline_posts=[
+                {"url": "https://x.com/spam/status/1", "author": "spam", "text": "Free crypto airdrop giveaway!"},
+                {"url": "https://x.com/other/status/2", "author": "other", "text": "Good morning everyone"},
+                {"url": "https://x.com/ai/status/3", "author": "ai", "text": "Building an AI Agent with MCP"},
+            ],
+            account_snapshot={"posts_count": 75},
+            persona_topics=["AI", "MCP"],
+            exclude_keywords=["airdrop", "giveaway"],
+            seed=1,
+        )
+        urls = [op["url"] for op in plan["operations"]]
+        self.assertNotIn("https://x.com/spam/status/1", urls)
+        # Topic-matching post must be ranked first.
+        self.assertEqual(urls[0], "https://x.com/ai/status/3")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = XStarter(
+                mode="browser",
+                environ={
+                    "X_STARTER_MODE": "browser",
+                    "X_STARTER_ENABLE_BROWSER": "1",
+                    "X_STARTER_STATE_DIR": tmp,
+                },
+            )
+            try:
+                mock_browser = MagicMock()
+                mock_browser.open.return_value = {
+                    "url": "https://x.com/search?q=MCP&f=live",
+                    "text": "MCP post",
+                    "articles": [{"text": "MCP search hit", "links": ["https://x.com/dev/status/901"]}],
+                }
+                app._browser_for = lambda _args: mock_browser
+                srch = app.call_tool("x_search_posts", {"query": "MCP", "limit": 5})
+                self.assertTrue(srch["ok"])
+                self.assertEqual(srch["data"]["posts"][0]["url"], "https://x.com/dev/status/901")
+
+                st = app.call_tool("x_autopilot", {"action": "scheduler_start"})
+                self.assertTrue(st["ok"])
+                self.assertTrue(st["data"]["scheduler"]["running"])
+                sp = app.call_tool("x_autopilot", {"action": "scheduler_stop"})
+                self.assertTrue(sp["ok"])
+                self.assertFalse(sp["data"]["scheduler"]["running"])
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()

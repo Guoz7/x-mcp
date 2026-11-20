@@ -243,6 +243,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
         <input id="gRepost" type="number" min="0" max="40" value="2">
       </div>
     </div>
+    <div class="grid-2" style="margin-top:10px;">
+      <div>
+        <label>兴趣关键词（逗号分隔，优先互动）</label>
+        <input id="personaTopics" placeholder="例如：AI, Agent, MCP, 开源, 芯片">
+      </div>
+      <div>
+        <label>关键词搜索发现（可选，抓取同圈层热帖）</label>
+        <div class="row">
+          <input id="searchQuery" placeholder="例如：AI Agent MCP" style="flex:1;">
+          <button onclick="searchPosts()">搜索帖子</button>
+        </div>
+      </div>
+    </div>
     <div class="row" style="margin-top:12px;">
       <button class="primary" onclick="planDaily()">1. 生成安全编排计划</button>
       <button id="btnPrepare" onclick="prepareDaily()" disabled>2. 锁定并生成确认短语</button>
@@ -285,6 +298,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       <input id="apConfirmInput" placeholder="输入授权短语（如 AUTOPILOT A1B2C3）" style="max-width:250px;" disabled>
       <button id="btnApActivate" onclick="activateAutopilot()" disabled>2. 启用托管</button>
       <button id="btnApRunWave" onclick="runAutopilotWave()" disabled>立即跑一小波</button>
+      <button id="btnApSchedStart" onclick="toggleScheduler(true)" disabled>开启后台定时</button>
+      <button id="btnApSchedStop" onclick="toggleScheduler(false)" disabled>停止后台定时</button>
       <button id="btnApStop" onclick="stopAutopilot()" disabled>紧急停机</button>
     </div>
     <div id="apToast" class="toast"></div>
@@ -470,6 +485,23 @@ function updatePoolSummary() {
   document.getElementById('poolSummary').textContent = `时间线候选 ${state.timelinePosts.length} 条 · 关注候选 ${state.followCandidates.length} 人`;
 }
 
+async function searchPosts() {
+  const query = document.getElementById('searchQuery').value.trim();
+  if (!query) return showToast('orchToast', false, '请先输入要搜索的领域关键词。');
+  const res = await callTool('x_search_posts', { query, limit: 15, sort: 'live' });
+  if (!res.ok) return showToast('orchToast', false, res.error?.message || '搜索失败');
+  const found = res.data?.posts || [];
+  const seen = new Set(state.timelinePosts.map(p => p.url));
+  for (const p of found) {
+    if (!seen.has(p.url)) {
+      state.timelinePosts.push(p);
+      seen.add(p.url);
+    }
+  }
+  updatePoolSummary();
+  showToast('orchToast', true, `搜索「${query}」新增 ${found.length} 条帖子，当前候选池共 ${state.timelinePosts.length} 条。`);
+}
+
 async function planDaily() {
   const goals = {
     publish_post: Number(document.getElementById('gPublish').value || 0),
@@ -477,11 +509,14 @@ async function planDaily() {
     follow_profile: Number(document.getElementById('gFollow').value || 0),
     repost_post: Number(document.getElementById('gRepost').value || 0),
   };
+  const topics = document.getElementById('personaTopics').value.split(/[,，]/).map(s => s.trim()).filter(Boolean);
   const res = await callTool('x_daily_orchestrate_plan', {
     goals,
     timeline_posts: state.timelinePosts,
     follow_candidates: state.followCandidates,
     account_snapshot: state.accountSnapshot || undefined,
+    persona_topics: topics.length ? topics : undefined,
+    exclude_keywords: ['airdrop', 'giveaway', '抽奖', '互粉'],
   });
   if (!res.ok) return showToast('orchToast', false, res.error?.message || '生成计划失败');
   state.currentPlan = res.data;
@@ -565,9 +600,12 @@ async function refreshAutopilot() {
   const ap = d.autopilot || {};
   const pill = document.getElementById('apPill');
   const enabled = Boolean(ap.enabled);
-  pill.textContent = enabled ? '托管运行中' : '未启用';
+  const schedRunning = Boolean(ap.scheduler?.running);
+  pill.textContent = enabled ? (schedRunning ? '托管 + 后台定时运行中' : '托管已启用') : '未启用';
   pill.className = 'pill ' + (enabled ? 'ok' : 'warn');
   document.getElementById('btnApRunWave').disabled = !enabled;
+  document.getElementById('btnApSchedStart').disabled = !enabled || schedRunning;
+  document.getElementById('btnApSchedStop').disabled = !schedRunning;
   document.getElementById('btnApStop').disabled = !enabled;
   if (ap.active_window) {
     document.getElementById('opsWaveCfg').textContent = `${ap.active_window.max_per_wave} 次 · ${ap.active_window.min_wave_interval_minutes}m`;
@@ -581,7 +619,17 @@ async function refreshAutopilot() {
 }
 
 async function prepareAutopilot() {
-  const res = await callTool('x_autopilot', { action: 'prepare', days: 7, max_per_wave: 4, min_wave_interval_minutes: 90 });
+  const topics = document.getElementById('personaTopics').value.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+  const query = document.getElementById('searchQuery').value.trim();
+  const res = await callTool('x_autopilot', {
+    action: 'prepare',
+    days: 7,
+    max_per_wave: 4,
+    min_wave_interval_minutes: 90,
+    persona_topics: topics.length ? topics : undefined,
+    exclude_keywords: ['airdrop', 'giveaway', '抽奖', '互粉'],
+    search_query: query || undefined,
+  });
   if (!res.ok) return showToast('apToast', false, res.error?.message || '生成授权失败');
   apPrepared = res.data;
   document.getElementById('apConfirmInput').disabled = false;
@@ -620,6 +668,13 @@ async function runAutopilotWave() {
     showToast('apToast', true, `波次完成：处理 ${exe.processed}/${exe.planned}，成功 ${exe.verified_changed}${exe.stop_reason ? '（' + exe.stop_reason + '）' : ''}`);
   }
   refreshAll();
+}
+
+async function toggleScheduler(start) {
+  const res = await callTool('x_autopilot', { action: start ? 'scheduler_start' : 'scheduler_stop' });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '调度器切换失败');
+  showToast('apToast', true, start ? '已开启后台定时托管调度（每分钟检查波次窗口）。' : '已停止后台定时调度。');
+  refreshAutopilot();
 }
 
 async function stopAutopilot() {

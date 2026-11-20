@@ -70,6 +70,9 @@ class AutopilotStore:
         max_per_wave: int = 4,
         min_wave_interval_minutes: int = 90,
         daily_goals: dict[str, int] | None = None,
+        persona_topics: list[str] | None = None,
+        exclude_keywords: list[str] | None = None,
+        search_query: str | None = None,
         now_epoch: float | None = None,
     ) -> dict[str, Any]:
         now = float(now_epoch) if now_epoch is not None else time.time()
@@ -102,6 +105,9 @@ class AutopilotStore:
             "max_per_wave": int(max_per_wave),
             "min_wave_interval_minutes": int(min_wave_interval_minutes),
             "daily_goals": goals,
+            "persona_topics": [str(k).strip() for k in (persona_topics or []) if str(k).strip()][:20],
+            "exclude_keywords": [str(k).strip() for k in (exclude_keywords or []) if str(k).strip()][:20],
+            "search_query": str(search_query).strip()[:120] if search_query else None,
             "created_at": _iso(now),
             "expires_epoch": now + 600,
         }
@@ -149,6 +155,9 @@ class AutopilotStore:
                 "max_per_wave": prep["max_per_wave"],
                 "min_wave_interval_minutes": prep["min_wave_interval_minutes"],
                 "daily_goals": prep["daily_goals"],
+                "persona_topics": prep.get("persona_topics") or [],
+                "exclude_keywords": prep.get("exclude_keywords") or [],
+                "search_query": prep.get("search_query"),
                 "last_wave_epoch": None,
                 "stop_reason": None,
             }
@@ -281,3 +290,62 @@ def build_ops_summary(
         "daily_breakdown": [{"date": d, **daily[d]} for d in days],
         "autopilot": autopilot_status,
     }
+
+
+class AutopilotScheduler:
+    """Lightweight background daemon thread that runs due autopilot waves."""
+
+    def __init__(self, tick_fn: Any, *, poll_seconds: float = 60.0) -> None:
+        import threading
+
+        self._tick_fn = tick_fn
+        self._poll_seconds = max(1.0, float(poll_seconds))
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._last_error: str | None = None
+        self._ticks = 0
+
+    def start(self) -> bool:
+        import threading
+
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return False
+            self._stop_event.clear()
+            self._thread = threading.Thread(target=self._loop, name="x-autopilot-scheduler", daemon=True)
+            self._thread.start()
+            return True
+
+    def stop(self) -> bool:
+        with self._lock:
+            t = self._thread
+            self._stop_event.set()
+            self._thread = None
+        if t is not None and t.is_alive():
+            t.join(timeout=2.0)
+            return True
+        return False
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            running = self._thread is not None and self._thread.is_alive()
+            return {
+                "running": running,
+                "poll_seconds": self._poll_seconds,
+                "ticks": self._ticks,
+                "last_error": self._last_error,
+            }
+
+    def _loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._tick_fn()
+                with self._lock:
+                    self._last_error = None
+            except Exception as exc:  # noqa: BLE001
+                with self._lock:
+                    self._last_error = str(exc)[:200]
+            with self._lock:
+                self._ticks += 1
+            self._stop_event.wait(self._poll_seconds)

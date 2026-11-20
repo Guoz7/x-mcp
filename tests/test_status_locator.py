@@ -20,10 +20,10 @@ class StatusLocatorTest(unittest.TestCase):
         self.text = SOURCE.read_text(encoding="utf-8")
 
     def test_locator_accepts_a_status_sub_path(self):
-        self.assertIn('a[href^="{status_path}"]', self.text)
+        self.assertIn('a[href^="{status_path}" i]', self.text)
 
     def test_a_bare_status_href_is_still_attempted_first(self):
-        self.assertIn('a[href="{status_path}"]', self.text)
+        self.assertIn('a[href="{status_path}" i]', self.text)
 
     def test_the_prefix_cannot_cross_into_another_status(self):
         # The prefix is the whole "/handle/status/<id>" path, so a longer id

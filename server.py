@@ -263,6 +263,7 @@ class XStarter:
         self.x_public = PublicXClient()
         self.environ = dict(os.environ if environ is None else environ)
         self.mode = (mode or self.environ.get("X_STARTER_MODE", "mock")).strip().lower()
+        self._scheduler: autopilot_ops.AutopilotScheduler | None = None
         if self.mode not in {"mock", "live", "browser"}:
             raise StarterError(
                 "INVALID_MODE",
@@ -423,6 +424,8 @@ class XStarter:
                 self._owner_session = None
 
     def close(self) -> None:
+        if self._scheduler is not None:
+            self._scheduler.stop()
         with self._browser_lock:
             self._browser_closed = True
             for session_id in list(self._browsers):
@@ -1549,6 +1552,8 @@ class XStarter:
                         "timeline_posts": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
                         "follow_candidates": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
                         "account_snapshot": {"type": "object"},
+                        "persona_topics": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 40}},
+                        "exclude_keywords": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 40}},
                         "seed": {"type": "integer", "minimum": 0, "maximum": 1000000000},
                     },
                     "additionalProperties": False,
@@ -1605,12 +1610,15 @@ class XStarter:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "ops_summary"]},
+                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "ops_summary", "scheduler_start", "scheduler_stop"]},
                         "days": {"type": "integer", "minimum": 1, "maximum": 30, "default": 7},
                         "active_hours": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 24}},
                         "max_per_wave": {"type": "integer", "minimum": 1, "maximum": 10, "default": 4},
                         "min_wave_interval_minutes": {"type": "integer", "minimum": 15, "maximum": 720, "default": 90},
                         "daily_goals": {"type": "object"},
+                        "persona_topics": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 40}},
+                        "exclude_keywords": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 40}},
+                        "search_query": {"type": "string", "maxLength": 120},
                         "window_id": {"type": "string", "maxLength": 40},
                         "confirmation": {"type": "string", "maxLength": 40},
                         "timeline_posts": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
@@ -1623,6 +1631,24 @@ class XStarter:
                     "additionalProperties": False,
                 },
                 "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+            },
+            {
+                "name": "x_search_posts",
+                "title": "Search X posts by topic keyword",
+                "description": (
+                    "Read-only search on X for niche posts and active authors matching a query."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 15},
+                        "sort": {"type": "string", "enum": ["live", "top"], "default": "live"},
+                    },
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
             },
             {
                 "name": "account_summary",
@@ -1857,6 +1883,8 @@ class XStarter:
                 data = self._x_daily_orchestrate_execute(scoped, trace)
             elif name == "x_autopilot":
                 data = self._x_autopilot(scoped, trace)
+            elif name == "x_search_posts":
+                data = self._x_search_posts(scoped, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -3438,6 +3466,8 @@ class XStarter:
             follow_candidates=follow_candidates,
             content_queue=queue_items,
             account_snapshot=snapshot,
+            persona_topics=arguments.get("persona_topics"),
+            exclude_keywords=arguments.get("exclude_keywords"),
             seed=seed,
         )
         trace.append(
@@ -3689,6 +3719,30 @@ class XStarter:
             "elapsed_seconds": round(time.monotonic() - started, 3),
         }
 
+    def _x_search_posts(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        if self.mode != "browser":
+            raise StarterError("BROWSER_BRIDGE_REQUIRED", "x_search_posts requires X_STARTER_MODE=browser.")
+        query = _required_string(arguments, "query", max_length=120)
+        limit = _bounded_int(arguments, "limit", default=15, minimum=1, maximum=50)
+        sort = str(arguments.get("sort") or "live")
+        if sort not in {"live", "top"}:
+            raise StarterError("INVALID_ARGUMENT", "sort must be live or top.")
+        browser = self._browser_for(arguments)
+        try:
+            result = browser_read.read_search_posts(
+                browser,
+                query,
+                limit=limit,
+                sort=sort,
+                base_url=self.environ.get("X_STARTER_READ_BASE_URL"),
+            )
+        except browser_read.ReadError as exc:
+            raise StarterError(exc.code, exc.message, details=exc.details) from None
+        trace.append(_event("browser_executor", "search_posts_read", query=query, count=len(result.get("posts") or [])))
+        return result
+
     def _autopilot_store(self) -> autopilot_ops.AutopilotStore:
         return autopilot_ops.AutopilotStore(self._bridge().path.parent)
 
@@ -3700,13 +3754,26 @@ class XStarter:
         try:
             if action == "status":
                 res = store.status()
+                res["scheduler"] = self._scheduler.status() if self._scheduler is not None else {"running": False}
                 trace.append(_event("x_adapter", "autopilot_status_read", enabled=res["enabled"], external_call=False))
                 return res
             if action == "ops_summary":
                 ledger = self._bridge().read_ledger_snapshot()
-                res = autopilot_ops.build_ops_summary(ledger, store.status())
+                st = store.status()
+                st["scheduler"] = self._scheduler.status() if self._scheduler is not None else {"running": False}
+                res = autopilot_ops.build_ops_summary(ledger, st)
                 trace.append(_event("x_adapter", "autopilot_ops_summary_read", external_call=False))
                 return res
+            if action == "scheduler_start":
+                if self._scheduler is None:
+                    self._scheduler = autopilot_ops.AutopilotScheduler(
+                        lambda: self._x_autopilot({"action": "run_wave"}, [])
+                    )
+                started_now = self._scheduler.start()
+                return {"started": started_now, "scheduler": self._scheduler.status()}
+            if action == "scheduler_stop":
+                stopped_now = self._scheduler.stop() if self._scheduler is not None else False
+                return {"stopped": stopped_now, "scheduler": self._scheduler.status() if self._scheduler is not None else {"running": False}}
             if action == "prepare":
                 res = store.prepare_window(
                     days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),
@@ -3714,6 +3781,9 @@ class XStarter:
                     max_per_wave=_bounded_int(arguments, "max_per_wave", default=4, minimum=1, maximum=10),
                     min_wave_interval_minutes=_bounded_int(arguments, "min_wave_interval_minutes", default=90, minimum=15, maximum=720),
                     daily_goals=arguments.get("daily_goals"),
+                    persona_topics=arguments.get("persona_topics"),
+                    exclude_keywords=arguments.get("exclude_keywords"),
+                    search_query=arguments.get("search_query"),
                 )
                 trace.append(_event("auth_boundary", "autopilot_window_prepared", window_id=res["window_id"], external_call=False))
                 return res
@@ -3749,13 +3819,27 @@ class XStarter:
                     )
                 window = status["active_window"]
                 max_wave = int(window.get("max_per_wave", 4))
+                timeline_posts = arguments.get("timeline_posts")
+                if timeline_posts is None and self.mode == "browser":
+                    try:
+                        if window.get("search_query"):
+                            timeline_posts = self._x_search_posts({"query": window["search_query"], "limit": 10}, trace).get("posts")
+                        else:
+                            browser = self._browser_for(arguments)
+                            timeline_posts = browser_read.read_timeline(
+                                browser, limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                            ).get("posts")
+                    except (StarterError, ExecutorError, browser_read.ReadError):
+                        timeline_posts = []
                 plan = account_orchestrator.build_daily_orchestration_plan(
                     ledger,
                     goals=window.get("daily_goals"),
-                    timeline_posts=arguments.get("timeline_posts"),
+                    timeline_posts=timeline_posts,
                     follow_candidates=arguments.get("follow_candidates"),
                     content_queue=self._content_queue().list(),
                     account_snapshot=arguments.get("account_snapshot"),
+                    persona_topics=window.get("persona_topics"),
+                    exclude_keywords=window.get("exclude_keywords"),
                 )
                 if plan.get("blocked"):
                     store.stop_window(reason=f"circuit_breaker:{plan.get('reason')}")
@@ -5664,6 +5748,7 @@ def make_http_handler(
                     "x_daily_orchestrate_prepare",
                     "x_daily_orchestrate_execute",
                     "x_autopilot",
+                    "x_search_posts",
                     "x_compose_check",
                 }
                 if tool not in allowed_ui_tools:

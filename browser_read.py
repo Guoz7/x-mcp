@@ -16,6 +16,7 @@ fields the schema requires, the caller gets a typed error instead of a guess.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -264,19 +265,18 @@ def read_account(browser: Browser, *, base_url: str | None = None) -> dict[str, 
     }
 
 
-def read_timeline(
-    browser: Browser, *, limit: int = 20, base_url: str | None = None
+def _read_feed_url(
+    browser: Browser,
+    feed_url: str,
+    *,
+    limit: int,
+    base: str,
+    empty_code: str,
+    empty_message: str,
 ) -> dict[str, Any]:
-    """Read canonical posts from the visible home timeline.
-
-    X virtualizes the feed, so one observation often exposes fewer posts than
-    the requested limit. Scroll through a bounded number of observations and
-    merge the visible results. The browser still returns only page evidence.
-    """
-
-    base = _base_url(base_url)
+    """Read canonical posts from any scrollable X feed page."""
     try:
-        home = browser.open(f"{base}/home")
+        home = browser.open(feed_url)
     except ExecutorError as exc:
         raise ReadError(exc.code, exc.message) from None
     _detect_login_wall(home)
@@ -289,10 +289,20 @@ def read_timeline(
     while True:
         observations += 1
         articles = home.get("articles") or []
+        if not articles and not posts and observations == 1 and empty_code == "SEARCH_EMPTY" and hasattr(browser, "observe"):
+            for _ in range(2):
+                time.sleep(2.0)
+                try:
+                    home = browser.observe()
+                except ExecutorError:
+                    break
+                articles = home.get("articles") or []
+                if articles:
+                    break
         if not articles and not posts:
             raise ReadError(
-                "TIMELINE_EMPTY",
-                "No posts were visible on the home timeline.",
+                empty_code,
+                empty_message,
                 details={"url_path": home["url"].split("?")[0][:120]},
             )
 
@@ -317,14 +327,9 @@ def read_timeline(
         if len(posts) >= limit:
             break
 
-        # Keep the read bounded. If a mock or an older executor does not
-        # expose observation-bound scrolling, return the evidence already seen.
         if scrolls >= 60:
             break
         try:
-            # Keep feed pagination inside the trusted browser reader. X can
-            # rerender between MCP turns, which makes caller-held fingerprints
-            # stale even though the page is still usable.
             if hasattr(browser, "scroll_current"):
                 next_home = browser.scroll_current(delta_y=1200)
             else:
@@ -357,6 +362,51 @@ def read_timeline(
         "scrolls": scrolls,
         "skipped_without_permalink": skipped_without_link,
     }
+
+
+def read_timeline(
+    browser: Browser, *, limit: int = 20, base_url: str | None = None
+) -> dict[str, Any]:
+    """Read canonical posts from the visible home timeline."""
+    base = _base_url(base_url)
+    return _read_feed_url(
+        browser,
+        f"{base}/home",
+        limit=limit,
+        base=base,
+        empty_code="TIMELINE_EMPTY",
+        empty_message="No posts were visible on the home timeline.",
+    )
+
+
+def read_search_posts(
+    browser: Browser,
+    query: str,
+    *,
+    limit: int = 15,
+    sort: str = "live",
+    base_url: str | None = None,
+) -> dict[str, Any]:
+    """Read canonical posts from X search results for niche audience discovery."""
+    from urllib.parse import quote_plus
+
+    cleaned = str(query or "").strip()
+    if not cleaned:
+        raise ReadError("INVALID_ARGUMENT", "query must be a non-empty search string.")
+    base = _base_url(base_url)
+    tab = "top" if sort == "top" else "live"
+    feed_url = f"{base}/search?q={quote_plus(cleaned)}&src=typed_query&f={tab}"
+    result = _read_feed_url(
+        browser,
+        feed_url,
+        limit=limit,
+        base=base,
+        empty_code="SEARCH_EMPTY",
+        empty_message="No posts were visible for the search query.",
+    )
+    result["query"] = cleaned
+    result["sort"] = tab
+    return result
 
 
 def executor_context(browser: Browser) -> dict[str, Any]:

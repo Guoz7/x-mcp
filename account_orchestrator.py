@@ -628,6 +628,24 @@ def score_follow_candidate(cand: dict[str, Any]) -> tuple[int, str]:
     return (score, handle)
 
 
+def score_post_relevance(
+    post: dict[str, Any],
+    *,
+    persona_topics: list[str] | None = None,
+    exclude_keywords: list[str] | None = None,
+) -> tuple[bool, int]:
+    """Return (allowed, relevance_score) for a timeline/search post."""
+    text = str(post.get("text") or "").casefold()
+    excludes = [str(k).strip().casefold() for k in (exclude_keywords or []) if str(k).strip()]
+    if any(k in text for k in excludes):
+        return (False, -100)
+    topics = [str(k).strip().casefold() for k in (persona_topics or []) if str(k).strip()]
+    if not topics:
+        return (True, 0)
+    hits = sum(1 for k in topics if k in text)
+    return (True, hits * 10)
+
+
 def build_daily_orchestration_plan(
     ledger: dict[str, Any],
     *,
@@ -636,6 +654,8 @@ def build_daily_orchestration_plan(
     follow_candidates: list[dict[str, Any]] | None = None,
     content_queue: list[dict[str, Any]] | None = None,
     account_snapshot: dict[str, Any] | None = None,
+    persona_topics: list[str] | None = None,
+    exclude_keywords: list[str] | None = None,
     profile: dict[str, Any] | None = None,
     now_epoch: float | None = None,
     seed: int | None = None,
@@ -720,11 +740,18 @@ def build_daily_orchestration_plan(
                         "queue_item_id": item.get("item_id"),
                     })
 
-    # 2. Deduplicated timeline posts for likes and reposts (prefer distinct targets).
-    clean_posts: list[dict[str, str]] = []
+    # 2. Deduplicated & topic-ranked timeline/search posts for likes and reposts.
+    clean_posts: list[dict[str, Any]] = []
     local_seen_urls = set(seen_urls)
     for post in (timeline_posts or []):
         if not isinstance(post, dict):
+            continue
+        allowed, rel_score = score_post_relevance(
+            post,
+            persona_topics=persona_topics,
+            exclude_keywords=exclude_keywords,
+        )
+        if not allowed:
             continue
         raw_url = str(post.get("url") or post.get("post_url") or "").strip()
         match = _STATUS_URL_RE.match(raw_url)
@@ -738,7 +765,9 @@ def build_daily_orchestration_plan(
             "url": canonical,
             "author": str(post.get("author") or match.group(1)).lstrip("@"),
             "text_preview": str(post.get("text") or "")[:100],
+            "relevance_score": rel_score,
         })
+    clean_posts.sort(key=lambda item: item["relevance_score"], reverse=True)
 
     for post in clean_posts:
         if len(buckets["like_post"]) < capped["like_post"]:
