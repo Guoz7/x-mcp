@@ -1572,14 +1572,14 @@ class Browser:
             # screen. Accept the status id followed by a path boundary, which
             # still cannot cross into a different status id.
             locator = self.page.locator(
-                f'article[data-testid="tweet"]:has(a[href^="{status_path}"])'
+                f'article[data-testid="tweet"]:has(a[href^="{status_path}" i])'
             )
             count = locator.count()
             if count > 1:
                 # Sibling links to the same post would widen this; keep the
                 # narrow exact form when it resolves to exactly one article.
                 exact = self.page.locator(
-                    f'article[data-testid="tweet"]:has(a[href="{status_path}"])'
+                    f'article[data-testid="tweet"]:has(a[href="{status_path}" i])'
                 )
                 if exact.count() == 1:
                     return exact
