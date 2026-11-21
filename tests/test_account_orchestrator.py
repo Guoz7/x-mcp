@@ -861,16 +861,19 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
 
         q0 = pick_discovery_query({}, wave_index=0)
         q1 = pick_discovery_query({}, wave_index=1)
+        q3 = pick_discovery_query({}, wave_index=3)
         q4 = pick_discovery_query({}, wave_index=4)
         self.assertNotEqual(q0, q1)
-        self.assertIn("build in public", q1)
-        self.assertIn("相互フォロー", q4)
+        self.assertIn("build in public", q0)
+        self.assertIn("相互フォロー", q3)
+        self.assertIn("개발자", q4)
 
-        en_score, _ = score_follow_candidate({"handle": "en_builder", "bio": "Indie hacker, build in public, follow back"})
-        ja_score, _ = score_follow_candidate({"handle": "ja_dev", "bio": "個人開発 相互フォロー"})
-        plain_score, _ = score_follow_candidate({"handle": "plain_user", "bio": ""})
-        self.assertGreater(en_score, plain_score)
-        self.assertGreater(ja_score, plain_score)
+        en_score, _ = score_follow_candidate({"handle": "en_builder", "bio": "Indie hacker, build in public, follow back", "active": True})
+        ja_score, _ = score_follow_candidate({"handle": "ja_dev", "bio": "個人開発 相互フォロー", "active": True})
+        zombie_score, _ = score_follow_candidate({"handle": "zombie_farm", "bio": "airdrop giveaway", "followers_count": 2, "following_count": 1200})
+        self.assertGreater(en_score, zombie_score)
+        self.assertGreater(ja_score, zombie_score)
+        self.assertLess(zombie_score, 0)
 
 
 if __name__ == "__main__":

@@ -392,7 +392,7 @@ def evaluate_account_health(
         stage_caps = {"publish_post": 2, "like_post": 15, "follow_profile": 5, "repost_post": 3, "reply_post": 2}
     else:
         warmup_stage = "growth"
-        stage_caps = {"publish_post": 5, "like_post": 60, "follow_profile": 100, "repost_post": 40, "reply_post": 15}
+        stage_caps = {"publish_post": 5, "like_post": 60, "follow_profile": 200, "repost_post": 40, "reply_post": 15}
 
     followers_snap = snap.get("followers_count")
     following_snap = snap.get("following_count")
@@ -787,14 +787,22 @@ _RECIPROCAL_MARKERS = (
     "follow back", "followback", "f4f", "mutual", "let's connect",
     "build in public", "indie hacker",
     "相互フォロー", "フォロバ", "相互",
+    "맞팔", "소통",
+    "sigueme", "te sigo",
 )
 RECIPROCAL_SEARCH_QUERY = "互关 OR 互follow OR 互粉"
 CROSS_LANGUAGE_DISCOVERY_QUERIES = (
-    "互关 OR 互follow OR 互粉",
     "build in public OR indie hacker OR AI agent",
+    "AI Agent OR MCP OR LLM OR devlog",
     "follow back OR followback OR mutuals AI",
-    "AI Agent OR MCP OR LLM dev",
     "相互フォロー OR フォロバ100 OR 個人開発",
+    "개발자 OR 인디해커 OR AI 에이전트",
+    "indie dev OR open source OR SaaS builder",
+    "互关 OR 互follow OR AI 独立开发",
+)
+_ZOMBIE_SPAM_MARKERS = (
+    "airdrop", "giveaway", "抽奖", "free mint", "crypto signal",
+    "dm for promo", "casino", "onlyfans", "18+", "bot account",
 )
 
 
@@ -822,21 +830,32 @@ def has_reciprocal_marker(cand: dict[str, Any]) -> bool:
 
 
 def score_follow_candidate(cand: dict[str, Any]) -> tuple[int, str]:
-    """Score a follow candidate for reciprocal growth likelihood (higher is better)."""
+    """Score a follow candidate for real human/builder quality and reciprocal growth (higher is better)."""
     score = 0
+    bio = str(cand.get("bio") or "").strip()
+    post_text = str(cand.get("post_text") or "").strip()
+    combined = f"{bio} {post_text}".casefold()
+
+    if any(spam in combined for spam in _ZOMBIE_SPAM_MARKERS):
+        score -= 60
     if cand.get("mutual_verified") is True:
         score += 40
     if has_reciprocal_marker(cand):
-        score += 60
-    if str(cand.get("bio") or "").strip():
-        score += 10
+        score += 45
+    if bio:
+        score += 15
     if cand.get("recent_post_at") or cand.get("active") is True:
-        score += 10
+        score += 25
+    elif not bio and not post_text:
+        score -= 20
+
     followers = cand.get("followers_count")
     following = cand.get("following_count")
     if isinstance(followers, (int, float)) and isinstance(following, (int, float)) and following > 0:
         ratio = followers / following
-        if 0.2 <= ratio <= 3.0:
+        if followers < 5 and following > 500:
+            score -= 40
+        elif 0.2 <= ratio <= 3.0:
             score += 25
         elif followers > 10000 and ratio > 10.0:
             score -= 25
@@ -1092,7 +1111,7 @@ def build_daily_orchestration_plan(
     """Build a deduplicated, safe-paced, mixed daily maintenance plan."""
     now = float(now_epoch) if now_epoch is not None else time.time()
     prof = profile or load_safe_profile()
-    # Allow explicit growth-stage reciprocal follow goal up to 100/day when requested.
+    # Allow explicit growth-stage follow goal up to 200/day (50% of X's 400/day limit) when requested.
     if goals and int(goals.get("follow_profile", 0)) > int(prof["actions"]["follow_profile"]["per_day"]):
         prof = {
             **prof,
@@ -1100,7 +1119,7 @@ def build_daily_orchestration_plan(
                 **prof["actions"],
                 "follow_profile": {
                     **prof["actions"]["follow_profile"],
-                    "per_day": min(100, int(goals["follow_profile"])),
+                    "per_day": min(200, int(goals["follow_profile"])),
                 },
             },
         }
