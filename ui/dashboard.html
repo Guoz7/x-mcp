@@ -311,6 +311,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       <button id="btnApStop" onclick="stopAutopilot()" disabled>紧急停机</button>
     </div>
     <div id="apToast" class="toast"></div>
+    <div class="grid-2" style="margin-top:14px;">
+      <div class="stat" style="padding:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong>7 日运营趋势图</strong>
+          <span class="muted" style="font-size:12px;">关注 · 点赞 · 回复 · 转发 · 发帖</span>
+        </div>
+        <div id="opsTrendChart" style="width:100%;overflow-x:auto;"></div>
+      </div>
+      <div class="stat" style="padding:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong>动作构成与今日进度（关注安全线 200/天）</strong>
+          <span id="opsTodaySummary" class="muted" style="font-size:12px;">--</span>
+        </div>
+        <div id="opsBreakdownChart"></div>
+      </div>
+    </div>
     <div id="apWaves" class="list"></div>
     <div style="margin-top:12px;">
       <strong>最近真实执行明细（关注 / 点赞 / 回复）</strong>
@@ -723,6 +739,103 @@ async function refreshAutopilot() {
       </div>
     `;
   }).join('') || '<div class="muted">暂无真实执行记录。</div>';
+  renderOpsCharts(d);
+}
+
+function renderOpsCharts(d) {
+  const days = Array.isArray(d.daily_breakdown) ? d.daily_breakdown : [];
+  const series = [
+    { key: 'follow_profile', label: '关注', color: '#38bdf8' },
+    { key: 'like_post', label: '点赞', color: '#4ade80' },
+    { key: 'reply_post', label: '回复', color: '#fbbf24' },
+    { key: 'repost_post', label: '转发', color: '#a78bfa' },
+    { key: 'publish_post', label: '发帖', color: '#f472b6' },
+  ];
+  const dayTotals = days.map(day => series.reduce((acc, s) => acc + Number(day[s.key] || 0), 0));
+  const maxVal = Math.max(4, ...dayTotals);
+  const w = 460, h = 165, padL = 28, padR = 12, padT = 14, padB = 28;
+  const chartW = w - padL - padR;
+  const chartH = h - padT - padB;
+  const slotW = days.length ? chartW / days.length : chartW;
+  const barW = Math.min(34, Math.max(16, slotW * 0.56));
+
+  let grid = '';
+  for (let i = 0; i <= 4; i++) {
+    const val = Math.round((maxVal * i) / 4);
+    const y = padT + chartH - (chartH * i) / 4;
+    grid += `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${w - padR}" y2="${y.toFixed(1)}" stroke="#263043" stroke-dasharray="3,3" />`;
+    grid += `<text x="${padL - 5}" y="${(y + 3).toFixed(1)}" text-anchor="end" fill="#94a3b8" font-size="10">${val}</text>`;
+  }
+
+  let bars = '';
+  days.forEach((day, idx) => {
+    const x = padL + idx * slotW + (slotW - barW) / 2;
+    let curY = padT + chartH;
+    const tipParts = [];
+    series.forEach(s => {
+      const v = Number(day[s.key] || 0);
+      if (v <= 0) return;
+      const segH = (v / maxVal) * chartH;
+      curY -= segH;
+      tipParts.push(`${s.label} ${v}`);
+      bars += `<rect x="${x.toFixed(1)}" y="${curY.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(2, segH).toFixed(1)}" rx="2" fill="${s.color}"><title>${esc(day.date)} · ${s.label}: ${v}</title></rect>`;
+    });
+    const tot = dayTotals[idx];
+    if (tot > 0) {
+      bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${Math.max(10, curY - 4).toFixed(1)}" text-anchor="middle" fill="#e2e8f0" font-size="10" font-weight="600">${tot}</text>`;
+    }
+    const shortDate = String(day.date || '').slice(5);
+    bars += `<text x="${(x + barW / 2).toFixed(1)}" y="${h - 8}" text-anchor="middle" fill="#94a3b8" font-size="10">${esc(shortDate)}</text>`;
+  });
+
+  const legend = series.map(s => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:11px;color:#cbd5e1;"><i style="width:9px;height:9px;border-radius:2px;background:${s.color};display:inline-block;"></i>${s.label}</span>`).join('');
+  document.getElementById('opsTrendChart').innerHTML = `
+    <svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;">
+      ${grid}
+      ${bars}
+    </svg>
+    <div style="margin-top:4px;">${legend}</div>
+  `;
+
+  // Breakdown + today's target progress bars
+  const kindTotals = series.map(s => ({
+    ...s,
+    total: days.reduce((acc, day) => acc + Number(day[s.key] || 0), 0),
+  }));
+  const grandTotal = Math.max(1, kindTotals.reduce((a, b) => a + b.total, 0));
+  const todayObj = days.length ? days[days.length - 1] : {};
+  const todayFollow = Number(todayObj.follow_profile || 0);
+  const todayLike = Number(todayObj.like_post || 0);
+  document.getElementById('opsTodaySummary').textContent = `今日关注 ${todayFollow}/200 · 点赞 ${todayLike}/60`;
+
+  const followPct = Math.min(100, Math.round((todayFollow / 200) * 100));
+  const mixBars = kindTotals.map(k => {
+    const pct = Math.round((k.total / grandTotal) * 100);
+    return `
+      <div style="margin-bottom:7px;">
+        <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;">
+          <span>${k.label}</span>
+          <span class="mono muted">${k.total} 次 (${pct}%)</span>
+        </div>
+        <div style="height:7px;background:#1e293b;border-radius:999px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:${k.color};border-radius:999px;"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  document.getElementById('opsBreakdownChart').innerHTML = `
+    <div style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #263043;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+        <strong>今日关注进度 (200/天安全线)</strong>
+        <span class="mono">${todayFollow} / 200 (${followPct}%)</span>
+      </div>
+      <div style="height:9px;background:#1e293b;border-radius:999px;overflow:hidden;">
+        <div style="width:${followPct}%;height:100%;background:linear-gradient(90deg,#38bdf8,#4ade80);border-radius:999px;"></div>
+      </div>
+    </div>
+    ${mixBars}
+  `;
 }
 
 async function inferPersona() {
