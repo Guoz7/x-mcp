@@ -335,6 +335,23 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       </div>
     </div>
     <div id="apWaves" class="list"></div>
+    <div class="stat" style="margin-top:12px;padding:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <strong>后台调度心跳日志（实时记录每次检查时间）</strong>
+        <span id="apHeartbeatMeta" class="mono muted" style="font-size:12px;">未启动</span>
+      </div>
+      <div id="apHeartbeatLog" class="mono muted" style="font-size:12px;line-height:1.6;"></div>
+    </div>
+    <div class="stat" style="margin-top:12px;padding:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <strong>预采集目标池（小号提前收集 · 主号免搜索直接互动）</strong>
+        <span id="tpStats" class="pill ok">待用 0 人 · 0 帖</span>
+      </div>
+      <div class="row" style="margin-top:6px;">
+        <input id="tpImportInput" placeholder="每行或逗号分隔输入 @handle 或 x.com/.../status/... 链接（也支持粘贴 JSON）" style="flex:1;min-width:260px;">
+        <button onclick="ingestTargetPool()">导入预采集池</button>
+      </div>
+    </div>
     <div style="margin-top:12px;">
       <strong>最近真实执行明细（关注 / 点赞 / 回复）</strong>
       <div id="apActions" class="list" style="margin-top:6px;"></div>
@@ -701,8 +718,19 @@ async function refreshAutopilot() {
   const enabled = Boolean(ap.enabled);
   const schedRunning = Boolean(ap.scheduler?.running);
   const ticks = ap.scheduler?.ticks ?? 0;
-  pill.textContent = enabled ? (schedRunning ? `托管 + 后台定时运行中 (${ticks}次检查)` : '托管已启用') : '未启用';
+  const lastTick = ap.scheduler?.last_tick_at ? fmtTime(ap.scheduler.last_tick_at) : '--';
+  pill.textContent = enabled ? (schedRunning ? `托管 + 后台定时运行中 (${ticks}次 · ${lastTick})` : '托管已启用') : '未启用';
   pill.className = 'pill ' + (enabled ? 'ok' : 'warn');
+  document.getElementById('apHeartbeatMeta').textContent = schedRunning
+    ? `运行中 · 累计检查 ${ticks} 次 · 最近: ${lastTick} (${ap.scheduler?.last_outcome || 'idle'})`
+    : `已停止 · 最近检查: ${lastTick}`;
+  const tickLog = ap.scheduler?.tick_log || [];
+  document.getElementById('apHeartbeatLog').innerHTML = tickLog.slice().reverse().slice(0, 6).map(t =>
+    `<div>${esc(fmtTime(t.at))} · ${esc(t.outcome)}</div>`
+  ).join('') || '<div>暂无心跳检查记录（开启后台定时后每 60 秒记录一次时间戳）。</div>';
+  if (d.target_pool) {
+    document.getElementById('tpStats').textContent = `待用 ${d.target_pool.fresh_candidates || 0} 人 · ${d.target_pool.fresh_posts || 0} 帖`;
+  }
   document.getElementById('btnApRunWave').disabled = !enabled;
   document.getElementById('btnApSchedStart').disabled = !enabled || schedRunning;
   document.getElementById('btnApSchedStop').disabled = !schedRunning;
@@ -720,7 +748,7 @@ async function refreshAutopilot() {
   document.getElementById('apWaves').innerHTML = (ap.recent_waves || []).slice().reverse().map(w => `
     <div class="item">
       <div><strong>${esc(w.batch_id || 'wave')}</strong> · 处理 ${w.processed ?? 0}，成功 ${w.verified_changed ?? 0}${w.stop_reason ? ' · ' + esc(w.stop_reason) : ''}</div>
-      <span class="mono muted">${esc(w.at || '')}</span>
+      <span class="mono muted">${esc(fmtTime(w.at || ''))}</span>
     </div>
   `).join('') || '<div class="muted">暂无托管波次记录。</div>';
   const actionLabels = {
@@ -742,7 +770,7 @@ async function refreshAutopilot() {
           <span class="pill ${a.verified ? 'ok' : 'warn'}">${esc(a.status)}</span>
           <strong>${esc(label)}</strong> ${esc(target)} ${link}${snippet}
         </div>
-        <span class="mono muted">${esc(a.at || '')}</span>
+        <span class="mono muted">${esc(fmtTime(a.at || ''))}</span>
       </div>
     `;
   }).join('') || '<div class="muted">暂无真实执行记录。</div>';
@@ -846,6 +874,49 @@ function renderOpsCharts(d) {
   if (d.local_files) {
     document.getElementById('opsLocalFiles').textContent = `本地持久化（已累计 ${d.local_files.days_recorded || 0} 天）：${d.local_files.metrics_csv} ｜ ${d.local_files.history_json}`;
   }
+}
+
+function fmtTime(iso) {
+  if (!iso) return '--';
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return String(iso);
+  const pad = n => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+}
+
+async function ingestTargetPool() {
+  const raw = document.getElementById('tpImportInput').value.trim();
+  if (!raw) return showToast('apToast', false, '请先输入预采集的 @handle、推文链接或 JSON。');
+  let candidates = [];
+  let posts = [];
+  if (raw.startsWith('{') || raw.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        candidates = parsed.filter(x => x && (x.handle || x.username));
+        posts = parsed.filter(x => x && (x.url || x.post_url));
+      } else {
+        candidates = parsed.candidates || [];
+        posts = parsed.posts || [];
+      }
+    } catch (e) {
+      return showToast('apToast', false, 'JSON 格式有误：' + e.message);
+    }
+  } else {
+    raw.split(/[\r\n,，\s]+/).map(s => s.trim()).filter(Boolean).forEach(tok => {
+      if (/^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/[A-Za-z0-9_]+\/status\/\d+/i.test(tok)) {
+        posts.push({ url: tok });
+      } else {
+        const h = tok.replace(/^https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\//i, '').replace(/^@/, '').split('/')[0];
+        if (/^[A-Za-z0-9_]{1,15}$/.test(h)) candidates.push({ handle: h });
+      }
+    });
+  }
+  const res = await callTool('x_target_pool', { action: 'ingest', candidates, posts, source: 'owner_ui_precollect' });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '导入失败');
+  document.getElementById('tpImportInput').value = '';
+  showToast('apToast', true, `已导入预采集池：新增 ${res.data.added_candidates} 人、${res.data.added_posts} 帖（待用 ${res.data.fresh_candidates} 人 / ${res.data.fresh_posts} 帖）。`);
+  refreshAutopilot();
 }
 
 function triggerDownload(filename, content, mime) {

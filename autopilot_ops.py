@@ -440,6 +440,9 @@ class AutopilotScheduler:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._last_error: str | None = None
+        self._last_tick_at: str | None = None
+        self._last_outcome: str | None = None
+        self._tick_log: list[dict[str, str]] = []
         self._ticks = 0
 
     def start(self) -> bool:
@@ -470,18 +473,38 @@ class AutopilotScheduler:
                 "running": running,
                 "poll_seconds": self._poll_seconds,
                 "ticks": self._ticks,
+                "last_tick_at": self._last_tick_at,
+                "last_outcome": self._last_outcome,
+                "tick_log": list(self._tick_log[-20:]),
                 "last_error": self._last_error,
             }
 
     def _loop(self) -> None:
         while not self._stop_event.is_set():
+            now_str = _iso(time.time())
+            outcome_str = "checked"
             try:
-                self._tick_fn()
+                res = self._tick_fn()
+                if isinstance(res, dict):
+                    if res.get("ran") is True:
+                        exe = res.get("execution") or {}
+                        outcome_str = f"ran wave ({exe.get('verified_changed', 0)}/{exe.get('processed', 0)} verified)"
+                    elif res.get("reason"):
+                        outcome_str = f"waiting ({res['reason']})"
                 with self._lock:
                     self._last_error = None
+                    self._last_tick_at = now_str
+                    self._last_outcome = outcome_str
+                    self._tick_log.append({"at": now_str, "outcome": outcome_str})
+                    self._tick_log = self._tick_log[-20:]
             except Exception as exc:  # noqa: BLE001
+                err_str = str(exc)[:200]
                 with self._lock:
-                    self._last_error = str(exc)[:200]
+                    self._last_error = err_str
+                    self._last_tick_at = now_str
+                    self._last_outcome = f"error: {err_str}"
+                    self._tick_log.append({"at": now_str, "outcome": f"error: {err_str}"})
+                    self._tick_log = self._tick_log[-20:]
             with self._lock:
                 self._ticks += 1
             self._stop_event.wait(self._poll_seconds)

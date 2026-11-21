@@ -1655,6 +1655,27 @@ class XStarter:
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
             },
             {
+                "name": "x_target_pool",
+                "title": "Pre-collected target pool for zero-search execution",
+                "description": (
+                    "Ingest or inspect pre-collected follow candidates and status posts (e.g. from a scout account) "
+                    "so the main account can interact without running search requests."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["stats", "list", "ingest", "clear"]},
+                        "candidates": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "posts": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "source": {"type": "string", "maxLength": 60},
+                        "status": {"type": "string", "enum": ["fresh", "consumed"]},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
                 "name": "x_persona_memory",
                 "title": "Read or update personal X persona and episodic memory",
                 "description": (
@@ -1698,6 +1719,27 @@ class XStarter:
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
             },
             {
+                "name": "x_target_pool",
+                "title": "Pre-collected target pool for zero-search execution",
+                "description": (
+                    "Ingest or inspect pre-collected follow candidates and status posts (e.g. from a scout account) "
+                    "so the main account can interact without running search requests."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["stats", "list", "ingest", "clear"]},
+                        "candidates": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "posts": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "source": {"type": "string", "maxLength": 60},
+                        "status": {"type": "string", "enum": ["fresh", "consumed"]},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+            },
+            {
                 "name": "x_persona_memory",
                 "title": "Read or update personal X persona and episodic memory",
                 "description": (
@@ -1739,6 +1781,27 @@ class XStarter:
                     "additionalProperties": False,
                 },
                 "annotations": {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True},
+            },
+            {
+                "name": "x_target_pool",
+                "title": "Pre-collected target pool for zero-search execution",
+                "description": (
+                    "Ingest or inspect pre-collected follow candidates and status posts (e.g. from a scout account) "
+                    "so the main account can interact without running search requests."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "enum": ["stats", "list", "ingest", "clear"]},
+                        "candidates": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "posts": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "source": {"type": "string", "maxLength": 60},
+                        "status": {"type": "string", "enum": ["fresh", "consumed"]},
+                    },
+                    "required": ["action"],
+                    "additionalProperties": False,
+                },
+                "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
             },
             {
                 "name": "x_persona_memory",
@@ -2007,6 +2070,8 @@ class XStarter:
                 data = self._x_notifications_read(scoped, trace)
             elif name == "x_persona_memory":
                 data = self._x_persona_memory(arguments, trace)
+            elif name == "x_target_pool":
+                data = self._x_target_pool(arguments, trace)
             elif name == "account_summary":
                 data = self._account_summary(trace)
             elif name == "draft_post":
@@ -3942,6 +4007,37 @@ class XStarter:
         trace.append(_event("browser_executor", "notifications_read", count=result["count"], mentions_only=mentions_only))
         return result
 
+    def _target_pool(self) -> account_orchestrator.TargetPoolStore:
+        return account_orchestrator.TargetPoolStore(self._bridge().path.parent)
+
+    def _x_target_pool(
+        self, arguments: dict[str, Any], trace: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        action = _required_string(arguments, "action", max_length=20)
+        pool = self._target_pool()
+        if action == "stats":
+            res = pool.stats()
+            trace.append(_event("x_adapter", "target_pool_stats", external_call=False))
+            return res
+        if action == "list":
+            status = str(arguments.get("status") or "fresh")
+            res = pool.list(status=status)
+            trace.append(_event("x_adapter", "target_pool_listed", external_call=False))
+            return res
+        if action == "ingest":
+            res = pool.ingest(
+                candidates=arguments.get("candidates"),
+                posts=arguments.get("posts"),
+                source=str(arguments.get("source") or "scout_precollect"),
+            )
+            trace.append(_event("x_adapter", "target_pool_ingested", added_candidates=res["added_candidates"], added_posts=res["added_posts"], external_call=False))
+            return res
+        if action == "clear":
+            res = pool.clear()
+            trace.append(_event("x_adapter", "target_pool_cleared", external_call=False))
+            return res
+        raise StarterError("INVALID_ARGUMENT", "action must be stats, list, ingest, or clear.")
+
     def _x_persona_memory(
         self, arguments: dict[str, Any], trace: list[dict[str, Any]]
     ) -> dict[str, Any]:
@@ -4005,6 +4101,7 @@ class XStarter:
                 st = store.status()
                 st["scheduler"] = self._scheduler.status() if self._scheduler is not None else {"running": False}
                 res = autopilot_ops.build_ops_summary(ledger, st)
+                res["target_pool"] = self._target_pool().stats()
                 persisted = autopilot_ops.persist_daily_metrics(self._bridge().path.parent, res)
                 res["local_files"] = {
                     "history_json": persisted["history_json"],
@@ -4018,6 +4115,7 @@ class XStarter:
                 st = store.status()
                 st["scheduler"] = self._scheduler.status() if self._scheduler is not None else {"running": False}
                 res = autopilot_ops.build_ops_summary(ledger, st)
+                res["target_pool"] = self._target_pool().stats()
                 persisted = autopilot_ops.persist_daily_metrics(self._bridge().path.parent, res)
                 trace.append(_event("x_adapter", "autopilot_report_exported", days_recorded=persisted["days_recorded"], external_call=False))
                 return {
@@ -4242,6 +4340,20 @@ class XStarter:
                 visited_profiles: list[dict[str, Any]] = []
                 opened_browser = False
                 read_error: str | None = None
+                used_target_pool = False
+                if timeline_posts is None and follow_candidates is None:
+                    seen_h, seen_u = account_orchestrator._seen_ledger_targets(ledger)
+                    popped = self._target_pool().pop_batch(
+                        max_candidates=max(4, wave_limit * 2),
+                        max_posts=max(6, wave_limit * 3),
+                        exclude_handles=seen_h,
+                        exclude_urls=seen_u,
+                    )
+                    if popped["candidates"] or popped["posts"]:
+                        follow_candidates = popped["candidates"]
+                        timeline_posts = popped["posts"]
+                        used_target_pool = True
+                        trace.append(_event("x_adapter", "target_pool_consumed", candidates=len(follow_candidates), posts=len(timeline_posts), external_call=False))
                 if timeline_posts is None and self.mode == "browser":
                     try:
                         browser = self._browser_for(arguments)
@@ -6283,6 +6395,7 @@ def make_http_handler(
                     "x_visit_profile",
                     "x_notifications_read",
                     "x_persona_memory",
+                    "x_target_pool",
                     "x_compose_check",
                 }
                 if tool not in allowed_ui_tools:

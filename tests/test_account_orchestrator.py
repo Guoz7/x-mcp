@@ -901,6 +901,69 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_target_pool_ingest_and_zero_search_wave(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = XStarter(
+                mode="browser",
+                environ={
+                    "X_STARTER_MODE": "browser",
+                    "X_STARTER_ENABLE_BROWSER": "1",
+                    "X_STARTER_STATE_DIR": tmpdir,
+                },
+            )
+            try:
+                ing = app.call_tool(
+                    "x_target_pool",
+                    {
+                        "action": "ingest",
+                        "source": "scout_alt",
+                        "candidates": [
+                            {"handle": "scout_found_1", "bio": "build in public", "active": True},
+                        ],
+                        "posts": [
+                            {"url": "https://x.com/scout_found_1/status/888001", "author": "scout_found_1", "text": "Shipping MCP today"},
+                        ],
+                    },
+                )
+                self.assertTrue(ing["ok"])
+                self.assertEqual(ing["data"]["added_candidates"], 1)
+                self.assertEqual(ing["data"]["added_posts"], 1)
+                self.assertEqual(ing["data"]["fresh_candidates"], 1)
+
+                prep = app.call_tool("x_autopilot", {"action": "prepare", "days": 7, "max_per_wave": 4})
+                app.call_tool(
+                    "x_autopilot",
+                    {
+                        "action": "activate",
+                        "window_id": prep["data"]["window_id"],
+                        "confirmation": prep["data"]["confirmation_phrase"],
+                    },
+                )
+                mock_browser = MagicMock()
+                mock_browser.browser_family = "chromium"
+                mock_browser.execute_x_action.side_effect = [
+                    {"verified": True, "changed": True, "state": "liked", "post_url": "https://x.com/scout_found_1/status/888001"},
+                    {"verified": True, "changed": True, "state": "following", "handle": "scout_found_1", "profile_url": "https://x.com/scout_found_1"},
+                ]
+                with patch.object(app, "_browser_for", return_value=mock_browser):
+                    wave = app.call_tool(
+                        "x_autopilot",
+                        {
+                            "action": "run_wave",
+                            "force": True,
+                            "respect_pacing": False,
+                            "account_snapshot": {"posts_count": 75},
+                        },
+                    )
+                self.assertTrue(wave["ok"])
+                self.assertTrue(wave["data"]["ran"])
+                self.assertEqual(wave["data"]["execution"]["verified_changed"], 2)
+                st = app.call_tool("x_target_pool", {"action": "stats"})
+                self.assertEqual(st["data"]["fresh_candidates"], 0)
+                self.assertEqual(st["data"]["fresh_posts"], 0)
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()

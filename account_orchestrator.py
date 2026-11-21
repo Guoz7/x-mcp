@@ -762,6 +762,162 @@ class ContentQueueStore:
         raise OrchestratorError("QUEUE_ITEM_NOT_FOUND", f"Content queue item {item_id} not found.")
 
 
+class TargetPoolStore:
+    """Durable pre-collected target pool (from scout accounts or offline scripts) so main account avoids search bursts."""
+
+    def __init__(self, state_dir: Path) -> None:
+        self.path = Path(state_dir) / "target_pool.json"
+        self.lock = LedgerLock(Path(state_dir) / ".target_pool.lock")
+
+    def _read(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"version": 1, "candidates": [], "posts": []}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {
+                    "version": 1,
+                    "candidates": list(data.get("candidates") or []),
+                    "posts": list(data.get("posts") or []),
+                }
+        except ValueError:
+            pass
+        return {"version": 1, "candidates": [], "posts": []}
+
+    def _write(self, data: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def stats(self) -> dict[str, Any]:
+        with self.lock:
+            data = self._read()
+        fresh_c = sum(1 for c in data["candidates"] if c.get("status") == "fresh")
+        fresh_p = sum(1 for p in data["posts"] if p.get("status") == "fresh")
+        return {
+            "fresh_candidates": fresh_c,
+            "fresh_posts": fresh_p,
+            "total_candidates": len(data["candidates"]),
+            "total_posts": len(data["posts"]),
+            "path": str(self.path),
+        }
+
+    def list(self, *, status: str = "fresh") -> dict[str, Any]:
+        with self.lock:
+            data = self._read()
+        return {
+            "candidates": [c for c in data["candidates"] if not status or c.get("status") == status],
+            "posts": [p for p in data["posts"] if not status or p.get("status") == status],
+        }
+
+    def clear(self) -> dict[str, Any]:
+        with self.lock:
+            self._write({"version": 1, "candidates": [], "posts": []})
+        return self.stats()
+
+    def ingest(
+        self,
+        *,
+        candidates: list[dict[str, Any]] | None = None,
+        posts: list[dict[str, Any]] | None = None,
+        source: str = "scout_precollect",
+    ) -> dict[str, Any]:
+        added_c = 0
+        added_p = 0
+        now_str = _iso(time.time())
+        with self.lock:
+            data = self._read()
+            existing_handles = {str(c.get("handle") or "").strip().lstrip("@").casefold() for c in data["candidates"]}
+            existing_urls = {str(p.get("url") or "").strip().casefold() for p in data["posts"]}
+            for raw in candidates or []:
+                if not isinstance(raw, dict):
+                    continue
+                handle = str(raw.get("handle") or raw.get("username") or "").strip().lstrip("@")
+                if not _HANDLE_RE.match(handle) or handle.casefold() in existing_handles:
+                    continue
+                existing_handles.add(handle.casefold())
+                data["candidates"].append({
+                    "handle": handle,
+                    "bio": str(raw.get("bio") or "")[:240],
+                    "post_text": str(raw.get("post_text") or "")[:240],
+                    "followers_count": raw.get("followers_count"),
+                    "following_count": raw.get("following_count"),
+                    "active": bool(raw.get("active", True)),
+                    "mutual_verified": bool(raw.get("mutual_verified", False)),
+                    "source": str(raw.get("source") or source)[:60],
+                    "status": "fresh",
+                    "added_at": now_str,
+                })
+                added_c += 1
+            for raw_p in posts or []:
+                if not isinstance(raw_p, dict):
+                    continue
+                m = _STATUS_URL_RE.match(str(raw_p.get("url") or raw_p.get("post_url") or "").strip())
+                if not m:
+                    continue
+                canonical = f"https://x.com/{m.group(1).casefold()}/status/{m.group(2)}"
+                if canonical.casefold() in existing_urls:
+                    continue
+                existing_urls.add(canonical.casefold())
+                data["posts"].append({
+                    "url": canonical,
+                    "author": str(raw_p.get("author") or m.group(1)).lstrip("@"),
+                    "text": str(raw_p.get("text") or "")[:280],
+                    "source": str(raw_p.get("source") or source)[:60],
+                    "status": "fresh",
+                    "added_at": now_str,
+                })
+                added_p += 1
+            data["candidates"] = data["candidates"][-1000:]
+            data["posts"] = data["posts"][-1000:]
+            self._write(data)
+        return {"added_candidates": added_c, "added_posts": added_p, **self.stats()}
+
+    def pop_batch(
+        self,
+        *,
+        max_candidates: int = 10,
+        max_posts: int = 15,
+        exclude_handles: set[str] | None = None,
+        exclude_urls: set[str] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        ex_h = {h.casefold() for h in (exclude_handles or set())}
+        ex_u = {u.casefold() for u in (exclude_urls or set())}
+        picked_c: list[dict[str, Any]] = []
+        picked_p: list[dict[str, Any]] = []
+        with self.lock:
+            data = self._read()
+            changed = False
+            for c in data["candidates"]:
+                if c.get("status") != "fresh":
+                    continue
+                h = str(c.get("handle") or "").casefold()
+                if h in ex_h:
+                    c["status"] = "consumed"
+                    changed = True
+                    continue
+                if len(picked_c) < max_candidates:
+                    c["status"] = "consumed"
+                    changed = True
+                    picked_c.append(dict(c))
+            for p in data["posts"]:
+                if p.get("status") != "fresh":
+                    continue
+                u = str(p.get("url") or "").casefold()
+                if u in ex_u:
+                    p["status"] = "consumed"
+                    changed = True
+                    continue
+                if len(picked_p) < max_posts:
+                    p["status"] = "consumed"
+                    changed = True
+                    picked_p.append(dict(p))
+            if changed:
+                self._write(data)
+        return {"candidates": picked_c, "posts": picked_p}
+
+
 def _seen_ledger_targets(ledger: dict[str, Any]) -> tuple[set[str], set[str]]:
     """Return (seen_handles, seen_status_urls) from completed or active ledger actions."""
     handles: set[str] = set()
