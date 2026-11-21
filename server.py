@@ -3512,12 +3512,25 @@ class XStarter:
         if snapshot is not None and not isinstance(snapshot, dict):
             raise StarterError("INVALID_ARGUMENT", "account_snapshot must be an object.")
         ledger = self._bridge().read_ledger_snapshot()
+        if snapshot is None:
+            latest_at = ""
+            for action in (ledger.get("actions") or {}).values():
+                if not isinstance(action, dict) or action.get("type") != "owner_read_account" or action.get("status") != "completed":
+                    continue
+                res = action.get("result") if isinstance(action.get("result"), dict) else {}
+                cand = res.get("snapshot") if isinstance(res.get("snapshot"), dict) else res
+                at = str(action.get("completed_at") or action.get("created_at") or "")
+                if cand.get("username") and at >= latest_at:
+                    latest_at = at
+                    snapshot = cand
         queue_items = self._content_queue().list()
         report = account_orchestrator.evaluate_account_health(
             ledger,
             account_snapshot=snapshot,
             content_queue=queue_items,
         )
+        if snapshot is not None:
+            report["account_snapshot"] = snapshot
         trace.append(
             _event(
                 "x_adapter",

@@ -312,6 +312,10 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
     </div>
     <div id="apToast" class="toast"></div>
     <div id="apWaves" class="list"></div>
+    <div style="margin-top:12px;">
+      <strong>最近真实执行明细（关注 / 点赞 / 回复）</strong>
+      <div id="apActions" class="list" style="margin-top:6px;"></div>
+    </div>
   </section>
 
   <!-- 5. 长期人设与记忆库 -->
@@ -673,14 +677,22 @@ async function refreshAutopilot() {
   const pill = document.getElementById('apPill');
   const enabled = Boolean(ap.enabled);
   const schedRunning = Boolean(ap.scheduler?.running);
-  pill.textContent = enabled ? (schedRunning ? '托管 + 后台定时运行中' : '托管已启用') : '未启用';
+  const ticks = ap.scheduler?.ticks ?? 0;
+  pill.textContent = enabled ? (schedRunning ? `托管 + 后台定时运行中 (${ticks}次检查)` : '托管已启用') : '未启用';
   pill.className = 'pill ' + (enabled ? 'ok' : 'warn');
   document.getElementById('btnApRunWave').disabled = !enabled;
   document.getElementById('btnApSchedStart').disabled = !enabled || schedRunning;
   document.getElementById('btnApSchedStop').disabled = !schedRunning;
   document.getElementById('btnApStop').disabled = !enabled;
   if (ap.active_window) {
-    document.getElementById('opsWaveCfg').textContent = `${ap.active_window.max_per_wave} 次 · ${ap.active_window.min_wave_interval_minutes}m`;
+    const nextMin = ap.next_wave_epoch ? Math.max(0, Math.ceil((ap.next_wave_epoch - Date.now() / 1000) / 60)) : null;
+    const nextTxt = ap.wave_due ? '· 下波待触发' : (nextMin !== null ? `· 下波约 ${nextMin}m` : '');
+    document.getElementById('opsWaveCfg').textContent = `${ap.active_window.max_per_wave} 次 · ${ap.active_window.min_wave_interval_minutes}m ${nextTxt}`;
+  }
+  if (!state.accountSnapshot && d.last_account_snapshot && d.last_account_snapshot.username) {
+    const snap = d.last_account_snapshot;
+    state.accountSnapshot = snap;
+    document.getElementById('accountBox').textContent = `当前账号: @${snap.username} (${snap.display_name || '--'}) · 累计帖数: ${snap.posts_count ?? '--'} · 最近快照: ${snap.observed_at || '--'}`;
   }
   document.getElementById('apWaves').innerHTML = (ap.recent_waves || []).slice().reverse().map(w => `
     <div class="item">
@@ -688,6 +700,29 @@ async function refreshAutopilot() {
       <span class="mono muted">${esc(w.at || '')}</span>
     </div>
   `).join('') || '<div class="muted">暂无托管波次记录。</div>';
+  const actionLabels = {
+    follow_profile: '关注',
+    unfollow_profile: '取关',
+    like_post: '点赞',
+    repost_post: '转发',
+    reply_post: '回复',
+    publish_post: '发帖',
+  };
+  document.getElementById('apActions').innerHTML = (d.recent_actions || []).map(a => {
+    const label = actionLabels[a.type] || a.type;
+    const target = a.handle ? '@' + a.handle : '';
+    const link = a.url ? `<a href="${esc(a.url)}" target="_blank" rel="noopener" style="color:#60a5fa;">${esc(a.url)}</a>` : '';
+    const snippet = a.text ? ` · <span class="muted">${esc(a.text)}</span>` : '';
+    return `
+      <div class="item">
+        <div>
+          <span class="pill ${a.verified ? 'ok' : 'warn'}">${esc(a.status)}</span>
+          <strong>${esc(label)}</strong> ${esc(target)} ${link}${snippet}
+        </div>
+        <span class="mono muted">${esc(a.at || '')}</span>
+      </div>
+    `;
+  }).join('') || '<div class="muted">暂无真实执行记录。</div>';
 }
 
 async function inferPersona() {
@@ -850,6 +885,7 @@ document.getElementById('postText').addEventListener('input', () => {
 });
 
 refreshAll();
+setInterval(refreshAll, 20000);
 </script>
 </body>
 </html>
