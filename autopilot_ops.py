@@ -334,6 +334,82 @@ def build_ops_summary(
     }
 
 
+def persist_daily_metrics(state_dir: Path, summary: dict[str, Any]) -> dict[str, Any]:
+    """Persist cumulative daily metrics into analytics_history.json and daily_metrics.csv for human maintenance."""
+    import csv
+    import io
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    history_path = state_dir / "analytics_history.json"
+    csv_path = state_dir / "daily_metrics.csv"
+
+    history: dict[str, Any] = {"version": 1, "timezone": summary.get("timezone", "Asia/Shanghai"), "days": {}}
+    if history_path.exists():
+        try:
+            loaded = json.loads(history_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and isinstance(loaded.get("days"), dict):
+                history = loaded
+        except ValueError:
+            pass
+
+    funnel = summary.get("follow_funnel") or {}
+    uncertain_rate = summary.get("uncertain_rate", 0.0)
+    days_map: dict[str, dict[str, Any]] = history.setdefault("days", {})
+    daily_rows = summary.get("daily_breakdown") or []
+    today_date = daily_rows[-1].get("date") if daily_rows else None
+    for row in daily_rows:
+        d = str(row.get("date") or "").strip()
+        if not d:
+            continue
+        prev = days_map.get(d) if isinstance(days_map.get(d), dict) else {}
+        days_map[d] = {
+            "date": d,
+            "publish_post": int(row.get("publish_post", 0)),
+            "like_post": int(row.get("like_post", 0)),
+            "follow_profile": int(row.get("follow_profile", 0)),
+            "repost_post": int(row.get("repost_post", 0)),
+            "reply_post": int(row.get("reply_post", 0)),
+            "verified_follows": int(funnel.get("verified_follows", prev.get("verified_follows", 0))) if d == today_date else int(prev.get("verified_follows", 0)),
+            "mutual_verified": int(funnel.get("mutual_verified", prev.get("mutual_verified", 0))) if d == today_date else int(prev.get("mutual_verified", 0)),
+            "follow_back_rate": float(funnel.get("follow_back_rate", prev.get("follow_back_rate", 0.0))) if d == today_date else float(prev.get("follow_back_rate", 0.0)),
+            "uncertain_rate": float(uncertain_rate) if d == today_date else float(prev.get("uncertain_rate", 0.0)),
+        }
+    history["updated_at"] = _iso(time.time())
+
+    tmp_json = history_path.with_suffix(".tmp")
+    tmp_json.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_json, history_path)
+
+    cols = [
+        "date",
+        "publish_post",
+        "like_post",
+        "follow_profile",
+        "repost_post",
+        "reply_post",
+        "verified_follows",
+        "mutual_verified",
+        "follow_back_rate",
+        "uncertain_rate",
+    ]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=cols)
+    writer.writeheader()
+    for d in sorted(days_map.keys()):
+        writer.writerow({k: days_map[d].get(k, "") for k in cols})
+    csv_text = buf.getvalue()
+    tmp_csv = csv_path.with_suffix(".tmp")
+    tmp_csv.write_text(csv_text, encoding="utf-8-sig")
+    os.replace(tmp_csv, csv_path)
+
+    return {
+        "history_json": str(history_path),
+        "metrics_csv": str(csv_path),
+        "days_recorded": len(days_map),
+        "csv_content": csv_text,
+    }
+
+
 class AutopilotScheduler:
     """Lightweight background daemon thread that runs due autopilot waves."""
 

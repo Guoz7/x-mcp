@@ -327,6 +327,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
         <div id="opsBreakdownChart"></div>
       </div>
     </div>
+    <div class="row" style="margin-top:8px;justify-content:space-between;align-items:center;">
+      <span id="opsLocalFiles" class="mono muted" style="font-size:12px;">本地归档：加载中...</span>
+      <div class="row">
+        <button onclick="exportCsvReport()">导出 CSV 报表</button>
+        <button onclick="exportJsonBackup()">导出完整备份 JSON</button>
+      </div>
+    </div>
     <div id="apWaves" class="list"></div>
     <div style="margin-top:12px;">
       <strong>最近真实执行明细（关注 / 点赞 / 回复）</strong>
@@ -836,6 +843,37 @@ function renderOpsCharts(d) {
     </div>
     ${mixBars}
   `;
+  if (d.local_files) {
+    document.getElementById('opsLocalFiles').textContent = `本地持久化（已累计 ${d.local_files.days_recorded || 0} 天）：${d.local_files.metrics_csv} ｜ ${d.local_files.history_json}`;
+  }
+}
+
+function triggerDownload(filename, content, mime) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportCsvReport() {
+  const res = await callTool('x_autopilot', { action: 'export_report' });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '导出失败');
+  const day = new Date().toISOString().slice(0, 10);
+  triggerDownload(`x-daily-metrics-${day}.csv`, res.data.csv_content || '', 'text/csv;charset=utf-8');
+  showToast('apToast', true, `已导出 CSV 并同步保存到本地：${res.data.local_files?.metrics_csv || ''}`);
+}
+
+async function exportJsonBackup() {
+  const res = await callTool('x_autopilot', { action: 'export_report' });
+  if (!res.ok) return showToast('apToast', false, res.error?.message || '导出失败');
+  const day = new Date().toISOString().slice(0, 10);
+  triggerDownload(`x-mcp-backup-${day}.json`, JSON.stringify(res.data, null, 2), 'application/json;charset=utf-8');
+  showToast('apToast', true, `已导出完整本地备份 JSON（含近 7 日明细、人设记忆与内容队列）。`);
 }
 
 async function inferPersona() {

@@ -1612,7 +1612,7 @@ class XStarter:
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "reciprocal_wave", "cleanup_candidates", "run_cleanup", "ops_summary", "scheduler_start", "scheduler_stop", "infer_persona"]},
+                        "action": {"type": "string", "enum": ["status", "prepare", "activate", "stop", "run_wave", "reciprocal_wave", "cleanup_candidates", "run_cleanup", "ops_summary", "export_report", "scheduler_start", "scheduler_stop", "infer_persona"]},
                         "days": {"type": "integer", "minimum": 1, "maximum": 30, "default": 7},
                         "min_age_days": {"type": "integer", "minimum": 1, "maximum": 90, "default": 7},
                         "max_count": {"type": "integer", "minimum": 1, "maximum": 25, "default": 5},
@@ -4005,8 +4005,32 @@ class XStarter:
                 st = store.status()
                 st["scheduler"] = self._scheduler.status() if self._scheduler is not None else {"running": False}
                 res = autopilot_ops.build_ops_summary(ledger, st)
+                persisted = autopilot_ops.persist_daily_metrics(self._bridge().path.parent, res)
+                res["local_files"] = {
+                    "history_json": persisted["history_json"],
+                    "metrics_csv": persisted["metrics_csv"],
+                    "days_recorded": persisted["days_recorded"],
+                }
                 trace.append(_event("x_adapter", "autopilot_ops_summary_read", external_call=False))
                 return res
+            if action == "export_report":
+                ledger = self._bridge().read_ledger_snapshot()
+                st = store.status()
+                st["scheduler"] = self._scheduler.status() if self._scheduler is not None else {"running": False}
+                res = autopilot_ops.build_ops_summary(ledger, st)
+                persisted = autopilot_ops.persist_daily_metrics(self._bridge().path.parent, res)
+                trace.append(_event("x_adapter", "autopilot_report_exported", days_recorded=persisted["days_recorded"], external_call=False))
+                return {
+                    "local_files": {
+                        "history_json": persisted["history_json"],
+                        "metrics_csv": persisted["metrics_csv"],
+                        "days_recorded": persisted["days_recorded"],
+                    },
+                    "csv_content": persisted["csv_content"],
+                    "summary": res,
+                    "persona_memory": self._persona_memory().read(),
+                    "content_queue": self._content_queue().list(),
+                }
             if action == "scheduler_start":
                 if self._scheduler is None:
                     self._scheduler = autopilot_ops.AutopilotScheduler(

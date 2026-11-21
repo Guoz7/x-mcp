@@ -875,6 +875,32 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
         self.assertGreater(ja_score, zombie_score)
         self.assertLess(zombie_score, 0)
 
+    def test_ops_summary_and_export_report_persist_local_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = XStarter(
+                mode="browser",
+                environ={
+                    "X_STARTER_MODE": "browser",
+                    "X_STARTER_ENABLE_BROWSER": "1",
+                    "X_STARTER_STATE_DIR": tmpdir,
+                },
+            )
+            try:
+                summary = app.call_tool("x_autopilot", {"action": "ops_summary"})
+                self.assertTrue(summary["ok"])
+                local_files = summary["data"]["local_files"]
+                self.assertTrue(Path(local_files["history_json"]).exists())
+                self.assertTrue(Path(local_files["metrics_csv"]).exists())
+                self.assertGreaterEqual(local_files["days_recorded"], 7)
+
+                exported = app.call_tool("x_autopilot", {"action": "export_report"})
+                self.assertTrue(exported["ok"])
+                self.assertIn("date,publish_post,like_post,follow_profile", exported["data"]["csv_content"])
+                self.assertIn("persona_memory", exported["data"])
+                self.assertIn("content_queue", exported["data"])
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()
