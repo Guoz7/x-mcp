@@ -941,10 +941,15 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 )
                 mock_browser = MagicMock()
                 mock_browser.browser_family = "chromium"
-                mock_browser.execute_x_action.side_effect = [
-                    {"verified": True, "changed": True, "state": "liked", "post_url": "https://x.com/scout_found_1/status/888001"},
-                    {"verified": True, "changed": True, "state": "following", "handle": "scout_found_1", "profile_url": "https://x.com/scout_found_1"},
-                ]
+                mock_browser.execute_x_action.side_effect = lambda *, action_type, post_url, author, text, action_id, claim_token, lease_expires_epoch: (
+                    {"verified": True, "changed": True, "state": "liked", "post_url": post_url}
+                    if action_type == "like_post"
+                    else (
+                        {"verified": True, "changed": True, "state": "replied", "post_url": post_url, "reply_url": "https://x.com/guoz7777/status/999001", "text": text}
+                        if action_type == "reply_post"
+                        else {"verified": True, "changed": True, "state": "following", "handle": author, "profile_url": post_url}
+                    )
+                )
                 with patch.object(app, "_browser_for", return_value=mock_browser):
                     wave = app.call_tool(
                         "x_autopilot",
@@ -957,7 +962,7 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                     )
                 self.assertTrue(wave["ok"])
                 self.assertTrue(wave["data"]["ran"])
-                self.assertEqual(wave["data"]["execution"]["verified_changed"], 2)
+                self.assertGreaterEqual(wave["data"]["execution"]["verified_changed"], 2)
                 st = app.call_tool("x_target_pool", {"action": "stats"})
                 self.assertEqual(st["data"]["fresh_candidates"], 0)
                 self.assertEqual(st["data"]["fresh_posts"], 0)

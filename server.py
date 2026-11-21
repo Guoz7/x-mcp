@@ -4478,7 +4478,7 @@ class XStarter:
                     persona_topics=persona_topics,
                     exclude_keywords=exclude_keywords,
                     pillar_weights=pw["weights_map"],
-                    auto_reply=True,
+                    auto_reply=bool(arguments.get("auto_reply", True)),
                     persona_memory=pm,
                 )
                 if plan.get("blocked"):

@@ -112,7 +112,7 @@ def draft_friendly_reply(
     """Draft a natural, non-AI-boilerplate friend-making reply matching the post's language and topic."""
     r = rng or random.SystemRandom()
     raw_text = str(post.get("text") or post.get("text_preview") or "").strip()
-    if not raw_text:
+    if len(raw_text) < 10:
         return None
     lower = raw_text.casefold()
     is_notif = str(post.get("source") or "") == "notification" or "replying to" in lower
