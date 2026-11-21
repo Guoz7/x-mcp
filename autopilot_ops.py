@@ -261,7 +261,7 @@ def build_ops_summary(
         atype = str(action.get("type") or "")
         result = action.get("result") or {}
         payload = action.get("payload") or {}
-        if atype == "owner_read_account" and status == "completed" and isinstance(result, dict):
+        if atype in {"observe_account", "owner_read_account"} and status == "completed" and isinstance(result, dict):
             snap = result.get("snapshot") if isinstance(result.get("snapshot"), dict) else result
             if snap.get("username") and (latest_snapshot is None or at_epoch > latest_snapshot[0]):
                 latest_snapshot = (at_epoch, snap)

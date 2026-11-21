@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import secrets
 import threading
@@ -3515,7 +3516,7 @@ class XStarter:
         if snapshot is None:
             latest_at = ""
             for action in (ledger.get("actions") or {}).values():
-                if not isinstance(action, dict) or action.get("type") != "owner_read_account" or action.get("status") != "completed":
+                if not isinstance(action, dict) or action.get("type") not in {"observe_account", "owner_read_account"} or action.get("status") != "completed":
                     continue
                 res = action.get("result") if isinstance(action.get("result"), dict) else {}
                 cand = res.get("snapshot") if isinstance(res.get("snapshot"), dict) else res
@@ -4089,7 +4090,8 @@ class XStarter:
                 query = str(arguments.get("search_query") or account_orchestrator.RECIPROCAL_SEARCH_QUERY)
                 max_count = _bounded_int(arguments, "max_count", default=4, minimum=1, maximum=10)
                 posts = arguments.get("timeline_posts")
-                own_username = str(ledger.get("account_binding") or "").strip().lstrip("@")
+                raw_binding = str(ledger.get("account_binding") or "").strip().lstrip("@")
+                own_username = raw_binding if re.fullmatch(r"[A-Za-z0-9_]{1,15}", raw_binding) else ""
                 if posts is None and self.mode == "browser":
                     browser = self._browser_for(arguments)
                     if not own_username:
@@ -4194,12 +4196,13 @@ class XStarter:
                 exclude_keywords = list(window.get("exclude_keywords") or [])
                 wave_idx = len(status.get("recent_waves") or [])
                 search_query = account_orchestrator.pick_discovery_query(window, wave_index=wave_idx)
-                own_username = str(ledger.get("account_binding") or "").strip().lstrip("@")
+                raw_binding = str(ledger.get("account_binding") or "").strip().lstrip("@")
+                own_username = raw_binding if re.fullmatch(r"[A-Za-z0-9_]{1,15}", raw_binding) else ""
                 snapshot = arguments.get("account_snapshot")
                 if snapshot is None:
                     latest_at = ""
                     for act in (ledger.get("actions") or {}).values():
-                        if not isinstance(act, dict) or act.get("type") != "owner_read_account" or act.get("status") != "completed":
+                        if not isinstance(act, dict) or act.get("type") not in {"observe_account", "owner_read_account"} or act.get("status") != "completed":
                             continue
                         res = act.get("result") if isinstance(act.get("result"), dict) else {}
                         cand = res.get("snapshot") if isinstance(res.get("snapshot"), dict) else res
@@ -4213,6 +4216,7 @@ class XStarter:
                 follow_candidates = arguments.get("follow_candidates")
                 visited_profiles: list[dict[str, Any]] = []
                 opened_browser = False
+                read_error: str | None = None
                 if timeline_posts is None and self.mode == "browser":
                     try:
                         browser = self._browser_for(arguments)
@@ -4228,9 +4232,19 @@ class XStarter:
                                 persona_topics = inferred["persona_topics"]
                                 exclude_keywords = exclude_keywords or inferred["exclude_keywords"]
                                 search_query = inferred["search_query"]
-                        timeline_posts = browser_read.read_search_posts(
-                            browser, str(search_query), limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
-                        ).get("posts") or []
+                        try:
+                            timeline_posts = browser_read.read_search_posts(
+                                browser, str(search_query), limit=10, sort="live", base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                            ).get("posts") or []
+                        except browser_read.ReadError:
+                            try:
+                                timeline_posts = browser_read.read_search_posts(
+                                    browser, str(search_query), limit=10, sort="top", base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                ).get("posts") or []
+                            except browser_read.ReadError:
+                                timeline_posts = browser_read.read_timeline(
+                                    browser, limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                ).get("posts") or []
                         # Also pull recent notifications so we actively reciprocate interactors.
                         notif_derived: list[dict[str, Any]] = []
                         try:
@@ -4298,7 +4312,8 @@ class XStarter:
                                     timeline_posts.insert(0, p_posts[0])
                             except (StarterError, ExecutorError, browser_read.ReadError):
                                 continue
-                    except (StarterError, ExecutorError, browser_read.ReadError):
+                    except (StarterError, ExecutorError, browser_read.ReadError) as exc:
+                        read_error = f"{getattr(exc, 'code', type(exc).__name__)}: {exc}"
                         timeline_posts = timeline_posts or []
                 if follow_candidates is None and timeline_posts:
                     seen_authors_fb: set[str] = set()
@@ -4334,7 +4349,7 @@ class XStarter:
                 if not ops:
                     if opened_browser:
                         self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
-                    return {"ran": False, "reason": "NO_ELIGIBLE_OPERATIONS", "stage": plan.get("stage"), "query": search_query, "autopilot": status}
+                    return {"ran": False, "reason": "NO_ELIGIBLE_OPERATIONS", "stage": plan.get("stage"), "query": search_query, "read_error": read_error, "timeline_count": len(timeline_posts or []), "cand_count": len(follow_candidates or []), "autopilot": status}
                 wave_plan = {**plan, "operations": ops, "operation_count": len(ops)}
                 session_id = arguments.get("_mcp_session_id")
                 prep = self._bridge().prepare_daily_batch(wave_plan, session_id=session_id, ttl_seconds=600)
