@@ -180,12 +180,23 @@ class AutopilotStore:
             return {"enabled": False, "stop_reason": reason}
 
     def record_wave(self, summary: dict[str, Any], *, now_epoch: float | None = None) -> None:
+        import random
+
         now = float(now_epoch) if now_epoch is not None else time.time()
+        rng = random.SystemRandom()
         with self.lock:
             data = self._read()
             active = data.get("active_window")
             if isinstance(active, dict):
                 active["last_wave_epoch"] = now
+                base_sec = max(600, int(active.get("min_wave_interval_minutes", 90)) * 60)
+                # Human-like irregular spacing: normal jitter (0.65x..1.55x) with occasional longer break (1.6x..2.4x).
+                mult = rng.uniform(1.6, 2.4) if rng.random() < 0.20 else rng.uniform(0.65, 1.55)
+                active["next_wave_epoch"] = now + base_sec * mult
+                base_max = max(1, int(active.get("max_per_wave", 4)))
+                low = max(1, base_max - 2)
+                high = min(10, base_max + 1)
+                active["next_wave_limit"] = rng.randint(low, high)
             log = list(data.get("waves_log") or [])
             log.append({"at": _iso(now), "at_epoch": now, **summary})
             data["waves_log"] = log[-50:]
@@ -218,13 +229,20 @@ class AutopilotStore:
         in_hours = start_h <= local_hour < end_h
         last_wave = active.get("last_wave_epoch")
         min_interval = int(active.get("min_wave_interval_minutes", 90)) * 60
-        interval_ok = last_wave is None or (now - float(last_wave)) >= min_interval
+        planned_next = active.get("next_wave_epoch")
+        if planned_next is not None:
+            next_wave = float(planned_next)
+        elif last_wave is not None:
+            next_wave = float(last_wave) + min_interval
+        else:
+            next_wave = now
+        interval_ok = last_wave is None or now >= next_wave
         return {
             "enabled": True,
             "active_window": active,
             "in_active_hours": in_hours,
             "wave_due": in_hours and interval_ok,
-            "next_wave_epoch": (float(last_wave) + min_interval) if last_wave is not None else now,
+            "next_wave_epoch": next_wave,
             "recent_waves": waves_log[-10:],
         }
 

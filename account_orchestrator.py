@@ -1322,11 +1322,15 @@ def build_daily_orchestration_plan(
         ordered.extend(seq)
     if buckets["publish_post"]:
         ordered.append(buckets["publish_post"].pop(0))
-    order_cycle = ("like_post", "reply_post", "follow_profile", "repost_post", "publish_post")
+    order_cycle = ["like_post", "reply_post", "follow_profile", "repost_post", "publish_post"]
     while any(buckets.values()):
+        rng.shuffle(order_cycle)
         for kind in order_cycle:
             if buckets[kind]:
-                ordered.append(buckets[kind].pop(0))
+                burst = 2 if (len(buckets[kind]) >= 2 and kind in {"like_post", "follow_profile"} and rng.random() < 0.35) else 1
+                for _ in range(burst):
+                    if buckets[kind]:
+                        ordered.append(buckets[kind].pop(0))
 
     operations: list[dict[str, Any]] = []
     total_delay = 0
@@ -1334,7 +1338,13 @@ def build_daily_orchestration_plan(
         cfg = prof["actions"][op["action"]]
         min_gap = int(cfg.get("min_gap_seconds", 60))
         max_gap = max(min_gap, int(cfg.get("max_gap_seconds", min_gap)))
-        delay = 0 if idx == 0 else rng.randint(min_gap, max_gap)
+        if idx == 0:
+            delay = 0
+        else:
+            mode_gap = min_gap + (max_gap - min_gap) * 0.35
+            base_delay = int(round(rng.triangular(min_gap, max_gap, mode_gap)))
+            extra_pause = rng.randint(15, 45) if rng.random() < 0.25 else 0
+            delay = base_delay + extra_pause
         total_delay += delay
         operations.append({
             "step_index": idx + 1,

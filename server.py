@@ -4216,6 +4216,7 @@ class XStarter:
                     )
                 window = status["active_window"]
                 max_wave = int(window.get("max_per_wave", 4))
+                wave_limit = max(1, min(10, int(window.get("next_wave_limit") or max_wave)))
                 persona_topics = list(window.get("persona_topics") or [])
                 exclude_keywords = list(window.get("exclude_keywords") or [])
                 wave_idx = len(status.get("recent_waves") or [])
@@ -4369,7 +4370,7 @@ class XStarter:
                         self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
                     store.stop_window(reason=f"circuit_breaker:{plan.get('reason')}")
                     raise StarterError("ACCOUNT_COOLDOWN", f"Autopilot halted ({plan.get('reason')}).", details=plan)
-                ops = list(plan.get("operations") or [])[:max_wave]
+                ops = list(plan.get("operations") or [])[:wave_limit]
                 if not ops:
                     if opened_browser:
                         self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
@@ -4381,7 +4382,7 @@ class XStarter:
                     {
                         "batch_id": prep["batch_id"],
                         "confirmation": prep["confirmation_phrase"],
-                        "action_limit": max_wave,
+                        "action_limit": wave_limit,
                         "respect_pacing": bool(arguments.get("respect_pacing", True)),
                         "_mcp_session_id": session_id,
                     },
