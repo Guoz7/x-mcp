@@ -4192,13 +4192,32 @@ class XStarter:
                 max_wave = int(window.get("max_per_wave", 4))
                 persona_topics = list(window.get("persona_topics") or [])
                 exclude_keywords = list(window.get("exclude_keywords") or [])
-                search_query = window.get("search_query")
+                wave_idx = len(status.get("recent_waves") or [])
+                search_query = account_orchestrator.pick_discovery_query(window, wave_index=wave_idx)
                 own_username = str(ledger.get("account_binding") or "").strip().lstrip("@")
+                snapshot = arguments.get("account_snapshot")
+                if snapshot is None:
+                    latest_at = ""
+                    for act in (ledger.get("actions") or {}).values():
+                        if not isinstance(act, dict) or act.get("type") != "owner_read_account" or act.get("status") != "completed":
+                            continue
+                        res = act.get("result") if isinstance(act.get("result"), dict) else {}
+                        cand = res.get("snapshot") if isinstance(res.get("snapshot"), dict) else res
+                        at = str(act.get("completed_at") or act.get("created_at") or "")
+                        if cand.get("username") and at >= latest_at:
+                            latest_at = at
+                            snapshot = cand
+                if not own_username and isinstance(snapshot, dict):
+                    own_username = str(snapshot.get("username") or "").strip().lstrip("@")
                 timeline_posts = arguments.get("timeline_posts")
+                follow_candidates = arguments.get("follow_candidates")
+                visited_profiles: list[dict[str, Any]] = []
+                opened_browser = False
                 if timeline_posts is None and self.mode == "browser":
                     try:
                         browser = self._browser_for(arguments)
-                        if not persona_topics and not search_query:
+                        opened_browser = True
+                        if not persona_topics and not window.get("search_query"):
                             if not own_username:
                                 own_username = str((browser_read.read_account(browser) or {}).get("username") or "").strip()
                             if own_username:
@@ -4209,43 +4228,113 @@ class XStarter:
                                 persona_topics = inferred["persona_topics"]
                                 exclude_keywords = exclude_keywords or inferred["exclude_keywords"]
                                 search_query = inferred["search_query"]
-                        if search_query:
-                            timeline_posts = browser_read.read_search_posts(
-                                browser, str(search_query), limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
-                            ).get("posts")
-                        else:
-                            timeline_posts = browser_read.read_timeline(
+                        timeline_posts = browser_read.read_search_posts(
+                            browser, str(search_query), limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                        ).get("posts") or []
+                        # Also pull recent notifications so we actively reciprocate interactors.
+                        notif_derived: list[dict[str, Any]] = []
+                        try:
+                            notifs = browser_read.read_notifications(
                                 browser, limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
-                            ).get("posts")
+                            ).get("interactions") or []
+                            for n in notifs:
+                                n_author = str(n.get("author") or "").strip().lstrip("@")
+                                if n_author and n_author.casefold() != own_username.casefold():
+                                    notif_derived.append({
+                                        "handle": n_author,
+                                        "mutual_verified": True,
+                                        "post_text": str(n.get("text") or "")[:160],
+                                        "source": "notification_followback",
+                                    })
+                                    if n.get("url"):
+                                        timeline_posts.append({
+                                            "url": n["url"],
+                                            "author": n_author,
+                                            "text": str(n.get("text") or ""),
+                                        })
+                        except (StarterError, ExecutorError, browser_read.ReadError):
+                            pass
+
+                        if follow_candidates is None:
+                            seen_authors: set[str] = {own_username.casefold()} if own_username else set()
+                            derived: list[dict[str, Any]] = []
+                            for item in notif_derived:
+                                key = item["handle"].casefold()
+                                if key not in seen_authors:
+                                    seen_authors.add(key)
+                                    derived.append(item)
+                            for post in timeline_posts:
+                                author = str(post.get("author") or "").strip().lstrip("@")
+                                if not author or author.casefold() in seen_authors:
+                                    continue
+                                seen_authors.add(author.casefold())
+                                derived.append({
+                                    "handle": author,
+                                    "post_text": str(post.get("text") or "")[:160],
+                                    "source": "cross_lang_discovery",
+                                })
+                            follow_candidates = derived
+
+                        # Active profile visiting ("串门"): visit up to 2 fresh candidates to read their recent posts.
+                        seen_ledger_handles, _ = account_orchestrator._seen_ledger_targets(ledger)
+                        visit_count = 0
+                        for cand in (follow_candidates or []):
+                            if visit_count >= 2:
+                                break
+                            h = str(cand.get("handle") or "").strip().lstrip("@")
+                            if not h or h.casefold() in seen_ledger_handles:
+                                continue
+                            try:
+                                profile_res = browser_read.read_user_posts(
+                                    browser, h, limit=3, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                )
+                                p_posts = profile_res.get("posts") or []
+                                visit_count += 1
+                                visited_profiles.append({"handle": h, "posts_seen": len(p_posts)})
+                                trace.append(_event("x_adapter", "profile_visited", handle=h, posts_seen=len(p_posts), external_call=True))
+                                if p_posts:
+                                    cand["post_text"] = str(p_posts[0].get("text") or "")[:160]
+                                    cand["active"] = True
+                                    timeline_posts.insert(0, p_posts[0])
+                            except (StarterError, ExecutorError, browser_read.ReadError):
+                                continue
                     except (StarterError, ExecutorError, browser_read.ReadError):
-                        timeline_posts = []
-                follow_candidates = arguments.get("follow_candidates")
+                        timeline_posts = timeline_posts or []
                 if follow_candidates is None and timeline_posts:
-                    seen_authors: set[str] = set()
-                    derived: list[dict[str, Any]] = []
+                    seen_authors_fb: set[str] = set()
+                    derived_fb: list[dict[str, Any]] = []
                     for post in timeline_posts:
                         author = str(post.get("author") or "").strip().lstrip("@")
-                        if not author or author.casefold() == own_username.casefold() or author.casefold() in seen_authors:
+                        if not author or author.casefold() == own_username.casefold() or author.casefold() in seen_authors_fb:
                             continue
-                        seen_authors.add(author.casefold())
-                        derived.append({"handle": author, "source": "proactive_discovery"})
-                    follow_candidates = derived
+                        seen_authors_fb.add(author.casefold())
+                        derived_fb.append({"handle": author, "source": "proactive_discovery"})
+                    follow_candidates = derived_fb
+                queue_items = self._content_queue().list()
+                pw = account_orchestrator.compute_pillar_weights(
+                    ledger, queue_items, self._persona_memory().read()
+                )
                 plan = account_orchestrator.build_daily_orchestration_plan(
                     ledger,
                     goals=window.get("daily_goals"),
                     timeline_posts=timeline_posts,
                     follow_candidates=follow_candidates,
-                    content_queue=self._content_queue().list(),
-                    account_snapshot=arguments.get("account_snapshot"),
+                    content_queue=queue_items,
+                    account_snapshot=snapshot,
                     persona_topics=persona_topics,
                     exclude_keywords=exclude_keywords,
+                    pillar_weights=pw["weights_map"],
                 )
                 if plan.get("blocked"):
+                    if opened_browser:
+                        self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
                     store.stop_window(reason=f"circuit_breaker:{plan.get('reason')}")
                     raise StarterError("ACCOUNT_COOLDOWN", f"Autopilot halted ({plan.get('reason')}).", details=plan)
                 ops = list(plan.get("operations") or [])[:max_wave]
                 if not ops:
-                    return {"ran": False, "reason": "NO_ELIGIBLE_OPERATIONS", "stage": plan.get("stage"), "autopilot": status}
+                    if opened_browser:
+                        self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
+                    return {"ran": False, "reason": "NO_ELIGIBLE_OPERATIONS", "stage": plan.get("stage"), "query": search_query, "autopilot": status}
                 wave_plan = {**plan, "operations": ops, "operation_count": len(ops)}
                 session_id = arguments.get("_mcp_session_id")
                 prep = self._bridge().prepare_daily_batch(wave_plan, session_id=session_id, ttl_seconds=600)
@@ -4263,11 +4352,14 @@ class XStarter:
                     store.stop_window(reason=str(exe["stop_reason"]))
                 store.record_wave({
                     "batch_id": exe["batch_id"],
+                    "mode": "cross_lang_visit_wave",
+                    "query": search_query,
+                    "visited_profiles": visited_profiles,
                     "processed": exe["processed"],
                     "verified_changed": exe["verified_changed"],
                     "stop_reason": exe["stop_reason"],
                 })
-                return {"ran": True, "stage": plan.get("stage"), "execution": exe}
+                return {"ran": True, "stage": plan.get("stage"), "query": search_query, "visited_profiles": visited_profiles, "execution": exe}
         except autopilot_ops.AutopilotError as exc:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
         raise StarterError("INVALID_ARGUMENT", "action must be status, prepare, activate, stop, run_wave, or ops_summary.")

@@ -856,6 +856,22 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_cross_language_discovery_query_rotation_and_scoring(self) -> None:
+        from account_orchestrator import pick_discovery_query, score_follow_candidate
+
+        q0 = pick_discovery_query({}, wave_index=0)
+        q1 = pick_discovery_query({}, wave_index=1)
+        q4 = pick_discovery_query({}, wave_index=4)
+        self.assertNotEqual(q0, q1)
+        self.assertIn("build in public", q1)
+        self.assertIn("相互フォロー", q4)
+
+        en_score, _ = score_follow_candidate({"handle": "en_builder", "bio": "Indie hacker, build in public, follow back"})
+        ja_score, _ = score_follow_candidate({"handle": "ja_dev", "bio": "個人開発 相互フォロー"})
+        plain_score, _ = score_follow_candidate({"handle": "plain_user", "bio": ""})
+        self.assertGreater(en_score, plain_score)
+        self.assertGreater(ja_score, plain_score)
+
 
 if __name__ == "__main__":
     unittest.main()

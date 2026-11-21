@@ -782,8 +782,32 @@ def _seen_ledger_targets(ledger: dict[str, Any]) -> tuple[set[str], set[str]]:
     return handles, urls
 
 
-_RECIPROCAL_MARKERS = ("互关", "互follow", "互粉", "follow back", "followback", "f4f", "回关")
+_RECIPROCAL_MARKERS = (
+    "互关", "互follow", "互粉", "回关",
+    "follow back", "followback", "f4f", "mutual", "let's connect",
+    "build in public", "indie hacker",
+    "相互フォロー", "フォロバ", "相互",
+)
 RECIPROCAL_SEARCH_QUERY = "互关 OR 互follow OR 互粉"
+CROSS_LANGUAGE_DISCOVERY_QUERIES = (
+    "互关 OR 互follow OR 互粉",
+    "build in public OR indie hacker OR AI agent",
+    "follow back OR followback OR mutuals AI",
+    "AI Agent OR MCP OR LLM dev",
+    "相互フォロー OR フォロバ100 OR 個人開発",
+)
+
+
+def pick_discovery_query(window: dict[str, Any] | None, wave_index: int = 0) -> str:
+    """Rotate across configured and cross-language discovery queries so each wave explores fresh niches."""
+    custom = window.get("discovery_queries") if isinstance(window, dict) else None
+    pool = [str(q).strip() for q in custom if str(q).strip()] if isinstance(custom, list) else []
+    base = str((window or {}).get("search_query") or "").strip()
+    if not pool:
+        pool = list(CROSS_LANGUAGE_DISCOVERY_QUERIES)
+        if base and base not in pool:
+            pool.insert(0, base)
+    return pool[abs(int(wave_index)) % len(pool)]
 
 
 def has_reciprocal_marker(cand: dict[str, Any]) -> bool:
