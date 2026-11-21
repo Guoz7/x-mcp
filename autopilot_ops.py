@@ -358,10 +358,18 @@ def persist_daily_metrics(state_dir: Path, summary: dict[str, Any]) -> dict[str,
     """Persist cumulative daily metrics into analytics_history.json and daily_metrics.csv for human maintenance."""
     import csv
     import io
+    from ledger_lock import LedgerLock
 
     state_dir.mkdir(parents=True, exist_ok=True)
     history_path = state_dir / "analytics_history.json"
     csv_path = state_dir / "daily_metrics.csv"
+    with LedgerLock(state_dir / ".analytics.lock"):
+        return _persist_daily_metrics_locked(history_path, csv_path, summary)
+
+
+def _persist_daily_metrics_locked(history_path: Path, csv_path: Path, summary: dict[str, Any]) -> dict[str, Any]:
+    import csv
+    import io
 
     history: dict[str, Any] = {"version": 1, "timezone": summary.get("timezone", "Asia/Shanghai"), "days": {}}
     if history_path.exists():
