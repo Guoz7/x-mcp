@@ -4370,7 +4370,7 @@ class XStarter:
                     try:
                         browser = self._browser_for(arguments)
                         opened_browser = True
-                        if not persona_topics and not window.get("search_query"):
+                        if not persona_topics and not window.get("search_query") and not search_query:
                             if not own_username:
                                 own_username = str((browser_read.read_account(browser) or {}).get("username") or "").strip()
                             if own_username:
@@ -4383,17 +4383,15 @@ class XStarter:
                                 search_query = inferred["search_query"]
                         try:
                             timeline_posts = browser_read.read_search_posts(
-                                browser, str(search_query), limit=10, sort="live", base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                browser, str(search_query), limit=12, sort="top", base_url=self.environ.get("X_STARTER_READ_BASE_URL")
                             ).get("posts") or []
-                        except browser_read.ReadError:
-                            try:
-                                timeline_posts = browser_read.read_search_posts(
-                                    browser, str(search_query), limit=10, sort="top", base_url=self.environ.get("X_STARTER_READ_BASE_URL")
-                                ).get("posts") or []
-                            except browser_read.ReadError:
-                                timeline_posts = browser_read.read_timeline(
-                                    browser, limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
-                                ).get("posts") or []
+                        except (browser_read.ReadError, ExecutorError) as search_exc:
+                            if getattr(browser, "timed_out", False) or "TIMEOUT" in str(getattr(search_exc, "code", "")):
+                                self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
+                                browser = self._browser_for(arguments)
+                            timeline_posts = browser_read.read_timeline(
+                                browser, limit=15, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                            ).get("posts") or []
                         if not any(
                             str(p.get("author") or "").strip().lstrip("@").casefold() != own_username.casefold()
                             for p in (timeline_posts or [])
@@ -4448,6 +4446,17 @@ class XStarter:
                                     "source": "cross_lang_discovery",
                                 })
                             follow_candidates = derived
+
+                        # Cache discovered targets into TargetPoolStore so subsequent waves avoid repeated searches.
+                        if (follow_candidates or timeline_posts) and not used_target_pool:
+                            try:
+                                self._target_pool().ingest(
+                                    candidates=follow_candidates[wave_limit:],
+                                    posts=timeline_posts[wave_limit:],
+                                    source="wave_surplus_cache",
+                                )
+                            except Exception:
+                                pass
 
                         # Active profile visiting ("串门"): visit up to 2 fresh candidates to read their recent posts.
                         seen_ledger_handles, _ = account_orchestrator._seen_ledger_targets(ledger)
