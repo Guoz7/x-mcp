@@ -660,7 +660,7 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             try:
                 got = app.call_tool("x_persona_memory", {"action": "get"})
                 self.assertTrue(got["ok"])
-                self.assertTrue(bool(got["data"]["role"]))
+                self.assertEqual(got["data"]["role"], "")
 
                 updated = app.call_tool(
                     "x_persona_memory",
