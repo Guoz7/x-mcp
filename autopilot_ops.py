@@ -66,9 +66,9 @@ class AutopilotStore:
         self,
         *,
         days: int = 7,
-        active_hours: tuple[int, int] | list[int] = (9, 22),
-        max_per_wave: int = 4,
-        min_wave_interval_minutes: int = 90,
+        active_hours: tuple[int, int] | list[int] = (9, 23),
+        max_per_wave: int = 9,
+        min_wave_interval_minutes: int = 18,
         daily_goals: dict[str, int] | None = None,
         persona_topics: list[str] | None = None,
         exclude_keywords: list[str] | None = None,
@@ -90,10 +90,10 @@ class AutopilotStore:
 
         goals = daily_goals or {
             "publish_post": 1,
-            "like_post": 12,
-            "follow_profile": 6,
-            "repost_post": 3,
-            "reply_post": 2,
+            "like_post": 60,
+            "follow_profile": 200,
+            "repost_post": 10,
+            "reply_post": 15,
         }
         window_id = "ap_" + secrets.token_hex(6)
         phrase = "AUTOPILOT " + secrets.token_hex(3).upper()

@@ -40,10 +40,10 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_SAFE_PROFILE_PATH = ROOT / "docs" / "orchestration-profile-safe.json"
 
 DEFAULT_SAFE_CAPS: dict[str, dict[str, Any]] = {
-    "follow_profile": {"enabled": True, "per_day": 25, "min_gap_seconds": 90, "max_gap_seconds": 240},
-    "repost_post": {"enabled": True, "per_day": 40, "min_gap_seconds": 120, "max_gap_seconds": 300},
-    "like_post": {"enabled": True, "per_day": 60, "min_gap_seconds": 60, "max_gap_seconds": 180},
-    "reply_post": {"enabled": True, "per_day": 15, "min_gap_seconds": 120, "max_gap_seconds": 300},
+    "follow_profile": {"enabled": True, "per_day": 25, "min_gap_seconds": 25, "max_gap_seconds": 65},
+    "repost_post": {"enabled": True, "per_day": 40, "min_gap_seconds": 45, "max_gap_seconds": 120},
+    "like_post": {"enabled": True, "per_day": 60, "min_gap_seconds": 20, "max_gap_seconds": 55},
+    "reply_post": {"enabled": True, "per_day": 15, "min_gap_seconds": 60, "max_gap_seconds": 150},
     "publish_post": {"enabled": True, "per_day": 5, "min_gap_seconds": 600, "max_gap_seconds": 1800},
 }
 
@@ -1106,7 +1106,7 @@ _STOPWORDS = frozenset({
 def find_unfollow_candidates(
     ledger: dict[str, Any],
     *,
-    min_age_days: int = 7,
+    min_age_days: int = 3,
     now_epoch: float | None = None,
 ) -> list[dict[str, Any]]:
     """Return oldest-first follows older than min_age_days with no mutual_verified proof."""

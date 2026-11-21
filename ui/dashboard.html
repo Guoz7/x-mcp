@@ -305,7 +305,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
       <button id="btnApActivate" onclick="activateAutopilot()" disabled>2. 启用托管</button>
       <button id="btnApRunWave" onclick="runAutopilotWave()" disabled>立即跑一小波</button>
       <button onclick="runReciprocalWave()">互关发现波次</button>
-      <button onclick="runCleanupUnfollow()">清理未回关 (7天+)</button>
+      <button onclick="runCleanupUnfollow()">清理未回关 (3天+)</button>
       <button id="btnApSchedStart" onclick="toggleScheduler(true)" disabled>开启后台定时</button>
       <button id="btnApSchedStop" onclick="toggleScheduler(false)" disabled>停止后台定时</button>
       <button id="btnApStop" onclick="stopAutopilot()" disabled>紧急停机</button>
@@ -1024,10 +1024,10 @@ async function runReciprocalWave() {
 }
 
 async function runCleanupUnfollow() {
-  showToast('apToast', true, '正在检查 7 天以上未回关的账号并清理...');
-  const res = await callTool('x_autopilot', { action: 'run_cleanup', min_age_days: 7, max_count: 5, respect_pacing: true });
+  showToast('apToast', true, '正在检查 3 天以上未回关的账号并清理...');
+  const res = await callTool('x_autopilot', { action: 'run_cleanup', min_age_days: 3, max_count: 5, respect_pacing: true });
   if (!res.ok) return showToast('apToast', false, res.error?.message || '清理失败');
-  if (!res.data.ran) return showToast('apToast', true, '暂无超过 7 天未回关的待清理账号。');
+  if (!res.data.ran) return showToast('apToast', true, '暂无超过 3 天未回关的待清理账号。');
   const exe = res.data.execution;
   showToast('apToast', true, `取关清理完成：处理 ${exe.processed}/${exe.planned}，已复验 ${exe.verified_changed}。`);
   refreshAll();

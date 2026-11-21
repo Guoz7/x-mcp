@@ -4161,7 +4161,7 @@ class XStarter:
                 return inferred
             if action == "cleanup_candidates":
                 ledger = self._bridge().read_ledger_snapshot()
-                min_age = _bounded_int(arguments, "min_age_days", default=7, minimum=1, maximum=90)
+                min_age = _bounded_int(arguments, "min_age_days", default=3, minimum=1, maximum=90)
                 cands = account_orchestrator.find_unfollow_candidates(ledger, min_age_days=min_age)
                 return {"min_age_days": min_age, "count": len(cands), "candidates": cands}
             if action == "run_cleanup":
@@ -4169,7 +4169,7 @@ class XStarter:
                 breaker = account_orchestrator.evaluate_circuit_breaker(ledger)
                 if not breaker["allow_write"]:
                     raise StarterError("ACCOUNT_COOLDOWN", f"Cleanup halted by circuit breaker ({breaker['reason']}).", details=breaker)
-                min_age = _bounded_int(arguments, "min_age_days", default=7, minimum=1, maximum=90)
+                min_age = _bounded_int(arguments, "min_age_days", default=3, minimum=1, maximum=90)
                 max_count = _bounded_int(arguments, "max_count", default=5, minimum=1, maximum=25)
                 cands = account_orchestrator.find_unfollow_candidates(ledger, min_age_days=min_age)[:max_count]
                 if not cands:
@@ -4272,9 +4272,9 @@ class XStarter:
             if action == "prepare":
                 res = store.prepare_window(
                     days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),
-                    active_hours=arguments.get("active_hours") or [9, 22],
-                    max_per_wave=_bounded_int(arguments, "max_per_wave", default=4, minimum=1, maximum=10),
-                    min_wave_interval_minutes=_bounded_int(arguments, "min_wave_interval_minutes", default=90, minimum=15, maximum=720),
+                    active_hours=arguments.get("active_hours") or [9, 23],
+                    max_per_wave=_bounded_int(arguments, "max_per_wave", default=9, minimum=1, maximum=10),
+                    min_wave_interval_minutes=_bounded_int(arguments, "min_wave_interval_minutes", default=18, minimum=15, maximum=720),
                     daily_goals=arguments.get("daily_goals"),
                     persona_topics=arguments.get("persona_topics"),
                     exclude_keywords=arguments.get("exclude_keywords"),
@@ -4515,7 +4515,24 @@ class XStarter:
                     "verified_changed": exe["verified_changed"],
                     "stop_reason": exe["stop_reason"],
                 })
-                return {"ran": True, "stage": plan.get("stage"), "query": search_query, "visited_profiles": visited_profiles, "execution": exe}
+                auto_cleanup_res = None
+                if bool(arguments.get("auto_cleanup", True)) and not str(exe.get("stop_reason") or "").startswith("REFUSAL_CIRCUIT_BREAKER"):
+                    stale_cands = account_orchestrator.find_unfollow_candidates(ledger, min_age_days=3)
+                    if stale_cands:
+                        try:
+                            auto_cleanup_res = self._x_autopilot(
+                                {
+                                    "action": "run_cleanup",
+                                    "min_age_days": 3,
+                                    "max_count": 2,
+                                    "respect_pacing": bool(arguments.get("respect_pacing", True)),
+                                    "_mcp_session_id": session_id,
+                                },
+                                trace,
+                            )
+                        except (StarterError, ExecutorError, BridgeError):
+                            auto_cleanup_res = None
+                return {"ran": True, "stage": plan.get("stage"), "query": search_query, "visited_profiles": visited_profiles, "execution": exe, "auto_cleanup": auto_cleanup_res}
         except autopilot_ops.AutopilotError as exc:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
         raise StarterError("INVALID_ARGUMENT", "action must be status, prepare, activate, stop, run_wave, or ops_summary.")
