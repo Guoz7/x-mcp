@@ -1185,7 +1185,7 @@ def infer_owner_profile(
         # Extract ASCII tech/domain words (>=2 chars) and 2-4 char Chinese terms.
         for tok in re.findall(r"[A-Za-z][A-Za-z0-9_+-]{1,20}", raw):
             low = tok.casefold()
-            if low in _STOPWORDS or low == handle_cf or low.isdigit():
+            if low in _STOPWORDS or low.isdigit() or (handle_cf and (low in handle_cf or handle_cf in low)):
                 continue
             counts[tok] = counts.get(tok, 0) + 1
         for tok in re.findall(r"[\u4e00-\u9fff]{2,4}", raw):

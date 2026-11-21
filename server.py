@@ -4328,7 +4328,8 @@ class XStarter:
                 wave_limit = max(1, min(10, int(window.get("next_wave_limit") or max_wave)))
                 persona_topics = list(window.get("persona_topics") or [])
                 exclude_keywords = list(window.get("exclude_keywords") or [])
-                wave_idx = len(status.get("recent_waves") or [])
+                sched_ticks = (self._scheduler.status().get("ticks", 0) if self._scheduler is not None else 0)
+                wave_idx = len(status.get("recent_waves") or []) + int(sched_ticks)
                 search_query = account_orchestrator.pick_discovery_query(window, wave_index=wave_idx)
                 raw_binding = str(ledger.get("account_binding") or "").strip().lstrip("@")
                 own_username = raw_binding if re.fullmatch(r"[A-Za-z0-9_]{1,15}", raw_binding) else ""
@@ -4393,6 +4394,16 @@ class XStarter:
                                 timeline_posts = browser_read.read_timeline(
                                     browser, limit=10, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
                                 ).get("posts") or []
+                        if not any(
+                            str(p.get("author") or "").strip().lstrip("@").casefold() != own_username.casefold()
+                            for p in (timeline_posts or [])
+                        ):
+                            try:
+                                timeline_posts = browser_read.read_timeline(
+                                    browser, limit=15, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                ).get("posts") or []
+                            except (StarterError, ExecutorError, browser_read.ReadError):
+                                pass
                         # Also pull recent notifications so we actively reciprocate interactors.
                         notif_derived: list[dict[str, Any]] = []
                         try:
