@@ -101,6 +101,80 @@ def check_reply_naturalness(
     if len(cleaned) < 8:
         warnings.append("Reply is too short to add a concrete point.")
     return warnings
+
+
+def draft_friendly_reply(
+    post: dict[str, Any],
+    *,
+    persona_memory: dict[str, Any] | None = None,
+    rng: random.Random | None = None,
+) -> str | None:
+    """Draft a natural, non-AI-boilerplate friend-making reply matching the post's language and topic."""
+    r = rng or random.SystemRandom()
+    raw_text = str(post.get("text") or post.get("text_preview") or "").strip()
+    if not raw_text:
+        return None
+    lower = raw_text.casefold()
+    is_notif = str(post.get("source") or "") == "notification" or "replying to" in lower
+
+    has_ja = bool(re.search(r"[\u3040-\u30ff]", raw_text))
+    has_zh = bool(re.search(r"[\u4e00-\u9fff]", raw_text))
+    has_ko = bool(re.search(r"[\uac00-\ud7af]", raw_text))
+
+    if has_ja:
+        pool = [
+            "個人開発のログ、すごく参考になります！自分もAIツール周りを触っているので、ぜひ仲良くしてください。",
+            "ちょうど同じようなテーマを試していたところでした。発信楽しみにしてます、よろしくお願いします！",
+        ]
+    elif has_ko:
+        pool = [
+            "요즘 AI 에이전트 쪽 직접 만들어보고 있는데 반갑습니다! 종종 소식 보면서 소통해요.",
+            "빌드 과정 공유해주셔서 보기 좋네요. 같은 개발자로서 응원합니다, 맞팔하고 자주 소통해요!",
+        ]
+    elif has_zh:
+        if is_notif:
+            pool = [
+                "哈哈谢谢捧场，最近一直在打磨自己的小工具，同路人交个朋友，有空多交流！",
+                "看到你冒泡太开心了，平时也爱折腾开发和效率工具，常联系～",
+            ]
+        elif any(k in lower for k in ("mcp", "agent", "ai", "llm")):
+            pool = [
+                "刚刷到你在聊 Agent 和工具链，我最近也在踩这块坑，实际跑起来确实细节挺多，交个朋友交流下！",
+                "这个方向我也一直在折腾，自己搭工具最怕卡在边界细节上，留个脚印认识一下～",
+            ]
+        elif any(k in lower for k in ("独立开发", "开源", "build", "产品", "github")):
+            pool = [
+                "这个思路挺实在的，做东西最怕只停在想法上，同在折腾独立开发，点个赞认识一下！",
+                "看到真实在打磨产品的人总想打个招呼，祝迭代顺利，有空多交流经验～",
+            ]
+        else:
+            pool = [
+                "刷到这条挺有共鸣的，真实折腾出来的经验最管用，交个朋友常联系！",
+                "路过留个脚印，顺手关注了，后面多看看你分享的新东西～",
+            ]
+    else:
+        if is_notif:
+            pool = [
+                "Appreciate you connecting! Always glad to swap notes with fellow builders.",
+                "Good to meet you here — been tinkering on agent tooling lately, happy to stay in touch!",
+            ]
+        elif any(k in lower for k in ("mcp", "agent", "ai", "llm", "build in public", "indie")):
+            pool = [
+                "Caught this on my feed — been hacking on agent tooling lately too, always down to connect with fellow builders!",
+                "Really relate to this part of shipping in public. Good to cross paths here — let's stay in touch!",
+            ]
+        else:
+            pool = [
+                "Solid point — love seeing real build notes in the feed. Glad to connect here!",
+                "Dropping by to say hi — always enjoy following folks who actually ship things.",
+            ]
+
+    extra_banned = list((persona_memory or {}).get("banned_phrases") or [])
+    r.shuffle(pool)
+    for candidate in pool:
+        if len(candidate) <= 280 and not check_reply_naturalness(candidate, extra_banned=extra_banned):
+            return candidate
+    return None
 _STATUS_URL_RE = re.compile(
     r"^https?://(?:www\.)?(?:x\.com|twitter\.com)/([A-Za-z0-9_]{1,15})/status/(\d{1,25})(?:\?.*)?$",
     re.IGNORECASE,
@@ -1260,6 +1334,8 @@ def build_daily_orchestration_plan(
     exclude_keywords: list[str] | None = None,
     require_reciprocal_marker: bool = False,
     pillar_weights: dict[str, float] | None = None,
+    auto_reply: bool = False,
+    persona_memory: dict[str, Any] | None = None,
     profile: dict[str, Any] | None = None,
     now_epoch: float | None = None,
     seed: int | None = None,
@@ -1423,10 +1499,13 @@ def build_daily_orchestration_plan(
             "url": canonical,
             "author": str(post.get("author") or match.group(1)).lstrip("@"),
             "text_preview": str(post.get("text") or "")[:100],
+            "full_text": str(post.get("text") or ""),
+            "source": str(post.get("source") or ""),
             "relevance_score": rel_score,
         })
     clean_posts.sort(key=lambda item: item["relevance_score"], reverse=True)
 
+    replied_urls = {op["url"] for op in buckets["reply_post"]}
     for post in clean_posts:
         if len(buckets["like_post"]) < capped["like_post"]:
             buckets["like_post"].append({
@@ -1442,6 +1521,25 @@ def build_daily_orchestration_plan(
                 "author": post["author"],
                 "text_preview": post["text_preview"],
             })
+        if (
+            auto_reply
+            and len(buckets["reply_post"]) < capped["reply_post"]
+            and post["url"] not in replied_urls
+        ):
+            drafted = draft_friendly_reply(
+                {"text": post["full_text"], "source": post["source"]},
+                persona_memory=persona_memory,
+                rng=rng,
+            )
+            if drafted:
+                replied_urls.add(post["url"])
+                buckets["reply_post"].append({
+                    "action": "reply_post",
+                    "url": post["url"],
+                    "author": post["author"],
+                    "text": drafted,
+                    "auto_drafted": True,
+                })
 
     # 3. Deduplicated & scored follow candidates (prioritize reciprocal/active accounts).
     ranked_cands = sorted(

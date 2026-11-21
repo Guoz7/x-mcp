@@ -4402,6 +4402,7 @@ class XStarter:
                                             "url": n["url"],
                                             "author": n_author,
                                             "text": str(n.get("text") or ""),
+                                            "source": "notification",
                                         })
                         except (StarterError, ExecutorError, browser_read.ReadError):
                             pass
@@ -4463,8 +4464,9 @@ class XStarter:
                         derived_fb.append({"handle": author, "source": "proactive_discovery"})
                     follow_candidates = derived_fb
                 queue_items = self._content_queue().list()
+                pm = self._persona_memory().read()
                 pw = account_orchestrator.compute_pillar_weights(
-                    ledger, queue_items, self._persona_memory().read()
+                    ledger, queue_items, pm
                 )
                 plan = account_orchestrator.build_daily_orchestration_plan(
                     ledger,
@@ -4476,6 +4478,8 @@ class XStarter:
                     persona_topics=persona_topics,
                     exclude_keywords=exclude_keywords,
                     pillar_weights=pw["weights_map"],
+                    auto_reply=True,
+                    persona_memory=pm,
                 )
                 if plan.get("blocked"):
                     if opened_browser:

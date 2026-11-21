@@ -964,6 +964,27 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_auto_reply_drafts_multilingual_friend_making_replies(self) -> None:
+        from account_orchestrator import check_reply_naturalness
+
+        plan = build_daily_orchestration_plan(
+            {"account_binding": "guoz7777", "actions": {}},
+            goals={"publish_post": 0, "like_post": 2, "reply_post": 2, "follow_profile": 0, "repost_post": 0},
+            timeline_posts=[
+                {"url": "https://x.com/alice_zh/status/301", "author": "alice_zh", "text": "今天在用 MCP 搭一个自动 Agent 工具链"},
+                {"url": "https://x.com/bob_en/status/302", "author": "bob_en", "text": "Shipping an indie AI agent in public this week"},
+            ],
+            account_snapshot={"posts_count": 75},
+            auto_reply=True,
+            persona_memory={"banned_phrases": ["synergy"]},
+            seed=7,
+        )
+        replies = [op for op in plan["operations"] if op["action"] == "reply_post"]
+        self.assertEqual(len(replies), 2)
+        for rep in replies:
+            self.assertTrue(rep.get("auto_drafted"))
+            self.assertEqual(check_reply_naturalness(rep["text"], extra_banned=["synergy"]), [])
+
 
 if __name__ == "__main__":
     unittest.main()
