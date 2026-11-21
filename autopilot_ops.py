@@ -224,7 +224,8 @@ class AutopilotStore:
                 "wave_due": False,
                 "recent_waves": waves_log[-10:],
             }
-        local_hour = datetime.fromtimestamp(now, LOCAL_TIMEZONE).hour
+        local_tz = datetime.fromtimestamp(now).astimezone().tzinfo or LOCAL_TIMEZONE
+        local_hour = datetime.fromtimestamp(now, local_tz).hour
         start_h, end_h = active["active_hours"]
         in_hours = start_h <= local_hour < end_h
         last_wave = active.get("last_wave_epoch")
@@ -334,9 +335,10 @@ def build_ops_summary(
     follow_back_rate = round(follows_mutual / follows_verified, 3) if follows_verified else 0.0
     recent_actions.sort(key=lambda pair: pair[0], reverse=True)
 
+    tz_label = datetime.now().astimezone().tzname() or "local"
     return {
         "window_days": 7,
-        "timezone": "Asia/Shanghai",
+        "timezone": tz_label,
         "account_binding": ledger.get("account_binding"),
         "last_account_snapshot": latest_snapshot[1] if latest_snapshot else None,
         "totals": totals,

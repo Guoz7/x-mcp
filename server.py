@@ -4157,6 +4157,14 @@ class XStarter:
                             own_posts = []
                 inferred = account_orchestrator.infer_owner_profile(own_posts, ledger=ledger, username=username)
                 inferred["username"] = username or None
+                pm_store = self._persona_memory()
+                pm_cur = pm_store.read()
+                pm_store.update(
+                    role=pm_cur.get("role") or inferred.get("inferred_role") or None,
+                    voice_rules=pm_cur.get("voice_rules") or inferred.get("inferred_voice_rules") or None,
+                    content_pillars=pm_cur.get("content_pillars") or ({t: 20 for t in inferred["persona_topics"][:5]} if inferred["persona_topics"] else None),
+                    inferred_active_hours=inferred.get("active_hours"),
+                )
                 trace.append(_event("x_adapter", "autopilot_persona_inferred", username=username, topics=len(inferred["persona_topics"])))
                 return inferred
             if action == "cleanup_candidates":
@@ -4270,13 +4278,16 @@ class XStarter:
                 })
                 return {"ran": True, "query": query, "execution": exe}
             if action == "prepare":
+                pm_cur = self._persona_memory().read()
+                inferred_hours = pm_cur.get("inferred_active_hours")
+                inferred_topics = list((pm_cur.get("content_pillars") or {}).keys())
                 res = store.prepare_window(
                     days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),
-                    active_hours=arguments.get("active_hours") or [9, 23],
+                    active_hours=arguments.get("active_hours") or inferred_hours or [9, 23],
                     max_per_wave=_bounded_int(arguments, "max_per_wave", default=9, minimum=1, maximum=10),
                     min_wave_interval_minutes=_bounded_int(arguments, "min_wave_interval_minutes", default=18, minimum=15, maximum=720),
                     daily_goals=arguments.get("daily_goals"),
-                    persona_topics=arguments.get("persona_topics"),
+                    persona_topics=arguments.get("persona_topics") or inferred_topics or None,
                     exclude_keywords=arguments.get("exclude_keywords"),
                     search_query=arguments.get("search_query"),
                 )

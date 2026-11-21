@@ -595,16 +595,10 @@ class PersonaMemoryStore:
     def _default() -> dict[str, Any]:
         return {
             "version": 1,
-            "role": "Build-in-Public AI & Agent Developer",
-            "voice_rules": [
-                "短句直接、讲真实数据与实测结果，不用客套话",
-                "中英混排自然，不堆砌 hashtag 和 emoji",
-            ],
-            "content_pillars": {
-                "build_in_public": 40,
-                "tech_insights": 40,
-                "curated_replies": 20,
-            },
+            "role": "",
+            "voice_rules": [],
+            "content_pillars": {},
+            "inferred_active_hours": None,
             "banned_phrases": ["game-changer", "synergy", "很有深度", "感谢分享", "说得太好了"],
             "episodic_notes": [],
             "feedback_notes": [],
@@ -638,6 +632,7 @@ class PersonaMemoryStore:
         voice_rules: list[str] | None = None,
         content_pillars: dict[str, int] | None = None,
         banned_phrases: list[str] | None = None,
+        inferred_active_hours: list[int] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
             data = self._read_unlocked()
@@ -653,6 +648,10 @@ class PersonaMemoryStore:
                 }
             if isinstance(banned_phrases, list):
                 data["banned_phrases"] = [str(p).strip()[:80] for p in banned_phrases if str(p).strip()][:50]
+            if isinstance(inferred_active_hours, (list, tuple)) and len(inferred_active_hours) == 2:
+                s_h, e_h = int(inferred_active_hours[0]), int(inferred_active_hours[1])
+                if 0 <= s_h < e_h <= 24:
+                    data["inferred_active_hours"] = [s_h, e_h]
             data["updated_at"] = _iso(time.time())
             self._write_unlocked(data)
             return data
@@ -1037,14 +1036,23 @@ _ZOMBIE_SPAM_MARKERS = (
 
 
 def pick_discovery_query(window: dict[str, Any] | None, wave_index: int = 0) -> str:
-    """Rotate across configured and cross-language discovery queries so each wave explores fresh niches."""
-    custom = window.get("discovery_queries") if isinstance(window, dict) else None
+    """Rotate across owner's inferred topics and cross-language discovery queries."""
+    w = window if isinstance(window, dict) else {}
+    custom = w.get("discovery_queries")
     pool = [str(q).strip() for q in custom if str(q).strip()] if isinstance(custom, list) else []
-    base = str((window or {}).get("search_query") or "").strip()
+    base = str(w.get("search_query") or "").strip()
+    topics = [str(t).strip() for t in (w.get("persona_topics") or []) if str(t).strip()]
     if not pool:
-        pool = list(CROSS_LANGUAGE_DISCOVERY_QUERIES)
-        if base and base not in pool:
-            pool.insert(0, base)
+        pool = []
+        if base:
+            pool.append(base)
+        for i in range(0, len(topics), 2):
+            chunk = " OR ".join(topics[i:i + 2])
+            if chunk and chunk not in pool:
+                pool.append(chunk)
+        for q in CROSS_LANGUAGE_DISCOVERY_QUERIES:
+            if q not in pool:
+                pool.append(q)
     return pool[abs(int(wave_index)) % len(pool)]
 
 
@@ -1186,33 +1194,51 @@ def infer_owner_profile(
             counts[tok] = counts.get(tok, 0) + 1
 
     ranked = sorted(counts.items(), key=lambda kv: (kv[1], len(kv[0])), reverse=True)
-    topics = [k for k, _ in ranked[:8]] or ["AI", "Agent", "MCP"]
+    topics = [k for k, _ in ranked[:8]]
     ascii_topics = [k for k in topics if k.isascii()]
-    search_query = " ".join(ascii_topics[:2]) if len(ascii_topics) >= 2 else " ".join(topics[:2])
+    if len(ascii_topics) >= 2:
+        search_query = " ".join(ascii_topics[:2])
+    elif topics:
+        search_query = " ".join(topics[:2])
+    else:
+        search_query = ""
 
+    local_tz = datetime.now().astimezone().tzinfo or LOCAL_TIMEZONE
     hours: list[int] = []
+    for post in own_posts or []:
+        ts = post.get("created_at") or post.get("posted_at") or post.get("timestamp")
+        ep = _parse_epoch(ts) if isinstance(ts, str) else None
+        if ep is not None:
+            hours.append(datetime.fromtimestamp(ep, local_tz).hour)
     if isinstance(ledger, dict):
         for action in (ledger.get("actions") or {}).values():
             if not isinstance(action, dict) or action.get("status") != "completed":
                 continue
             ep = _parse_epoch(action.get("completed_at"))
             if ep is not None:
-                hours.append(datetime.fromtimestamp(ep, LOCAL_TIMEZONE).hour)
+                hours.append(datetime.fromtimestamp(ep, local_tz).hour)
     if hours:
-        start_h = max(7, min(hours) - 1)
-        end_h = min(23, max(hours) + 2)
+        start_h = max(0, min(hours) - 1)
+        end_h = min(24, max(hours) + 2)
         if end_h <= start_h:
-            start_h, end_h = 9, 22
+            start_h, end_h = 9, 23
     else:
-        start_h, end_h = 9, 22
+        start_h, end_h = 9, 23
 
     avg_len = round(sum(lengths) / len(lengths)) if lengths else 0
     lang = "zh+en" if (zh_chars > 10 and en_chars > 10) else ("zh" if zh_chars >= en_chars else "en")
+    inferred_role = " / ".join(topics[:3]) if topics else ""
+    inferred_voice_rules = [
+        f"language: {lang}",
+        f"typical_length: ~{avg_len} chars" if avg_len else "concise, natural tone",
+    ]
     return {
         "persona_topics": topics,
         "exclude_keywords": ["airdrop", "giveaway", "抽奖", "广告"],
         "search_query": search_query,
         "active_hours": [start_h, end_h],
+        "inferred_role": inferred_role,
+        "inferred_voice_rules": inferred_voice_rules,
         "style_notes": {
             "sample_posts": len(lengths),
             "avg_length": avg_len,
