@@ -448,9 +448,11 @@
             <input id="pmFeedbackInput" placeholder="补充一条主人纠偏偏好，Agent 后续自动遵守..." style="flex:1;">
             <button onclick="savePersonaMemory()">保存设置</button>
             <button onclick="syncOwnerPersona()">同步主人信息</button>
+            <button onclick="toggleCasualTemplates()">串门模板库</button>
             <button class="primary" onclick="addPersonaFeedback()">记录纠偏</button>
           </div>
         <div id="pmToast" class="toast"></div>
+        <div id="pmTemplatesBox" class="list" style="display:none;margin-bottom:10px;max-height:260px;"></div>
         <div id="pmNotes" class="list"></div>
       </section>
 
@@ -1442,6 +1444,24 @@ async function addPersonaFeedback() {
   document.getElementById('pmFeedbackInput').value = '';
   showToast('pmToast', true, '已记录纠偏偏好。');
   refreshPersonaMemory();
+}
+
+async function toggleCasualTemplates() {
+  const box = document.getElementById('pmTemplatesBox');
+  if (box.style.display !== 'none') {
+    box.style.display = 'none';
+    return;
+  }
+  const res = await callReadTool('x_persona_memory', { action: 'interaction_templates' });
+  if (!res.ok) return showToast('pmToast', false, res.error?.message || '模板加载失败');
+  const scenarios = Array.isArray(res.data?.scenarios) ? res.data.scenarios : [];
+  box.innerHTML = scenarios.map(s => `
+    <div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px;">
+      <div><strong>${esc(s.title)}</strong> · <span class="muted">${esc(s.care_focus)}</span></div>
+      <div class="sub-note">例句：${esc((s.templates_zh || s.templates_en || [])[0] || '')}</div>
+    </div>
+  `).join('') || '<div class="muted">暂无模板</div>';
+  box.style.display = 'flex';
 }
 
 async function refreshAll() {

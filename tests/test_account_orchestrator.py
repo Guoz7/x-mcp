@@ -1948,6 +1948,104 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_early_drop_by_orchestration_post_analysis_and_casual_templates(self) -> None:
+        from account_orchestrator import (
+            analyze_target_post,
+            check_reply_naturalness,
+            get_casual_interaction_templates,
+        )
+
+        # 1. Pre-drafted template catalog must have all core scenarios and zero AI boilerplate.
+        catalog = get_casual_interaction_templates()
+        self.assertGreaterEqual(len(catalog["scenarios"]), 5)
+        for scenario in catalog["scenarios"]:
+            if scenario["id"] == "skip_reply_like_only":
+                continue
+            for key in ("templates_zh", "templates_en", "templates_ja"):
+                for line in scenario.get(key) or []:
+                    self.assertEqual(check_reply_naturalness(line), [], f"AI/unsafe template: {line}")
+
+        # 2. Brief target-post analysis detects mood, care angle, and skips ambiguous fragments.
+        late = analyze_target_post({"text": "Sample\n@alice\n·\n2h\n凌晨两点加班修个报错，脑子都要炸了\n4\n12"})
+        self.assertEqual(late["intent"], "vent_rant")
+        self.assertIn("late_night", late["life_hooks"])
+        self.assertEqual(late["drop_by_tactic"], "drop_by_like_1_to_2_and_warm_reply")
+        self.assertIn("睡", late["care_angle"])
+
+        short_skip = analyze_target_post({"text": "Sample\n@bob\n·\n5m\n咋了"})
+        self.assertEqual(short_skip["drop_by_tactic"], "like_only_skip_reply")
+
+        # 3. Early-stage (`light_engage`) unlocks drop-by replies & allows 2 likes + 1 reply per visited neighbor.
+        ledger = {"account_binding": "example_creator", "actions": {}}
+        early_snap = {"username": "example_creator", "posts_count": 4, "account_age_days": 5, "bio": "Coding notes"}
+        early_posts = [
+            {
+                "url": "https://x.com/neighbor_a/status/810001",
+                "author": "neighbor_a",
+                "text": "周末喝杯冰美式摸鱼喘口气，平时看电脑眼睛快花了哈哈",
+                "visited_profile": True,
+                "reply_count": 1,
+                "author_followers": 280,
+            },
+            {
+                "url": "https://x.com/neighbor_a/status/810002",
+                "author": "neighbor_a",
+                "text": "最近也在慢慢折腾小工具，有活人路过欢迎聊天～",
+                "visited_profile": True,
+                "reply_count": 2,
+                "author_followers": 280,
+            },
+            {
+                "url": "https://x.com/mega_account/status/810099",
+                "author": "mega_account",
+                "text": "Good morning coffee builders! Happy weekend!",
+                "visited_profile": False,
+                "reply_count": 240,
+                "author_followers": 120000,
+            },
+        ]
+        plan = build_daily_orchestration_plan(
+            ledger,
+            goals={"publish_post": 1, "like_post": 10, "follow_profile": 2, "reply_post": 4},
+            timeline_posts=early_posts,
+            follow_candidates=[{"handle": "neighbor_a", "visited_profile": True, "followers_count": 280, "following_count": 240}],
+            account_snapshot=early_snap,
+            auto_reply=True,
+            interaction_strategy="niche_sniper_bundle",
+            seed=11,
+        )
+        self.assertEqual(plan["stage"], "light_engage")
+        self.assertGreaterEqual(plan["counts"]["reply_post"], 1)
+        neighbor_likes = [op for op in plan["operations"] if op["action"] == "like_post" and op.get("author") == "neighbor_a"]
+        neighbor_replies = [op for op in plan["operations"] if op["action"] == "reply_post" and op.get("author") == "neighbor_a"]
+        self.assertEqual(len(neighbor_likes), 2)
+        self.assertEqual(len(neighbor_replies), 1)
+        self.assertIn("post_analysis", neighbor_replies[0])
+        self.assertEqual(check_reply_naturalness(neighbor_replies[0]["text"]), [])
+
+        # 4. MCP tool `x_persona_memory` exposes `interaction_templates` and `analyze_post`.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = XStarter(
+                mode="browser",
+                environ={"X_STARTER_MODE": "browser", "X_STARTER_ENABLE_BROWSER": "1", "X_STARTER_STATE_DIR": tmpdir},
+            )
+            try:
+                tpl_res = app.call_tool("x_persona_memory", {"action": "interaction_templates"})
+                self.assertTrue(tpl_res["ok"])
+                self.assertGreaterEqual(len(tpl_res["data"]["scenarios"]), 5)
+
+                an_res = app.call_tool(
+                    "x_persona_memory",
+                    {"action": "analyze_post", "note": "加班到凌晨两点还在调一个报错，头都大了先喝口水"},
+                )
+                self.assertTrue(an_res["ok"])
+                self.assertEqual(an_res["data"]["intent"], "vent_rant")
+                self.assertGreaterEqual(len(an_res["data"]["sample_replies"]), 1)
+                for sr in an_res["data"]["sample_replies"]:
+                    self.assertEqual(check_reply_naturalness(sr), [])
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,7 +56,7 @@ this repository. Read the whole file before calling a tool.
 | `x_search_posts` | Search niche/cross-language posts for discovery | Read-only |
 | `x_visit_profile` | Visit a user's profile and read recent posts before engaging | Read-only |
 | `x_content_queue` | Queue single posts, replies, or multi-tweet `thread` items | Local only |
-| `x_persona_memory` | Store/read inferred role, voice rules, banned words, pillar weights, and timely `sync_owner` updates (supports `preset="tech_casual"`) | Mixed |
+| `x_persona_memory` | Store/read role, voice rules, banned words, pillar weights, `sync_owner`, `interaction_templates`, and `analyze_post` | Mixed |
 | `x_target_pool` | Ingest pre-collected targets from scout accounts to avoid search bursts | Local only |
 | `x_daily_orchestrate_plan` | Build a pillar-weighted, human-paced daily wave plan | Local only |
 | `x_daily_orchestrate_prepare` | Prepare an expiring confirmation phrase for a planned batch | Local only |
@@ -67,8 +67,8 @@ this repository. Read the whole file before calling a tool.
 
 Never ask the owner to fill configuration forms, pick search keywords, or manually trigger every action. When authorized for browser mode:
 
-1. **Infer & sync conservatively**: Call `x_persona_memory(action="sync_owner")` (throttled to >= 6h per browser check unless `account_snapshot`/`own_posts` supplied) or `x_autopilot(action="infer_persona")` so `owner_bio`, topics, and active hours stay fresh without aggressive polling or erasing manual owner background.
-2. **Prepare once**: Call `x_autopilot(action="prepare")` (defaults use inferred active hours/topics, cross-language discovery, active profile visiting, deduplicated friendly replies at conservative `90–165s` gaps, and 3-day non-mutual cleanup).
+1. **Infer & sync conservatively**: Call `x_persona_memory(action="sync_owner")` (throttled to >= 6h per browser check unless `account_snapshot`/`own_posts` supplied) or `x_autopilot(action="infer_persona")` so `owner_bio`, topics, and active hours stay fresh without aggressive polling or erasing manual owner background. For early-stage drop-by ("前期串门"), read `x_persona_memory(action="interaction_templates")` and analyze target posts with `x_persona_memory(action="analyze_post", note=...)` (see [`docs/INTERACTION-PLAYBOOK.md`](docs/INTERACTION-PLAYBOOK.md)) so replies stay empathetic, caring, and free of AI clichés.
+2. **Prepare once**: Call `x_autopilot(action="prepare")` (defaults use inferred active hours/topics, cross-language discovery, active profile visiting of up to 5 peers in warmup stages, 1–2 warm likes + 1 casual reply per neighbor at conservative `75–165s` gaps, and 3-day non-mutual cleanup).
 3. **Owner lightweight review**: Present the prepared window summary and confirmation phrase (also surfaced automatically in the web dashboard's review banner). Once approved, call `x_autopilot(action="activate")` and `x_autopilot(action="scheduler_start")`.
 4. **Pre-collect & refine**: Feed targets from scout accounts into `x_target_pool(action="ingest")`, schedule threads/posts in `x_content_queue`, tune topics via `x_persona_memory(action="pillar_weights")`, and export CSV/JSON reports via `x_autopilot(action="export_report")`.
 

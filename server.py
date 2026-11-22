@@ -1683,15 +1683,27 @@ class XStarter:
             },
             {
                 "name": "x_persona_memory",
-                "title": "Read or update personal X persona and episodic memory",
+                "title": "Read or update personal X persona, drop-by templates, and post analysis",
                 "description": (
                     "Store and retrieve owner role, voice rules, content pillar weights, banned phrases, "
-                    "episodic post history, and style feedback notes."
+                    "episodic post history, pre-drafted casual drop-by interaction templates, and target post analysis."
                 ),
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "action": {"type": "string", "enum": ["get", "update", "add_episode", "add_feedback", "pillar_weights", "sync_owner"]},
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "get",
+                                "update",
+                                "add_episode",
+                                "add_feedback",
+                                "pillar_weights",
+                                "sync_owner",
+                                "interaction_templates",
+                                "analyze_post",
+                            ],
+                        },
                         "preset": {"type": "string", "maxLength": 40, "description": "Optional built-in persona preset (e.g. 'tech_casual')."},
                         "role": {"type": "string", "maxLength": 160},
                         "voice_rules": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 200}},
@@ -1701,7 +1713,7 @@ class XStarter:
                         "angle": {"type": "string", "maxLength": 200},
                         "post_url": {"type": "string", "maxLength": 300},
                         "outcome": {"type": "string", "maxLength": 80},
-                        "note": {"type": "string", "maxLength": 240},
+                        "note": {"type": "string", "maxLength": 500, "description": "Feedback text or target post text when action='analyze_post'."},
                         "account_snapshot": {"type": "object"},
                         "own_posts": {"type": "array", "maxItems": 20, "items": {"type": "object"}},
                         "force": {"type": "boolean", "default": False},
@@ -4081,9 +4093,38 @@ class XStarter:
                 )
                 trace.append(_event("x_adapter", "persona_pillar_weights_computed", external_call=False))
                 return weights
+            if action == "interaction_templates":
+                pm_cur = store.read()
+                tpl = account_orchestrator.get_casual_interaction_templates()
+                tpl["active_voice_rules"] = pm_cur.get("voice_rules") or []
+                tpl["active_banned_phrases"] = pm_cur.get("banned_phrases") or []
+                trace.append(_event("x_adapter", "persona_interaction_templates_read", external_call=False))
+                return tpl
+            if action == "analyze_post":
+                raw_post_text = str(arguments.get("note") or arguments.get("topic") or "").strip()
+                if not raw_post_text:
+                    raise StarterError("INVALID_ARGUMENT", "Pass the target post text in 'note' when action='analyze_post'.")
+                pm_cur = store.read()
+                post_obj = {"text": raw_post_text, "post_url": arguments.get("post_url") or ""}
+                analysis = account_orchestrator.analyze_target_post(post_obj, persona_memory=pm_cur)
+                samples: list[str] = []
+                for _ in range(3):
+                    draft = account_orchestrator.draft_friendly_reply(
+                        post_obj,
+                        persona_memory=pm_cur,
+                        recent_replies=samples,
+                    )
+                    if draft and draft not in samples:
+                        samples.append(draft)
+                analysis["sample_replies"] = samples
+                trace.append(_event("x_adapter", "persona_post_analyzed", intent=analysis["intent"], external_call=False))
+                return analysis
         except account_orchestrator.OrchestratorError as exc:
             raise StarterError(exc.code, exc.message, details=exc.details) from None
-        raise StarterError("INVALID_ARGUMENT", "action must be get, update, sync_owner, add_episode, add_feedback, or pillar_weights.")
+        raise StarterError(
+            "INVALID_ARGUMENT",
+            "action must be get, update, sync_owner, add_episode, add_feedback, pillar_weights, interaction_templates, or analyze_post.",
+        )
 
     def _ensure_scheduler_started(self) -> tuple[bool, dict[str, Any]]:
         if self._scheduler is None:
@@ -4675,8 +4716,8 @@ class XStarter:
                         read_error = f"{getattr(exc, 'code', type(exc).__name__)}: {exc}"
                         timeline_posts = timeline_posts or []
                 if self.mode == "browser" and follow_candidates and arguments.get("timeline_posts") is None:
-                    # Active profile visiting ("串门"): visit up to 3 fresh candidates to read their recent posts
-                    # and pair their bio/post context into bundled likes + contextual replies.
+                    # Active early-stage & ongoing drop-by ("串门"): rank human peers first, visit up to 5 profiles
+                    # in warmup stages (4 in growth), and fetch up to 3 recent posts for warm 1-2 likes + 1 reply.
                     try:
                         if not opened_browser:
                             browser = self._browser_for(arguments)
@@ -4684,9 +4725,16 @@ class XStarter:
                         seen_ledger_handles, _ = account_orchestrator._seen_ledger_targets(ledger)
                         timeline_posts = timeline_posts if timeline_posts is not None else []
                         existing_urls = {str(p.get("url") or "").casefold() for p in timeline_posts}
+                        snap_posts = int((snapshot or {}).get("posts_count") or 0)
+                        max_visits = 5 if snap_posts < 50 else 4
+                        ranked_for_visit = sorted(
+                            follow_candidates,
+                            key=lambda c: account_orchestrator.score_follow_candidate(c, strategy=interaction_strategy),
+                            reverse=True,
+                        )
                         visit_count = 0
-                        for cand in follow_candidates:
-                            if visit_count >= 3:
+                        for cand in ranked_for_visit:
+                            if visit_count >= max_visits:
                                 break
                             if cand.get("visited_profile"):
                                 continue
@@ -4695,7 +4743,7 @@ class XStarter:
                                 continue
                             try:
                                 profile_res = browser_read.read_user_posts(
-                                    browser, h, limit=3, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                    browser, h, limit=4, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
                                 )
                                 p_posts = profile_res.get("posts") or []
                                 visit_count += 1
@@ -4706,13 +4754,15 @@ class XStarter:
                                     cand["active"] = True
                                     cand["visited_profile"] = True
                                     bio_snip = str(cand.get("bio") or "")
-                                    for vp in p_posts[:2]:
+                                    author_fc = cand.get("followers_count")
+                                    for vp in p_posts[:3]:
                                         vp_url = str(vp.get("url") or "").casefold()
                                         if vp_url and vp_url not in existing_urls:
                                             existing_urls.add(vp_url)
                                             timeline_posts.insert(0, {
                                                 **vp,
                                                 "author_bio": bio_snip,
+                                                "author_followers": author_fc,
                                                 "visited_profile": True,
                                                 "source": "profile_visit",
                                             })

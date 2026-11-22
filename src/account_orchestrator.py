@@ -84,6 +84,13 @@ _AI_CLICHE_PATTERNS = (
     "glad to follow your build",
     "teach twice as much",
     "curious what guardrail",
+    "deep dive",
+    "food for thought",
+    "love this take",
+    "couldn't agree more",
+    "this resonates",
+    "keep pushing",
+    "in the long run",
     "感谢分享",
     "感谢互动交流",
     "很有深度",
@@ -98,6 +105,16 @@ _AI_CLICHE_PATTERNS = (
     "留个脚印关注",
     "稳步往上走",
     "最有收获的是",
+    "值得一试",
+    "期待你的更多",
+    "期待更多分享",
+    "给你点赞支持",
+    "从工程角度",
+    "从长远来看",
+    "总的来说",
+    "总而言之",
+    "干货满满",
+    "共勉",
 )
 
 
@@ -114,6 +131,8 @@ def check_reply_naturalness(
         p = str(phrase or "").strip().casefold()
         if p and p in lower:
             warnings.append(f"Avoid generic or banned phrase: '{phrase}'")
+    if "——" in cleaned:
+        warnings.append("Avoid PPT-style em-dash summaries.")
     if cleaned.count("#") >= 2:
         warnings.append("Avoid multiple hashtags in replies.")
     if len(cleaned) < 8:
@@ -425,8 +444,26 @@ def _detect_engineering_theme(lower_text: str) -> str:
     return "general_systems"
 
 
+_LIFE_HOOK_RULES: tuple[tuple[str, str], ...] = (
+    ("late_night", r"(?:熬夜|凌晨|半夜|深夜|两点|三点|通宵|失眠|睡不着|晚睡|midnight|late night|insomnia|can't sleep|1am|2am|3am)"),
+    ("overtime_tired", r"(?:加班|好累|累死|疲|破防|麻了|无语|烦死|干烧|难顶|burnout|exhausted|overtime|rough day|tired)"),
+    ("coffee_break", r"(?:咖啡|冰美式|美式|拿铁|奶茶|喝茶|喝水|摸鱼|coffee|latte|espresso|tea break)"),
+    ("weekend_chill", r"(?:周末|散步|出摊|晒太阳|放空|休息|weekend|chill|relax|breather)"),
+    ("pet_weather", r"(?:猫|狗|主子|下雨|阴天|降温|风好大|cat|dog|rain|weather)"),
+    ("shipping_win", r"(?:上线|跑通|终于过|发布|破百|破千|achieve|milestone|shipped|launched|followers)"),
+)
+
+
+def _extract_life_hooks(clean_body: str) -> list[str]:
+    hits: list[str] = []
+    for key, pattern in _LIFE_HOOK_RULES:
+        if re.search(pattern, clean_body, re.IGNORECASE):
+            hits.append(key)
+    return hits
+
+
 def _extract_post_context(post: dict[str, Any], persona_memory: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Extract cleaned post text, human intent, language, and real body anchors only."""
+    """Extract cleaned post text, human intent, language, empathy hooks, and body anchors."""
     raw_text = str(post.get("text") or post.get("text_preview") or "").strip()
     clean_body = clean_post_body(raw_text)
     author = str(post.get("author") or "").strip().lstrip("@")
@@ -445,6 +482,7 @@ def _extract_post_context(post: dict[str, Any], persona_memory: dict[str, Any] |
 
     intent = _classify_post_intent(clean_body, is_notif=is_notif, notif_kind=notif_kind)
     body_lower = re.sub(r"#\S+", " ", clean_body).casefold()
+    life_hooks = _extract_life_hooks(clean_body)
 
     zh_hooks: list[str] = []
     en_hooks: list[str] = []
@@ -463,6 +501,7 @@ def _extract_post_context(post: dict[str, Any], persona_memory: dict[str, Any] |
         "clean_body": clean_body,
         "intent": intent,
         "theme": theme,
+        "life_hooks": life_hooks,
         "is_notif": is_notif,
         "notif_kind": notif_kind,
         "zh_hook": zh_hooks[0] if zh_hooks else "",
@@ -474,6 +513,77 @@ def _extract_post_context(post: dict[str, Any], persona_memory: dict[str, Any] |
     }
 
 
+def analyze_target_post(
+    post: dict[str, Any],
+    *,
+    persona_memory: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Briefly analyze a target post's mood/context, caring angle, and drop-by tactic."""
+    ctx = _extract_post_context(post, persona_memory=persona_memory)
+    intent = ctx["intent"]
+    life_hooks = ctx["life_hooks"]
+
+    if intent in {"too_short", "unknown"}:
+        return {
+            "clean_body": ctx["clean_body"],
+            "lang": ctx["lang"],
+            "intent": intent,
+            "theme": ctx["theme"],
+            "life_hooks": life_hooks,
+            "tech_hooks": [h for h in (ctx["zh_hook"], ctx["en_hook"]) if h],
+            "author_state": "文字过短或上下文不明，贸然搭话容易像机器人硬聊",
+            "care_angle": "点个赞留个友好信号即可，不硬编回复",
+            "drop_by_tactic": "like_only_skip_reply",
+            "brief_summary": "[跳过硬回] 上下文太短或语义不明，只点1赞最自然",
+        }
+
+    state_map = {
+        "notif_follow": "刚互关或互动，正活跃看着消息列表",
+        "milestone": "刚达成涨粉/上线小节点，心情偏轻松开心",
+        "creative": "正在坚持写作/画画等个人创作",
+        "language_learning": "在练习外语并欢迎真人顺手接话交流",
+        "vent_rant": "熬夜/加班/被报错卡住，情绪偏疲惫或小破防",
+        "social_chatter": "平时闲聊/出摊/咖啡休息中，乐意跟真人搭两句",
+        "tech_discussion": "在分享开发进度或被真实边界坑折腾",
+    }
+    care_map = {
+        "notif_follow": "先温和打个招呼混个脸熟，别推销自己，像朋友一样说声常逛",
+        "milestone": "真诚替对方高兴、夸坚持难得，顺便约好以后在时间线常常见面",
+        "creative": "欣赏对方一直有产出这件事本身，叮嘱别太累，完全不扯代码",
+        "language_learning": "站在同样靠刷时间线练语感的共鸣点聊一句，轻松自然",
+        "vent_rant": "先站同一边安慰情绪、叮嘱喝口水或早点睡别死磕，禁止居高临下给建议",
+        "social_chatter": "顺着对方聊的咖啡/周末/出摊/宠物自然接两句家常，让人觉得面前是个活人",
+        "tech_discussion": "先体谅排查耗心神的辛苦或肯定跑通不易，再用同行口语聊一句具体痛点",
+    }
+
+    author_state = state_map.get(intent, "活跃发布日常")
+    care_angle = care_map.get(intent, "先表达共情关心，再顺嘴接话")
+    if "late_night" in life_hooks:
+        author_state = "大晚上/凌晨还在硬扛未睡"
+        care_angle = "重点提醒早点歇着、睡醒思路反而清楚，不强行灌鸡汤"
+    elif "coffee_break" in life_hooks and intent == "social_chatter":
+        author_state = "正喝咖啡/摸鱼喘口气中"
+        care_angle = "顺着咖啡/摸鱼日常轻松搭茬，祝今天心情顺一点"
+    elif "pet_weather" in life_hooks:
+        author_state = "被猫狗日常或天气影响心情中"
+        care_angle = "跟着夸一下小动物或聊聊天气，氛围感最重要"
+
+    hooks_disp = [h for h in (*life_hooks, ctx["zh_hook"], ctx["en_hook"]) if h]
+    hook_note = f" · 抓取锚点: {', '.join(hooks_disp[:3])}" if hooks_disp else ""
+    return {
+        "clean_body": ctx["clean_body"],
+        "lang": ctx["lang"],
+        "intent": intent,
+        "theme": ctx["theme"],
+        "life_hooks": life_hooks,
+        "tech_hooks": [h for h in (ctx["zh_hook"], ctx["en_hook"]) if h],
+        "author_state": author_state,
+        "care_angle": care_angle,
+        "drop_by_tactic": "drop_by_like_1_to_2_and_warm_reply",
+        "brief_summary": f"[{author_state}] 关心点：{care_angle}{hook_note}",
+    }
+
+
 def _reply_candidates_for_context(ctx: dict[str, Any]) -> list[str]:
     lang = ctx["lang"]
     intent = ctx.get("intent") or "unknown"
@@ -482,28 +592,79 @@ def _reply_candidates_for_context(ctx: dict[str, Any]) -> list[str]:
     en_h = ctx.get("en_hook") or ""
     en_h2 = ctx.get("en_hook_2") or ""
     theme = ctx.get("theme") or "casual"
+    life_hooks = set(ctx.get("life_hooks") or ())
 
     if intent in {"too_short", "unknown"}:
         return []
+
+    life_front: list[str] = []
+    if lang == "zh":
+        if "late_night" in life_hooks or "overtime_tired" in life_hooks:
+            life_front.extend([
+                "都这么晚了还盯着屏幕辛苦了，这种卡住的地方往往睡一觉明早一眼就看透，今晚先歇着吧",
+                "抱拳了哈哈，熬夜调这种玩意最耗心神，先合上电脑喝口水喘口气，别死磕太晚",
+                "大半夜还在硬扛辛苦啦，脑子转不动的时候强撑最折磨人，早点睡保住精力要紧！",
+                "加班加到这个点真挺磨人的，能吐槽出来起码还没麻木，忙完赶紧休息别内耗了",
+            ])
+        if "coffee_break" in life_hooks:
+            life_front.extend([
+                "哈哈刚准备倒杯水摸个鱼就刷到你，忙里偷闲喝一口最解压，今天别把自己逼太紧呀",
+                "靠咖啡续命太真实了，看屏幕看久了就得这么偷闲缓两分钟，祝今天顺一点～",
+            ])
+        if "weekend_chill" in life_hooks:
+            life_front.extend([
+                "难得歇下来就好好放空逛逛，别老记挂电脑里那点报错了，周末开心摸鱼！",
+                "周末能出门透口气挺好的，天天坐黑框前面人都快坐木了，玩开心点哈哈",
+            ])
+        if "pet_weather" in life_hooks:
+            life_front.extend([
+                "看着心情瞬间松快了不少哈哈，顺手串个门点个赞，祝今天顺心～",
+                "这种天气/日常确实容易让人想偷个懒，先歇会儿刷刷推挺舒服的",
+            ])
+    elif lang == "en":
+        if "late_night" in life_hooks or "overtime_tired" in life_hooks:
+            life_front.extend([
+                "oof past midnight staring at a screen is brutal, go grab some water and sleep on it — fresh eyes spot it fast",
+                "honestly shutting the laptop beats fighting a stubborn bug at 1am, hope you get actual rest tonight",
+            ])
+        if "coffee_break" in life_hooks or "weekend_chill" in life_hooks:
+            life_front.extend([
+                "haha grabbing coffee and taking a breather from the screen is undefeated, hope your day treats you well",
+                "good reminder to step away from the terminal for a bit, enjoy the slow scroll today",
+            ])
+    elif lang == "ja":
+        if "late_night" in life_hooks or "overtime_tired" in life_hooks:
+            life_front.extend([
+                "遅くまでほんとお疲れさまです…今日は無理せず切り上げてゆっくり休んでくださいね",
+            ])
+        if "coffee_break" in life_hooks or "weekend_chill" in life_hooks:
+            life_front.extend([
+                "息抜きしつつゆるく過ごすのちょうどいいですね〜今日もマイペースでいきましょ",
+            ])
 
     if intent == "notif_follow":
         if lang == "ja":
             return [
                 "フォローありがとうございます！普段はコード書いたりタイムラインでゆるく雑談したりしてます、よろしくお願いします〜",
                 "フォロバ感謝です！たまに見かけて気になった投稿にゆるく絡んでます、よろしくどうぞ！",
+                "つながりありがとうございます！気ままに呟いたり絡んだりしてるので今後ともよろしくお願いします〜",
             ]
         if lang == "ko":
             return [
                 "맞팔 감사합니다! 평소엔 코딩하다가 타임라인 구경하며 가볍게 수다 떠는 편이에요, 잘 부탁드립니다ㅎㅎ",
+                "팔로우 고맙습니다! 지나가다 자주 들러서 가볍게 안부 남길게요, 오늘도 좋은 하루 보내세요~",
             ]
         if lang == "zh":
             return [
-                "谢回关呀！平时也就写写代码摸鱼上来瞎聊两句，刷到了顺手打个招呼，后面常逛哈哈",
-                "看到回关啦～平时对着电脑写烦了就上 X 找真人唠嗑吐槽，先混个脸熟！",
+                "谢回关呀！平时也就写写代码摸鱼上来瞎聊两句，刷到了顺手打个招呼，后面常来串门哈哈",
+                "看到回关啦～平时对着电脑写烦了就上 X 找真人唠嗑吐槽，先混个脸熟，有空多聊！",
+                "哈哈接住回关！看你最近动态挺有意思的，后面刷到经常顺手点个赞打招呼～",
+                "谢谢关注呀，X 上碰到能正常随口聊几句的活人朋友最舒服，祝最近天天好心情！",
             ]
         return [
             "appreciate the follow! usually coding all day and dropping by here whenever i need a breather lol",
             "thanks for connecting! always down to trade casual dev rants and timeline banter",
+            "glad we crossed paths on the feed! hope your week is going smooth, see you around",
         ]
 
     if intent == "milestone":
@@ -515,12 +676,14 @@ def _reply_candidates_for_context(ctx: dict[str, Any]) -> list[str]:
             ]
         if lang == "zh":
             return [
-                "恭喜破圈！在 X 上能多遇到几个正常聊天的活人朋友挺难得的，继续冲哈哈",
-                "恭喜呀！写到后面发现还是跟真活人瞎聊几句最有意思，祝早日翻倍～",
+                "恭喜破圈！在 X 上能多遇到几个正常聊天的活人朋友挺难得的，替你开心，继续冲哈哈",
+                "恭喜呀！写到后面发现还是跟真活人瞎聊几句最有意思，祝早日再翻倍～",
+                "看你一路坚持下来终于到这个节点啦，真诚发内容真的会慢慢聚起同好，恭喜恭喜！",
             ]
         return [
             "congrats on hitting the milestone! always fun running into real humans on the feed",
             "nice milestone! keeping things genuine here beats chasing empty numbers every time lol",
+            "huge congrats on the growth! awesome seeing steady real posting actually pay off",
         ]
 
     if intent == "creative":
@@ -531,7 +694,8 @@ def _reply_candidates_for_context(ctx: dict[str, Any]) -> list[str]:
             ]
         if lang == "zh":
             return [
-                "坚持产出真心厉害，比我这种天天只会跟编译器斗智斗勇的有浪漫多了哈哈，加油！",
+                "能一直保持创作输出真心厉害，比我天天盯着黑框终端看代码浪漫多了哈哈，别太累注意休息！",
+                "看着好有生活气息呀，顺手点个赞留个爪，保持这个节奏慢慢画/写下去～",
             ]
         return [
             "love seeing folks actually shipping creative work on here, keep going at your own pace!",
@@ -550,49 +714,61 @@ def _reply_candidates_for_context(ctx: dict[str, Any]) -> list[str]:
 
     if intent == "vent_rant":
         if lang == "ja":
-            return [
+            return life_front + [
                 "ほんとそれ疲れますよね…今日は無理に粘らず早めに切り上げて休んだ方が明日の効率良さそうです。",
                 "わかる、夜遅くまで粘るほど余計に泥沼ハマりがちなので一旦コーヒー飲んで離れるの正解です笑",
             ]
-        if lang == "zh":
+        if lang == "ko":
             return [
-                "草，太真实了，越急着收尾越容易卡在离谱的地方……实在不行先关电脑喝口水睡觉，明早一眼就能看出来",
-                "太懂了，写东西最搞心态的就是眼看要下班突然给你整波大活，先喘口气哈哈",
-                "大半夜还在硬扛辛苦了，有些破问题盯着死磕半小时不如睡醒两分钟看透，保住头发要紧！",
-                "真实到想笑又想叹气……X 上能吐槽出来起码还没麻木，今晚早点歇着别内耗了",
-                "哈哈同款日常，顺的时候丝滑得飞起，卡住的时候直接把人 CPU 干烧",
+                "진짜 그럴 땐 억지로 붙잡고 있는 것보다 물 한 잔 마시고 잠깐 쉬는 게 훨씬 낫더라고요, 오늘 고생 많으셨어요!",
             ]
-        return [
+        if lang == "zh":
+            return life_front + [
+                "草，太真实了，越急着收尾越容易卡在离谱的地方……实在不行先关电脑喝口水休息下，明早一眼就能看出来",
+                "太懂了，写东西最搞心态的就是眼看要收工突然给你整波大活，先喘口气别气着自己哈哈",
+                "有些破问题盯着死磕半小时不如出去溜达一圈两分钟看透，保住好心情和头发要紧！",
+                "真实到想笑又想叹气……能吐槽出来说明还没被磨麻木，今晚别再内耗啦",
+                "哈哈同款日常，顺的时候丝滑得飞起，卡住的时候直接把人脑子干烧，先放一放明天再战",
+            ]
+        return life_front + [
             "honestly stepping away for 20 mins beats staring angrily at the screen every single time lol",
             "ugh too real, things go super smooth until one random edge case decides to ruin your evening",
-            "midnight debugging hits different in the worst way haha, hope you get some actual rest after this",
+            "rough stretch there — hope things smooth out soon and you get a real break after this",
         ]
 
     if intent == "social_chatter":
         if lang == "ja":
-            return [
+            return life_front + [
                 "タイムライン流れてきて思わずお邪魔しました！今日もゆるくやっていきましょ〜",
                 "わかります、パソコンの前で煮詰まったときほどタイムライン眺めたくなりますよね笑",
+                "ふらっと立ち寄りました〜無理しすぎずマイペースにいきましょう！",
+            ]
+        if lang == "ko":
+            return [
+                "타임라인 보다가 반가워서 슬쩍 인사 남기고 가요! 오늘도 편하게 하루 보내세요ㅎㅎ",
             ]
         if lang == "zh":
-            return [
-                "路过摊位混个脸熟～平时写完代码脑子发木就爱刷刷推找活人扯两句，顺手点个赞",
-                "刚从电脑前抬头透口气，X 上还是得跟真人闲聊吐槽才有烟火气哈哈",
-                "同款网上冲浪选手路过留名～天天看黑框终端烦了就出来透透气，祝今天顺心！",
-                "哈哈活人浓度挺高呀，刚好忙完一阵上来逛一圈，常在时间线见面～",
+            return life_front + [
+                "路过你主页顺手串个门混个脸熟～平时写完东西脑子发木就爱逛推找活人扯两句，顺手点个赞",
+                "刚从电脑前抬头透口气，X 上还是得跟真人闲聊吐槽才有烟火气哈哈，今天还顺利吗",
+                "同款网上冲浪选手路过留名～天天看终端烦了就出来透透气，祝今天开心顺意！",
+                "哈哈活人浓度挺高呀，刚好忙完一阵上来逛一圈，常在时间线串门见面～",
+                "刷到这条莫名亲切，先赞为敬！有空出来喝杯水歇歇脚，别一直对着屏幕呀",
+                "平时大家都在各自忙，能在时间线上凑巧碰上随口搭两句还挺温暖的哈哈",
             ]
-        return [
+        return life_front + [
             "just taking a quick break from staring at a terminal all day, good running into actual humans here lol",
             "hey! scrolling the feed with some coffee before getting back to coding, hope your week's going alright",
+            "dropping by your timeline to say hey — nice seeing genuine folks hanging out instead of promo bots",
         ]
 
-    # intent == "tech_discussion": peer-to-peer casual coder insider chat (NO corporate PPT tone).
+    # intent == "tech_discussion": empathetic peer-to-peer casual coder banter (NO corporate PPT tone).
     if lang == "ja":
-        jp_tech = []
+        jp_tech = list(life_front)
         if en_h:
-            jp_tech.append(f"{en_h}まわりって動かすまでは早いのに、例外と再試行の穴埋めが地味に時間溶けますよね笑")
+            jp_tech.append(f"{en_h}まわりって動かすまでは早いのに、例外と再試行の穴埋めが地味に時間溶けますよね笑 お疲れさまです")
         return jp_tech + [
-            "ほんとそれです、ハッピーパス動いてからの例外処理まわりが一番時間溶けますよね",
+            "ほんとそれです、ハッピーパス動いてからの例外処理まわりが一番時間溶けますよね、無理せず休憩挟んでください",
             "実環境で一晩回すとローカルのテストでは絶対出ない競合が急に顔出すのあるあるすぎます",
             "コード書いた直後は完璧に見えるのに翌日ログ見ると別世界なの毎回笑うしかないです",
             "変に凝った仕組みより地味だけど後から追える作りにしておくと助かる場面多いですよね〜",
@@ -601,72 +777,65 @@ def _reply_candidates_for_context(ctx: dict[str, Any]) -> list[str]:
     if lang == "ko":
         ko_tech = []
         if en_h:
-            ko_tech.append(f"{en_h} 쪽은 처음 붙일 땐 금방 되는데, 예외 복구랑 타이밍 꼬이는 거 막다가 하루 다 가죠ㅋㅋ")
+            ko_tech.append(f"{en_h} 쪽은 처음 붙일 땐 금방 되는데, 예외 복구랑 타이밍 꼬이는 거 막다가 하루 다 가죠ㅋㅋ 고생 많으십니다")
         return ko_tech + [
             "진짜 공감돼요, 정상 케이스는 10분이면 되는데 엣지 케이스 막다가 주말 다 가는 느낌ㅋㅋ",
             "로컬에선 멀쩡하던 게 실제 환경에서 밤새 돌려놓으면 꼭 이상한 데서 터지더라고요",
             "자동화 짜다 보면 기능 추가보다 중간에 조용히 씹히는 상태 잡는 게 제일 일인 듯요",
-            "돌아가는 데모 만드는 건 빠른데 안 죽고 오래 버티게 다듬는 게 진짜 체력전 맞죠ㅎㅎ",
+            "돌아가는 데모 만드는 건 빠른데 안 죽고 오래 버티게 다듬는 게 진짜 체력전 맞죠ㅎㅎ 잠깐 쉬엄쉬엄 하세요",
         ]
     if lang == "zh":
         anchor_zh = []
         if zh_h:
             anchor_zh = [
-                f"讲真{zh_h}跑通快乐路径十来分钟的事，剩下两天全在堵奇奇怪怪的并发边界和超时，太标准了",
-                f"同踩过{zh_h}的坑，最烦不是直接报错，而是脚本一声不吭吞掉失败还以为成了",
-                f"搞{zh_h}搞烦了算看透了，外围逻辑一重必炸，不如拆成简单可追踪的步骤省心多了",
+                f"讲真搞{zh_h}跑通快乐路径十来分钟的事，剩下两天全在堵奇奇怪怪的边界和超时，辛苦了哈哈",
+                f"同踩过{zh_h}的坑，最折腾人的不是直接报错，而是悄咪咪吞掉失败还以为成了，排查起来太费神",
+                f"折腾{zh_h}折腾久了真深有体会，外围逻辑越简朴半夜睡觉越安心，搞完记得喝口水歇会儿",
             ]
         theme_zh = {
             "concurrency_state": [
-                "并发最搞心态的真不是加锁，是校验和写入没包一起，报错了写一半卡在半空最难捞",
+                "并发最搞心态的真不是加锁，是校验和写入没包一起，报错卡半空最难捞，调通这波辛苦啦",
                 "状态机这东西平时觉得啰嗦，一旦半夜跑批出幺蛾子，能不能干净停下来全靠它续命",
             ],
             "browser_dom": [
-                "页面自动化千万别信死等几秒或瞎点坐标，前端稍微换个布局当场抓瞎，还是盯DOM再刷新核对靠谱",
-                "写爬虫/浏览器驱动最烦就是导航完了节点还没出来，读个空列表回来直接傻眼哈哈",
+                "页面自动化千万别信死等几秒或瞎点坐标，前端稍微换个布局当场抓瞎，盯紧 DOM 刷新核对省心太多",
+                "写浏览器驱动最烦就是页面刚跳转节点还没出来，读个空列表回来瞬间高血压哈哈",
             ],
             "rate_pacing": [
-                "写过调度器之后完全不想堆高并发了，慢一点拉开间隔稳跑三天，比冲五分钟触发429强十倍",
-                "遇到连续不明状态立马停手真的很重要，硬顶重试通常只会越错越离谱",
+                "写过调度器之后真不敢硬堆并发了，慢一点拉开间隔稳跑几天，比冲五分钟吃 429 舒心十倍",
+                "遇到连续不明状态能果断停手真的很冷静，硬顶重试通常只会把自己心态搞炸",
             ],
             "perf_benchmark": [
-                "看评测只看均值真的太容易被骗，我每次必翻p99长尾和报错日志，真瓶颈全躲在角落里",
-                "性能拆到底十有八九不是算法太慢，是前面某处傻傻空等超时拖垮整条线哈哈",
+                "看评测只看均值真的太容易被骗，我每次必翻 p99 长尾，真卡脖子的全躲在角落里",
+                "性能调到底十有八九不是算法太慢，是某处傻傻空等超时拖垮整条线哈哈，查出来那一刻巨爽",
             ],
             "agent_tooling": [
-                "写MCP和Agent工具最怕上行模型路由抽风，客户端尽量做薄、校验塞后端稳妥太多",
-                "工具返回值不给明确报错和下一步提示的话，Agent自己在那绕圈能把额度烧干笑死",
+                "写 MCP 和 Agent 工具最怕上行模型路由抽风，把规则和状态守卫放到本地稳妥太多了",
+                "工具报错如果不把下一步怎么改写明白，看着 Agent 在那死循环把额度烧干真的会笑死",
             ],
         }.get(theme, [])
-        return anchor_zh + theme_zh + [
-            "哈哈写代码前自信满满觉得三行搞定，一跑真实环境当场教做人，太真实了",
-            "本地mock全绿的时候千万别飘，真流量跑两圈各种离奇边界全出来了",
-            "讲真系统搞到最后拼的都是谁更能耐得住性子擦边界，花哨功能反而天天出bug",
-            "半夜调试最绝望的莫过于日志干干净净但结果不对，只能一点点打断点排查",
-            "我自己的经验是能少改全局状态就少改，越土越直白的代码出事后越容易三分钟修完",
-            "自动化能跑起来只是第一步，敢不敢关掉屏幕放心让它自己跑通宵才是另一回事哈哈",
-            "说白了还是先小范围把验证卡死，总比上线以后半夜爬起来清脏数据体面多了",
-            "确实，小步验证完立刻回归一遍最踏实，返工成本直接砍半",
-            "看你拆得挺细的，这种一线真实踩过雷再写出来的东西比教程管用多了",
-            "同款苦逼调bug选手路过哈哈，修完这个边界顺便喝杯水歇会儿",
-            "有的时候卡半天以为是模型问题，最后查出来是个不起眼的换行或者端口匹配坑，真没脾气",
-            "折腾越久越觉得工具还是简单可预期最香，黑盒魔法越少半夜睡觉越稳",
-            "确实，很多看起来不痛不痒的小细节线上跑多几次直接变核心事故",
-            "独立做点小工具挺看耐心的，一点点磨掉毛刺跑顺之后还是很有成就感哈哈",
-            "赞同，边界和回滚写明白之前我一般都不敢把定时调度打开",
-            "哈哈写过类似模块的看到这句直接会心一笑，全都是血泪换来的经验",
+        return life_front + anchor_zh + theme_zh + [
+            "哈哈写代码前自信满满觉得三行搞定，一跑真实环境当场教做人，搞定完早点歇着呀",
+            "本地 mock 全绿的时候千万别飘，真流量跑两圈各种离奇边界全出来了，太理解这过程有多磨人",
+            "独立做点小工具全靠一口气磨细节，跑顺那一刻还是超有成就感的，别忘喝水休息～",
+            "大半夜调试最绝望的莫过于日志干干净净但结果不对，只能打断点一点点摸，实在困了明早再看",
+            "赞同！自己折腾出来的工具简单稳当比花哨靠谱多了，平时不用天天提心吊胆盯着日志",
+            "同款天天跟 bug 搏斗选手路过串个门～修完这处顺手去喝口茶喘口气吧",
+            "看你一点点把坑填平分享出来真挺实在的，比看那些飘在天上的教程解压多了",
+            "有的时候卡半天以为是玄学问题，最后查出来是个换行或者端口小细节，找着以后又好气又好笑",
+            "越折腾越觉得能稳稳跑过夜的小脚本才是最香的，平时还能多留点时间摸鱼睡觉哈哈",
         ]
-    # English relaxed tech coder banter
+    # English relaxed, empathetic tech coder banter
     anchor_en = []
     if en_h:
         anchor_en = [
-            f"honestly {en_h} takes like 10 mins to get a demo working and then two days chasing weird edge cases lol",
-            f"been messing with {en_h} too lately, silent failures hurt way worse than loud crashes",
-            f"yeah {en_h} stuff always looks simple until real sessions start hitting race conditions overnight",
+            f"honestly {en_h} takes like 10 mins for the happy path and then two days chasing weird edge cases lol, hang in there",
+            f"been tinkering with {en_h} too lately — silent failures drain way more energy than loud crashes",
+            f"yeah {en_h} always looks breezy until real overnight runs trip over race conditions, hope the fix holds cleanly",
         ]
     theme_en = {
         "concurrency_state": [
-            "nothing humbles you faster than partial writes when two workers race before a lock clears",
+            "nothing humbles you faster than partial writes when two workers race before a lock clears — glad you caught it",
             "keeping history append-only and checking invariants before mutating anything saved me so many messy rollbacks",
         ],
         "browser_dom": [
@@ -692,23 +861,130 @@ def _reply_candidates_for_context(ctx: dict[str, Any]) -> list[str]:
         "honestly boring deterministic logic beats clever heuristics whenever you cant roll back an action",
         "most automation breaks in the tiny glue code between tools, never in the happy path itself",
         "lol classic weekend dev story: thought it was a two-line tweak and suddenly you're rewriting locks",
-        "nothing better than spotting a tiny bug after staring at logs for two hours, pure relief",
+        "nothing better than finally spotting a tiny bug after staring at logs for two hours, pure relief — go grab a break",
         "real-world sessions always find the one weird case no unit test ever thought to mock",
-        "keeping error payloads readable is underrated until 1am debugging hits",
+        "keeping error payloads readable is underrated until 1am debugging hits, take care of your sleep too",
         "small focused checks right next to the bug you just hit always age way better than giant rewrites",
         "simple predictable scripts age way better than clever black boxes every time",
-        "feels like 80% of shipping reliable tools is just refusing to swallow silent errors",
-        "always down for grounded engineering notes instead of hype threads",
-        "wild how one stray line ending or unparsed wrapper can derail an entire run quietly",
-        "lol been there, thought everything was clean till a reload wiped half the assumption",
-        "yeah taking an extra breath on pacing usually gives cleaner runs across a whole week anyway",
-        "good call keeping the surface small before turning any background loop loose",
-        "honestly respect anyone debugging this stuff out in the open, way more real than launch demos",
-        "haha nothing teaches defensive coding faster than running your own bot on a live feed",
+        "always appreciate real builders sharing the messy parts out in the open, hope your weekend stays bug-free",
+        "haha nothing teaches defensive coding faster than watching your own script touch a live page",
     ]
     if en_h2 and en_h2 != en_h:
         base_en.insert(0, f"combining {en_h} with clean {en_h2} checks makes overnight runs way less stressful")
-    return anchor_en + theme_en + base_en
+    return life_front + anchor_en + theme_en + base_en
+
+
+def get_casual_interaction_templates() -> dict[str, Any]:
+    """Return pre-drafted, non-AI casual drop-by interaction templates for early-stage account growth."""
+    return {
+        "purpose": "前期主动串门、先分析对方推文语气与处境、再带关心口吻随意闲聊，绝对不用 AI 套话。",
+        "early_drop_by_tactics": [
+            "1. 先逛对方主页（x_visit_profile）看 Bio 和最近 2–3 条推文，不要看到帖子就冷冰冰发评论或直接关注。",
+            "2. 对刚认识的同好实行『串门 1–2 赞 + 1 句自然关心的留言』，同一波对同一作者最多回 1 条，绝不刷屏。",
+            "3. 优先挑 20–5000 粉、活跃度正常且当前评论数 <=5 的真人推文留言，留言会被作者真正在通知栏看到，回复/回关率最高。",
+            "4. 评论前先读懂对方此刻状态（加班累了/刚上线开心/晒猫喝咖啡/调试卡住），先共情关心，再顺着正文具体词接一句。",
+            "5. 遇到仅有 2–4 字且无上下文的短句（如「咋了」），或没看懂的生活观察，宁可只点赞不硬聊，防止机器人翻车。",
+        ],
+        "scenarios": [
+            {
+                "id": "late_night_overtime",
+                "title": "1. 对方加班 / 熬夜 / 吐槽破防（先关心安抚）",
+                "analyze_cue": "推文里出现：凌晨、半夜、加班、好累、失眠、报错破防、burnout、1am。",
+                "care_focus": "不要急着当老师给建议，先替对方心疼一句、叮嘱喝水早点休息。",
+                "templates_zh": [
+                    "都这么晚了还盯着屏幕辛苦了，这种卡住的地方往往睡一觉明早一眼就看透，今晚先歇着吧",
+                    "抱拳了哈哈，熬夜调这种玩意最耗心神，先合上电脑喝口水喘口气，别死磕太晚",
+                    "加班加到这个点真挺磨人的，能吐槽出来起码还没麻木，忙完赶紧休息别内耗了",
+                ],
+                "templates_en": [
+                    "oof past midnight debugging is brutal, go grab some water and sleep on it — fresh eyes spot it in two mins",
+                    "honestly shutting the laptop beats fighting a stubborn edge case at 1am, hope you get real rest tonight",
+                ],
+                "templates_ja": [
+                    "遅くまでほんとお疲れさまです…今日は無理せず切り上げてゆっくり休んでくださいね",
+                ],
+                "avoid": "禁止说「实战踩坑值得总结」「建议重构状态机」「从工程角度看」",
+            },
+            {
+                "id": "casual_drop_by_life",
+                "title": "2. 对方喝咖啡 / 摸鱼 / 周末出摊交友（纯日常随意闲聊）",
+                "analyze_cue": "推文里出现：出摊、活人、咖啡、冰美式、周末、摸鱼、天气、猫狗日常。",
+                "care_focus": "展示自己也是有血有肉的摸鱼活人，顺口夸一杯咖啡/祝周末开心，顺便混个脸熟。",
+                "templates_zh": [
+                    "路过你主页顺手串个门混个脸熟～平时写完东西脑子发木就爱逛推找活人扯两句，顺手点个赞",
+                    "哈哈刚准备倒杯水摸个鱼就刷到你，忙里偷闲喝一口最解压，今天别把自己逼太紧呀",
+                    "难得闲下来就好好放空逛逛，别老记挂电脑里那点报错了，周末开心摸鱼！",
+                ],
+                "templates_en": [
+                    "just taking a quick break from staring at a terminal all day, good running into actual humans here lol",
+                    "dropping by your timeline to say hey — nice seeing genuine folks hanging out instead of promo bots",
+                ],
+                "templates_ja": [
+                    "タイムライン流れてきて思わずお邪魔しました！今日もマイペースにいきましょ〜",
+                ],
+                "avoid": "禁止说「同路人常联系」「留个脚印关注」「很高兴认识优秀的你」",
+            },
+            {
+                "id": "reciprocal_followback",
+                "title": "3. 对方刚回关 / 刚在通知里互动（趁热打招呼）",
+                "analyze_cue": "通知事件 follow / reply / mention，对方刚刚点进你主页看了。",
+                "care_focus": "轻松接住善意、一句话交代自己平时都在发什么/爱闲聊，不搞广告推销。",
+                "templates_zh": [
+                    "谢回关呀！平时也就写写代码摸鱼上来瞎聊两句，刷到了顺手打个招呼，后面常来串门哈哈",
+                    "看到回关啦～平时对着电脑写烦了就上 X 找真人唠嗑吐槽，先混个脸熟，有空多聊！",
+                ],
+                "templates_en": [
+                    "appreciate the follow! usually coding all day and dropping by here whenever i need a breather lol",
+                    "glad we crossed paths on the feed! hope your week is going smooth, see you around",
+                ],
+                "templates_ja": [
+                    "フォローありがとうございます！普段はコード書いたりタイムラインでゆるく雑談したりしてます〜",
+                ],
+                "avoid": "禁止发链接、禁止一上来推销产品或请求互赞三连",
+            },
+            {
+                "id": "milestone_celebration",
+                "title": "4. 对方破百破千粉 / 项目上线小节点（真诚祝贺）",
+                "analyze_cue": "推文里出现：破百、破千、フォロワー達成、followers、shipped、launched。",
+                "care_focus": "肯定对方一路坚持下来的不容易，像朋友一样随口替他开心。",
+                "templates_zh": [
+                    "恭喜破圈！在 X 上能多遇到几个正常聊天的活人朋友挺难得的，替你开心，继续冲哈哈",
+                    "看你一路坚持下来终于到这个节点啦，真诚发内容真的会慢慢聚起同好，恭喜恭喜！",
+                ],
+                "templates_en": [
+                    "congrats on hitting the milestone! always fun running into real humans on the feed",
+                ],
+                "templates_ja": [
+                    "達成おめでとうございます！マイペースに発信を続けてここまで伸ばしてるのすごいですね。",
+                ],
+                "avoid": "禁止「流量密码」「稳步往上走」「值得借鉴的增长方法论」",
+            },
+            {
+                "id": "tech_peer_empathy",
+                "title": "5. 对方写代码 / 调工具卡坑（同行体谅 + 具体细节共鸣）",
+                "analyze_cue": "正文出现具体技术词（MCP、Rust、Playwright、并发、429、部署等）且作者明显被折腾到。",
+                "care_focus": "先体谅调试真耗时、提醒劳逸结合，再带上对方推文里的具体技术名词轻聊一句。",
+                "templates_zh": [
+                    "同款天天跟 bug 搏斗选手路过串个门～修完这处顺手去喝口茶喘口气吧",
+                    "讲真跑通快乐路径十来分钟的事，剩下两天全在堵奇奇怪怪的边界和超时，辛苦了哈哈",
+                ],
+                "templates_en": [
+                    "haha local mocks always pass until real traffic exposes timing races in five mins — hope the fix sticks cleanly",
+                ],
+                "avoid": "禁止用双破折号「——」做 PPT 总结，禁止说教「建议你采用某某架构」",
+            },
+            {
+                "id": "skip_reply_like_only",
+                "title": "6. 仅点赞不硬回的边界场景（保底不翻车）",
+                "analyze_cue": "超短句（如「咋了」「？」）、无上下文碎碎念、或完全看不懂语境的内容。",
+                "care_focus": "给一个点赞就是最好、最不尴尬的礼貌存在感，绝不编造理解去硬回。",
+                "templates_zh": ["[系统规则：fail-closed 返回 None -> 仅点 1 赞，不输出评论]"],
+                "templates_en": ["[Fail-closed: return None -> like only, zero fabricated reply]"],
+                "avoid": "禁止强行套用万能模板（否则出现「收到你的补充…」级社死翻车）",
+            },
+        ],
+        "banned_ai_phrases_examples": list(_AI_CLICHE_PATTERNS),
+    }
 
 
 def draft_friendly_reply(
@@ -718,7 +994,7 @@ def draft_friendly_reply(
     recent_replies: list[str] | set[str] | None = None,
     rng: random.Random | None = None,
 ) -> str | None:
-    """Draft a varied, casual-first, non-AI reply matched strictly to cleaned post intent."""
+    """Draft a varied, casual-first, caring non-AI reply matched strictly to cleaned post intent."""
     r = rng or random.SystemRandom()
     raw_text = str(post.get("text") or post.get("text_preview") or "").strip()
     if not raw_text:
@@ -731,7 +1007,14 @@ def draft_friendly_reply(
         return None
     extra_banned = list((persona_memory or {}).get("banned_phrases") or [])
     anchors = [h.casefold() for h in (ctx.get("zh_hook"), ctx.get("en_hook")) if h]
-    if anchors:
+    # Keep top life-empathy lines first when explicit life hooks are present; otherwise prioritize tech anchors.
+    if ctx.get("life_hooks") and ctx["intent"] in {"vent_rant", "social_chatter"}:
+        front = list(pool[:4])
+        rest = list(pool[4:])
+        r.shuffle(front)
+        r.shuffle(rest)
+        ordered_pool = front + rest
+    elif anchors:
         anchored = [c for c in pool if any(a in c.casefold() for a in anchors)]
         others = [c for c in pool if c not in anchored]
         r.shuffle(anchored)
@@ -1055,10 +1338,10 @@ def evaluate_account_health(
         stage_caps = {"publish_post": 0, "like_post": 3, "follow_profile": 0, "repost_post": 0, "reply_post": 0}
     elif account_age_days < 7 and posts_count < 10:
         warmup_stage = "light_engage"
-        stage_caps = {"publish_post": 1, "like_post": 6, "follow_profile": 2, "repost_post": 1, "reply_post": 0}
+        stage_caps = {"publish_post": 1, "like_post": 12, "follow_profile": 2, "repost_post": 1, "reply_post": 5}
     elif not warmup_ready and not established_on_x:
         warmup_stage = "content_build"
-        stage_caps = {"publish_post": 2, "like_post": 15, "follow_profile": 5, "repost_post": 3, "reply_post": 2}
+        stage_caps = {"publish_post": 2, "like_post": 25, "follow_profile": 5, "repost_post": 3, "reply_post": 12}
     else:
         warmup_stage = "growth"
         stage_caps = {"publish_post": 5, "like_post": 60, "follow_profile": 200, "repost_post": 8, "reply_post": 25}
@@ -1114,6 +1397,13 @@ def evaluate_account_health(
                 "priority": "medium",
                 "suggested_count": min(10, remaining_safe["like_post"]),
                 "min_gap_seconds": prof["actions"]["like_post"]["min_gap_seconds"],
+            })
+        if warmup_stage in {"light_engage", "content_build"} and remaining_safe.get("reply_post", 0) > 0 and stage_caps["reply_post"] > 0:
+            recommended_actions.append({
+                "action": "drop_by_visit_and_reply",
+                "priority": "high",
+                "suggested_count": min(5, remaining_safe["reply_post"], stage_caps["reply_post"]),
+                "reason": "Early-stage growth tactic: visit peer profiles, like 1-2 recent posts, and leave 1 casual caring reply.",
             })
         if ratio_guard:
             recommended_actions.append({
@@ -2106,7 +2396,7 @@ def score_post_relevance(
     persona_topics: list[str] | None = None,
     exclude_keywords: list[str] | None = None,
 ) -> tuple[bool, int]:
-    """Return (allowed, relevance_score) for a timeline/search post."""
+    """Return (allowed, relevance_score) for a timeline/search/drop-by post."""
     text = str(post.get("text") or "").casefold()
     excludes = [str(k).strip().casefold() for k in (exclude_keywords or []) if str(k).strip()]
     if any(k in text for k in excludes):
@@ -2121,6 +2411,19 @@ def score_post_relevance(
         score += 18
     if post.get("author_bio"):
         score += 5
+    # Low-crowd drop-by bonus: replies under quiet threads (<=5 replies) from peer-size accounts get seen first.
+    replies = post.get("reply_count")
+    if isinstance(replies, (int, float)):
+        if 0 <= replies <= 5:
+            score += 10
+        elif replies > 80:
+            score -= 10
+    author_followers = post.get("author_followers")
+    if isinstance(author_followers, (int, float)):
+        if 20 <= author_followers <= 5000:
+            score += 8
+        elif author_followers > 50000:
+            score -= 8
     return (True, score)
 
 
@@ -2253,7 +2556,7 @@ def _bundle_author_interactions(
         is_notif = rep.get("source") == "notification"
         notif_kind = str(rep.get("notif_kind") or "").lower()
         fol = follows_by_handle.get(author_key)
-        like = next((l for l in likes_by_author.get(author_key, []) if id(l) not in used_likes), None)
+        author_like_pool = [l for l in likes_by_author.get(author_key, []) if id(l) not in used_likes]
 
         role = "inbound_followback" if (is_notif and notif_kind == "follow") else (
             "inbound_reply" if is_notif else "outbound_bundle"
@@ -2263,7 +2566,8 @@ def _bundle_author_interactions(
             fol["visited_before_engage"] = True
             seq.append(fol)
             used_follows.add(id(fol))
-        if like is not None:
+        # Early-stage drop-by ("串门"): warm up with 1-2 likes on recent posts before leaving 1 caring reply.
+        for like in author_like_pool[:2]:
             like["interaction_role"] = role
             like["visited_before_engage"] = bool(like.get("visited_before_engage") or is_notif)
             seq.append(like)
@@ -2529,6 +2833,7 @@ def build_daily_orchestration_plan(
         local_seen_urls.add(canonical)
         author = str(post.get("author") or match.group(1)).lstrip("@")
         fresh_bonus = 0 if (author.casefold() in recent_authors and str(post.get("source") or "") != "notification") else 8
+        drop_by_bonus = 6 if (bool(post.get("visited_profile")) and stage in {"ghost", "light_engage", "content_build"}) else 0
         clean_posts.append({
             "url": canonical,
             "author": author,
@@ -2538,7 +2843,7 @@ def build_daily_orchestration_plan(
             "source": str(post.get("source") or ""),
             "notif_kind": str(post.get("notif_kind") or ""),
             "visited_profile": bool(post.get("visited_profile")),
-            "relevance_score": rel_score + fresh_bonus,
+            "relevance_score": rel_score + fresh_bonus + drop_by_bonus,
         })
     clean_posts.sort(key=lambda item: item["relevance_score"], reverse=True)
 
@@ -2551,7 +2856,7 @@ def build_daily_orchestration_plan(
     )
     replied_urls = {op["url"] for op in buckets["reply_post"]}
     replied_authors: set[str] = set()
-    wave_liked_authors: set[str] = set()
+    author_likes: dict[str, int] = {}
 
     for post in clean_posts:
         author_key = post["author"].casefold()
@@ -2565,20 +2870,24 @@ def build_daily_orchestration_plan(
             and author_key not in replied_authors
         )
         drafted: str | None = None
+        post_ctx_payload = {
+            "text": post["full_text"],
+            "author": post["author"],
+            "author_bio": post["author_bio"],
+            "source": post["source"],
+            "notif_kind": post["notif_kind"],
+            "visited_profile": is_visited,
+        }
+        post_analysis: dict[str, Any] | None = None
         if can_reply:
             drafted = draft_friendly_reply(
-                {
-                    "text": post["full_text"],
-                    "author": post["author"],
-                    "author_bio": post["author_bio"],
-                    "source": post["source"],
-                    "notif_kind": post["notif_kind"],
-                    "visited_profile": is_visited,
-                },
+                post_ctx_payload,
                 persona_memory=persona_memory,
                 recent_replies=recent_replies,
                 rng=rng,
             )
+            if drafted:
+                post_analysis = analyze_target_post(post_ctx_payload, persona_memory=persona_memory)
 
         tech_score, is_elite_tech, tech_reasons = score_technical_quality(
             {
@@ -2590,12 +2899,13 @@ def build_daily_orchestration_plan(
             persona_topics=persona_topics,
         )
 
-        # Pair a warm like with every drafted reply when like quota allows,
-        # otherwise spread likes across distinct fresh authors first.
+        # Drop-by warmth: allow up to 2 likes for visited/early-stage neighbors, 1 per unvisited author first.
+        cur_likes = author_likes.get(author_key, 0)
+        max_likes_for_author = 2 if (is_visited or stage in {"light_engage", "content_build"}) else 1
         if len(buckets["like_post"]) < capped["like_post"] and (
-            drafted is not None or author_key not in wave_liked_authors or len(clean_posts) <= 3
+            drafted is not None or cur_likes < max_likes_for_author or len(clean_posts) <= 3
         ):
-            wave_liked_authors.add(author_key)
+            author_likes[author_key] = cur_likes + 1
             buckets["like_post"].append({
                 "action": "like_post",
                 "url": post["url"],
@@ -2625,7 +2935,7 @@ def build_daily_orchestration_plan(
             recent_replies.append(drafted)
             replied_urls.add(post["url"])
             replied_authors.add(author_key)
-            buckets["reply_post"].append({
+            reply_op: dict[str, Any] = {
                 "action": "reply_post",
                 "url": post["url"],
                 "author": post["author"],
@@ -2634,7 +2944,14 @@ def build_daily_orchestration_plan(
                 "source": post["source"],
                 "notif_kind": post["notif_kind"],
                 "visited_before_engage": is_visited or is_notif,
-            })
+            }
+            if post_analysis:
+                reply_op["post_analysis"] = {
+                    "author_state": post_analysis["author_state"],
+                    "care_angle": post_analysis["care_angle"],
+                    "brief_summary": post_analysis["brief_summary"],
+                }
+            buckets["reply_post"].append(reply_op)
 
     # 3. Deduplicated & scored follow candidates shaped by active orchestration strategy.
     ranked_cands = sorted(
