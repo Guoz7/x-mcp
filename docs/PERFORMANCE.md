@@ -1,0 +1,75 @@
+# X Starter performance snapshot
+
+Date: 2026-10-27
+Version: `0.10.0`
+Scope: local protocol, local Streamable HTTP, Chromium fixture, and public X read-only probes.
+Credentials: none.
+Real X writes during this benchmark: none.
+
+## The short table
+
+| Test | Result | Scope |
+|---|---:|---|
+| `tools/list` p50 | 0.003 ms | 5,000 in-process mock calls |
+| HTTP mock at 512 clients | 994.06 RPS, 0 errors | Local machine; no X network or model |
+| HTTP mock at 2,048 clients | 533.08 RPS, 0 errors | Peak memory 658.68 MB |
+| Visual fallback checks | 27/27 | Real Chromium; synthetic local page |
+| Viewport/DPR/theme matrix | 42/42 | Six synthetic browser contexts |
+| Public X profile cold read | 1.31-1.59 s | No OAuth, cookie or API key |
+| Public X timeline under rapid pressure | HTTP 429 | External X rate limit observed |
+| Historical External Agent/X bounded batch | 31 verified actions in 133 s | Internal owner-controlled run; not an SLA |
+| Real browser follow cycle | 1.16 s p50 | Five-target reversible sample; click cycle, not server-confirmed success |
+| Historical follow verification | 8 / 18 confirmed | 44.4%; separate small run with independent post-action verification |
+| Current mutual candidate read | 4 / 7 visible rows | Owner profile read; 4 rows showed both `Follows you` and `Follow back` |
+| Current follow batch contract | 4 planned, 0 executed | Candidate discovery, plan, confirmation record; no X state change |
+| Synthetic 200-follow ledger pressure | 200 / 200 completed in 10.429 s | Local state ledger only; 19.18 actions/s; no browser or X network |
+| Synthetic 200-follow concurrent pressure | 200 / 200 completed in 11.045 s | Eight workers; 18.11 actions/s; 0 duplicate claims; evidence valid |
+
+## How to interpret it
+
+The local MCP layer is not the slow part. Browser startup, page rendering,
+network latency, X rate limits and model decisions dominate a real workflow.
+The HTTP figures are capacity signals for the local server. They are not X
+interaction rates. The browser figures prove the executor guards and geometry
+contract. They do not prove every X layout.
+
+The follow result needs special care. The 1.16-second number measures the
+browser click cycle. It does not prove that X accepted every write. In a
+separate 18-follow run, only 8 states survived independent verification. Do not
+convert the click-cycle number into a guaranteed 200-follow result.
+
+The current MCP now has a candidate reader and a follow batch contract. The
+owner profile exposed 7 follower rows in the bounded read, but only 4 had both
+mutual-follow signals. The planner prepared 4 operations and changed no X
+state. It is not a 200-account acceptance run.
+
+Run the reproducible local pressure test with:
+
+```powershell
+python -X utf8 e2e/follow_pressure.py --targets 200 --chunk-size 20
+```
+
+This measures the MCP ledger and evidence chain only. It does not measure page
+navigation, browser clicks, X responses, rate limits, or model tokens.
+
+## Cost boundary
+
+- Local mock and browser-fixture tests used zero X API credits.
+- The pressure driver did not call a model, so model cost was not measured.
+- The published tool catalog is about 51,787 bytes, or about 12,947 rough tokens.
+- Real API write cost depends on the current X plan and request count.
+- Local CPU, memory, browser time and hosting cost depend on the operator machine.
+
+## Reproduce
+
+```powershell
+python -X utf8 scripts/benchmark.py --iterations 5000
+python -X utf8 scripts/loadtest.py --clients 512 --requests 10
+python -X utf8 e2e/executor_visual_e2e.py
+python -X utf8 e2e/executor_matrix_e2e.py
+python -I -X utf8 server.py --demo
+```
+
+The complete evidence, including the external public-read probe and raw local
+logs, remains in the task workspace. Do not copy private profiles or account
+logs into a public release.

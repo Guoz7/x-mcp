@@ -1,0 +1,86 @@
+"""Build an allowlisted, credential-free internal test ZIP."""
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import zipfile
+
+ROOT = Path(__file__).resolve().parents[1]
+FILES = (
+    "server.py", "src/browser_bridge.py", "src/ledger_lock.py", "src/browser_executor.py", "src/browser_paths.py",
+    "src/browser_read.py", "src/oauth.py", "src/x_api.py", "src/x_public.py", "src/write_store.py",
+    "src/agent_help_board.py", "src/connector_runtime.py", "src/composer.py", "scripts/build_insights.py",
+    "src/interaction_batch.py", "src/follow_batch.py", "e2e/follow_pressure.py", "src/follow_orchestration.py",
+    "src/account_orchestrator.py", "src/account_state.py", "src/autopilot_ops.py", "src/daily_action_budget.py",
+    "src/conformance_fixtures.py",
+    "src/client_config.py", "scripts/selfcheck.py", "scripts/mcp_client.py", "scripts/tester.py", "tester.cmd",
+    "scripts/internal-test.cmd", "dashboard.cmd",
+    "requirements-browser.txt", "README.md", "README.zh-CN.md", "docs/TESTING.md", "docs/PROMPTS.md",
+    "public_skill.md", "skill.md", "connector-manifest.json", "data/post_insights.json",
+    "ui/composer.html", "ui/dashboard.html", "docs/orchestration-profile-safe.json",
+    "docs/RELEASE_READINESS.md", "SECURITY.md", "CHANGELOG.md", "docs/LICENSE-DECISION.md",
+    "docs/PROMOTION.md", "docs/PERFORMANCE.md", "docs/promotion/DEMO.md",
+    "docs/promotion/X-MCP-TESTER-LINKS.md",
+    "docs/promotion/x-mcp-promo-story.json",
+    "docs/promotion/x-mcp-promo-deck.html", "docs/promotion/x-mcp-promo.mp4",
+    "docs/promotion/x-mcp-promo.srt", "docs/promotion/x-mcp-promo-narration.md",
+    "docs/promotion/x-mcp-200-follow-story.json",
+    "docs/promotion/x-mcp-200-follow-deck.html",
+    "docs/promotion/x-mcp-200-follow.mp4",
+    "docs/promotion/x-mcp-200-follow.srt",
+    "docs/promotion/x-mcp-200-follow-narration.md",
+    "docs/promotion/x-mcp-200-follow-article.md",
+    "docs/promotion/x-mcp-200-follow-delivery.md",
+    "scripts/owner_login_open.py", "scripts/owner_login_check.py", "e2e/executor_visual_e2e.py",
+    "e2e/executor_matrix_e2e.py", "e2e/owner_read_e2e.py", "e2e/write_flow_e2e.py", "e2e/interaction_batch_e2e.py",
+)
+FORBIDDEN = frozenset({".git", ".env", "__pycache__", ".x-starter-state", ".browser-executor-profile", ".venv", ".agent-work"})
+
+
+def build(output: Path) -> dict:
+    if output.exists():
+        raise FileExistsError("Choose a new archive path; existing releases are not overwritten.")
+    payloads = {}
+    for name in FILES:
+        relative = Path(name)
+        source = ROOT / relative
+        if source.is_symlink() or not source.resolve().is_relative_to(ROOT):
+            raise ValueError(f"Unsafe source: {name}")
+        if set(relative.parts) & FORBIDDEN:
+            raise ValueError(f"Forbidden source: {name}")
+        payloads[name] = source.read_bytes()
+    manifest = {
+        "release": "x-starter-0.10.0-internal-test",
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "source": "working tree; per-file hashes are authoritative",
+        "platform": "Windows, Python >=3.11, installed Chrome",
+        "credentials_included": False,
+        "browser_profile_included": False,
+        "runtime_bundled": False,
+        "dependency_install": "tester.cmd setup; network required",
+        "files": {name: hashlib.sha256(data).hexdigest() for name, data in sorted(payloads.items())},
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in sorted(payloads.items()):
+            archive.writestr("x-starter/" + name, data)
+        archive.writestr("x-starter/PACKAGE-MANIFEST.json", json.dumps(manifest, indent=2))
+    digest = hashlib.sha256(output.read_bytes()).hexdigest()
+    output.with_suffix(output.suffix + ".sha256").write_text(digest + "  " + output.name + "\n", encoding="ascii")
+    with zipfile.ZipFile(output) as archive:
+        if archive.testzip() is not None:
+            raise ValueError("ZIP integrity check failed")
+        for name, expected in manifest["files"].items():
+            if hashlib.sha256(archive.read("x-starter/" + name)).hexdigest() != expected:
+                raise ValueError(f"Archive content mismatch: {name}")
+    return {"archive": str(output), "bytes": output.stat().st_size, "sha256": digest, "files": len(payloads) + 1, "credentials_included": False}
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", required=True, type=Path)
+    print(json.dumps(build(parser.parse_args().output.resolve()), indent=2))

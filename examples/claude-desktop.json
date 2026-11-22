@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "x-starter": {
+      "command": "python",
+      "args": [
+        "-I",
+        "-X",
+        "utf8",
+        "<PATH_TO_X_STARTER>\\server.py"
+      ],
+      "env": {
+        "X_STARTER_MODE": "mock"
+      }
+    }
+  }
+}

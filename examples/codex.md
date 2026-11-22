@@ -1,0 +1,51 @@
+# Codex Setup
+
+Use a project-scoped MCP server entry. Keep the token out of this file.
+
+```toml
+[mcp_servers.x_starter]
+command = "python"
+args = [
+  "-I",
+  "-X",
+  "utf8",
+  "<PATH_TO_X_STARTER>\\server.py",
+]
+
+[mcp_servers.x_starter.env]
+X_STARTER_MODE = "mock"
+```
+
+For a live read, the host owner sets `X_STARTER_MODE=live`,
+`X_STARTER_ENABLE_LIVE=1`, and `X_BEARER_TOKEN` in the host environment. Do not
+add a real token to this tracked example.
+
+The exact config merge path depends on the installed Codex version. Check the
+host's `mcp_servers` setting and restart the host after a config change. This
+starter does not modify global Codex configuration.
+
+Acceptance for this adapter:
+
+1. `tools/list` returns the active tool catalog without duplicate names.
+2. `account_summary` reports `mode: "mock"` and `simulated: true`.
+3. `server.py --demo` exits 0.
+
+For a real local browser run, use a separate server mode and an executing agent:
+
+```t
+X_STARTER_MODE=browser
+X_STARTER_ENABLE_BROWSER=1
+X_STARTER_STATE_DIR=%LOCALAPPDATA%\\x-starter\\state\\browser
+```
+
+The agent claims `x_browser_next_action`, uses Computer Use, and returns the
+result through `x_browser_complete_action`. The server never receives a browser
+cookie, password, token, or one-time code.
+
+If the host reports a transport error, run:
+
+```powershell
+python .\server.py --demo
+```
+
+That separates server logic from host configuration.

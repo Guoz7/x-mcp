@@ -1,0 +1,36 @@
+__pycache__/
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+.x-starter-token-store/
+.x-starter-state/
+.x-starter-state-main/
+.x-starter-state*/
+.browser-executor-profile/
+.browser-executor-profile*/
+.browser-main-profile/
+.browser-executor-audit.jsonl
+.agent-work/
+*.log
+*.tmp
+demo-result.json
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+releases/
+.env
+.env.*
+.venv/
+mcp-client.json
+mcp-codex.toml
+control-test-result.html
+
+# Generated promotion-video intermediates; keep the final MP4, deck, SRT and story.
+docs/promotion/*-work/
+
+# Local live-account probes, legacy probe scripts, and promo drafts. Not release inputs.
+benchmarks/

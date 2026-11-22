@@ -1,0 +1,25 @@
+param(
+    [switch]$Mcp,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ServerArgs
+)
+
+$ErrorActionPreference = "Stop"
+$OutputEncoding = New-Object System.Text.UTF8Encoding $false
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+
+$python = $env:X_STARTER_PYTHON
+if (-not $python) {
+    $python = (Get-Command python -ErrorAction Stop).Source
+}
+
+$env:X_STARTER_MODE = "mock"
+$root = Split-Path -Parent $PSScriptRoot
+$server = Join-Path $root "server.py"
+
+if ($Mcp -or $ServerArgs.Count -gt 0) {
+    & $python -I -X utf8 $server @ServerArgs
+} else {
+    & $python -I -X utf8 $server --demo
+}
+exit $LASTEXITCODE

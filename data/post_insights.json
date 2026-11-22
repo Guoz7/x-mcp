@@ -1,0 +1,425 @@
+{
+  "by_hook_type": [
+    {
+      "alias": "question",
+      "feature": "question",
+      "key": "question",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        0.9362,
+        1.0
+      ],
+      "n": 2828
+    },
+    {
+      "alias": "number_list",
+      "feature": "number_list",
+      "key": "number_list",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 568
+    },
+    {
+      "alias": "announcement",
+      "feature": "announcement",
+      "key": "announcement",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        0.9208,
+        1.0
+      ],
+      "n": 424
+    },
+    {
+      "alias": "story_first_person",
+      "feature": "story_first_person",
+      "key": "story_first_person",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 4133
+    },
+    {
+      "alias": "contrarian",
+      "feature": "contrarian",
+      "key": "contrarian",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 996
+    },
+    {
+      "alias": "how_to",
+      "feature": "how_to",
+      "key": "how_to",
+      "lift_median": 0.9952,
+      "lift_median_ci95": [
+        0.7727,
+        1.0
+      ],
+      "n": 483
+    },
+    {
+      "alias": "thread_marker",
+      "feature": "thread_marker",
+      "key": "thread_marker",
+      "lift_median": 1.0392,
+      "lift_median_ci95": [
+        1.0,
+        1.1971
+      ],
+      "n": 240
+    },
+    {
+      "alias": "other",
+      "feature": "other",
+      "key": "other",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 34046
+    }
+  ],
+  "by_length_bucket": [
+    {
+      "alias": "b0_80",
+      "feature": "0-80",
+      "key": "0-80",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        0.9655,
+        1.0
+      ],
+      "n": 12328
+    },
+    {
+      "alias": "b81_160",
+      "feature": "81-160",
+      "key": "81-160",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 11068
+    },
+    {
+      "alias": "b161_240",
+      "feature": "161-240",
+      "key": "161-240",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 9154
+    },
+    {
+      "alias": "b241_300",
+      "feature": "241-300",
+      "key": "241-300",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 11168
+    }
+  ],
+  "by_media": [
+    {
+      "alias": "text",
+      "feature": "纯文本",
+      "key": "纯文本",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 10896
+    },
+    {
+      "alias": "link",
+      "feature": "带链接",
+      "key": "带链接",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        0.9535,
+        1.0
+      ],
+      "n": 9714
+    },
+    {
+      "alias": "image",
+      "feature": "带图片",
+      "key": "带图片",
+      "lift_median": 1.0,
+      "lift_median_ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 13502
+    },
+    {
+      "alias": "video",
+      "feature": "带视频",
+      "key": "带视频",
+      "lift_median": 1.0924,
+      "lift_median_ci95": [
+        1.0556,
+        1.1164
+      ],
+      "n": 3130
+    },
+    {
+      "alias": "quote",
+      "feature": "带引用",
+      "key": "带引用",
+      "lift_median": 0.9555,
+      "lift_median_ci95": [
+        0.9131,
+        1.0
+      ],
+      "n": 6476
+    }
+  ],
+  "schema": "x-starter-post-insights/v1",
+  "source": {
+    "account_count": 239,
+    "bootstrap": "每组对 lift 中位数重抽样 500 次，seed=42；95% percentile CI",
+    "calibration": "Correlation only. Most groups have a median lift of 1.0, so differences are small and do not prove causation.",
+    "collection_time_utc": "2026-10-20T09:53:12.951245Z",
+    "date": "2026-10-20",
+    "engagement_definition": "like_count + repost_count + reply_count + quote_count",
+    "length_rule": "大于 300 字符归入 241-300，仅 17 条受影响，见 quality_audit",
+    "lift_definition": "engagement / 该作者全部已采集帖子的 engagement 中位数；中位数为 0 时用 1",
+    "media_rule": "互斥分类，优先级：引用 > 视频 > 图片 > 链接 > 纯文本",
+    "not_x_data": true,
+    "notice": "Bluesky data, not X. Treat every effect size as a weak prior.",
+    "platform": "Bluesky public API",
+    "post_count": 43718,
+    "post_count_collected": 44273
+  },
+  "top_decile_vs_rest": {
+    "boolean_features": [
+      {
+        "alias": "has_hashtag",
+        "difference_pp": -2.29,
+        "feature": "has_hashtag",
+        "key": "has_hashtag",
+        "rest_n": 0,
+        "rest_share_pct": 21.09,
+        "top_n": 0,
+        "top_share_pct": 18.8
+      },
+      {
+        "alias": "has_mention",
+        "difference_pp": 3.11,
+        "feature": "has_mention",
+        "key": "has_mention",
+        "rest_n": 0,
+        "rest_share_pct": 6.36,
+        "top_n": 0,
+        "top_share_pct": 9.47
+      },
+      {
+        "alias": "multiline",
+        "difference_pp": 1.56,
+        "feature": "multiline",
+        "key": "multiline",
+        "rest_n": 0,
+        "rest_share_pct": 48.35,
+        "top_n": 0,
+        "top_share_pct": 49.91
+      }
+    ],
+    "hook_type": [
+      {
+        "alias": "question",
+        "difference_pp": -0.94,
+        "feature": "question",
+        "key": "question",
+        "rest_n": 2582,
+        "rest_share_pct": 6.56,
+        "top_n": 246,
+        "top_share_pct": 5.63
+      },
+      {
+        "alias": "number_list",
+        "difference_pp": 0.06,
+        "feature": "number_list",
+        "key": "number_list",
+        "rest_n": 509,
+        "rest_share_pct": 1.29,
+        "top_n": 59,
+        "top_share_pct": 1.35
+      },
+      {
+        "alias": "announcement",
+        "difference_pp": 0.22,
+        "feature": "announcement",
+        "key": "announcement",
+        "rest_n": 373,
+        "rest_share_pct": 0.95,
+        "top_n": 51,
+        "top_share_pct": 1.17
+      },
+      {
+        "alias": "story_first_person",
+        "difference_pp": 1.47,
+        "feature": "story_first_person",
+        "key": "story_first_person",
+        "rest_n": 3662,
+        "rest_share_pct": 9.31,
+        "top_n": 471,
+        "top_share_pct": 10.77
+      },
+      {
+        "alias": "contrarian",
+        "difference_pp": 0.62,
+        "feature": "contrarian",
+        "key": "contrarian",
+        "rest_n": 872,
+        "rest_share_pct": 2.22,
+        "top_n": 124,
+        "top_share_pct": 2.84
+      },
+      {
+        "alias": "how_to",
+        "difference_pp": -0.52,
+        "feature": "how_to",
+        "key": "how_to",
+        "rest_n": 455,
+        "rest_share_pct": 1.16,
+        "top_n": 28,
+        "top_share_pct": 0.64
+      },
+      {
+        "alias": "thread_marker",
+        "difference_pp": -0.05,
+        "feature": "thread_marker",
+        "key": "thread_marker",
+        "rest_n": 218,
+        "rest_share_pct": 0.55,
+        "top_n": 22,
+        "top_share_pct": 0.5
+      },
+      {
+        "alias": "other",
+        "difference_pp": -0.86,
+        "feature": "other",
+        "key": "other",
+        "rest_n": 30675,
+        "rest_share_pct": 77.96,
+        "top_n": 3371,
+        "top_share_pct": 77.1
+      }
+    ],
+    "length_bucket": [
+      {
+        "alias": "b0_80",
+        "difference_pp": -0.91,
+        "feature": "0-80",
+        "key": "0-80",
+        "rest_n": 11131,
+        "rest_share_pct": 28.29,
+        "top_n": 1197,
+        "top_share_pct": 27.38
+      },
+      {
+        "alias": "b81_160",
+        "difference_pp": -2.08,
+        "feature": "81-160",
+        "key": "81-160",
+        "rest_n": 10043,
+        "rest_share_pct": 25.52,
+        "top_n": 1025,
+        "top_share_pct": 23.44
+      },
+      {
+        "alias": "b161_240",
+        "difference_pp": -2.25,
+        "feature": "161-240",
+        "key": "161-240",
+        "rest_n": 8327,
+        "rest_share_pct": 21.16,
+        "top_n": 827,
+        "top_share_pct": 18.92
+      },
+      {
+        "alias": "b241_300",
+        "difference_pp": 5.24,
+        "feature": "241-300",
+        "key": "241-300",
+        "rest_n": 9845,
+        "rest_share_pct": 25.02,
+        "top_n": 1323,
+        "top_share_pct": 30.26
+      }
+    ],
+    "media": [
+      {
+        "alias": "text",
+        "difference_pp": -4.31,
+        "feature": "纯文本",
+        "key": "纯文本",
+        "rest_n": 9976,
+        "rest_share_pct": 25.35,
+        "top_n": 920,
+        "top_share_pct": 21.04
+      },
+      {
+        "alias": "link",
+        "difference_pp": -4.46,
+        "feature": "带链接",
+        "key": "带链接",
+        "rest_n": 8918,
+        "rest_share_pct": 22.67,
+        "top_n": 796,
+        "top_share_pct": 18.21
+      },
+      {
+        "alias": "image",
+        "difference_pp": 7.57,
+        "feature": "带图片",
+        "key": "带图片",
+        "rest_n": 11854,
+        "rest_share_pct": 30.13,
+        "top_n": 1648,
+        "top_share_pct": 37.69
+      },
+      {
+        "alias": "video",
+        "difference_pp": 1.22,
+        "feature": "带视频",
+        "key": "带视频",
+        "rest_n": 2769,
+        "rest_share_pct": 7.04,
+        "top_n": 361,
+        "top_share_pct": 8.26
+      },
+      {
+        "alias": "quote",
+        "difference_pp": -0.02,
+        "feature": "带引用",
+        "key": "带引用",
+        "rest_n": 5829,
+        "rest_share_pct": 14.81,
+        "top_n": 647,
+        "top_share_pct": 14.8
+      }
+    ],
+    "rest_n": 39346,
+    "threshold_lift": 3.0,
+    "top_n": 4372
+  }
+}
