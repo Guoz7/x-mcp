@@ -1026,10 +1026,12 @@ def build_ops_summary(
         if account_snap_out is None and isinstance(ledger.get("account"), dict):
             account_snap_out = dict(ledger["account"])
         if account_snap_out is not None:
-            if account_snap_out.get("followers_count") is None:
+            if newest_s.get("followers_count") is not None:
                 account_snap_out["followers_count"] = newest_s["followers_count"]
-            if account_snap_out.get("following_count") is None and newest_s.get("following_count") is not None:
+            if newest_s.get("following_count") is not None:
                 account_snap_out["following_count"] = newest_s["following_count"]
+            if newest_s.get("posts_count") is not None:
+                account_snap_out["posts_count"] = newest_s["posts_count"]
 
     wave_records = _extract_wave_records(ledger, autopilot_status)
     follower_trend = _build_follower_trend(ledger, wave_records, days, daily, now_epoch=now)

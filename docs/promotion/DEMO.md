@@ -3,7 +3,15 @@
 This runbook creates a reproducible demo with the synthetic test account
 `mock_creator`. It is safe to record because it does not connect to X.
 
-## One-minute local demo
+## Instant real-Chromium showcase (recommended)
+
+```powershell
+python -X utf8 scripts/showcase.py
+```
+
+This runs the 65-tool core benchmark, real headless Chromium DOM postcondition checks against a local synthetic feed, and a 7-day multi-strategy growth + SHA-256 hash-chain simulation in ~10 seconds without touching real X.
+
+## One-minute local mock demo
 
 ```powershell
 python -I -X utf8 server.py --demo > demo-result.json
@@ -21,7 +29,7 @@ The output must say:
 ```text
 ok=true
 mode=mock
-tool_count=48
+tool_count=65
 username=mock_creator
 disclosure=The entire walkthrough is simulated. No X or AHAN request was made.
 ```

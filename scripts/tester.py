@@ -116,11 +116,13 @@ def smoke() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("setup", "config", "doctor", "login", "check-login", "smoke", "http"))
+    parser.add_argument("action", choices=("setup", "config", "doctor", "login", "check-login", "smoke", "http", "showcase"))
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     if sys.version_info < (3, 11):
         parser.error("Python 3.11 or newer is required")
+    if args.action == "showcase":
+        return run_file("scripts/showcase.py")
     if args.action == "setup":
         vpython = ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if not vpython.is_file():

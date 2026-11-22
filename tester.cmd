@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 if "%~1"=="" (
-    echo Usage: tester.cmd setup ^| config ^| doctor ^| login ^| check-login ^| smoke ^| http
+    echo Usage: tester.cmd setup ^| config ^| doctor ^| login ^| check-login ^| smoke ^| http ^| showcase
     exit /b 0
 )
 if exist "%~dp0.venv\Scripts\python.exe" (
