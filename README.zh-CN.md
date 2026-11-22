@@ -171,7 +171,7 @@ tester.cmd config
 3. **Host 托管 OAuth / X API 路径**：支持 `x_oauth_start` / `x_oauth_status` / `x_post_create_api`。
 4. **多策略自动化运营与风控引擎**：
    - **6 套编排策略**：`auto_fastest`（智能赛马+20%探索）、`reciprocal_first`（互关快起号）、`niche_sniper_bundle`（精准三连）、`thread_reply_magnet`（干货抢评引流）、`reply_then_follow`（高粘深聊）与 `balanced`（稳健均衡）。
-   - **安全与人设守卫**：按 `ghost -> light_engage -> content_build -> growth` 动态管控配额（前期主动串门策略支持单波多访主页 + 1–2 赞配 1 条随口关心留言，优先低回复活人帖）；内置 `analyze_post` 推文处境拆解与 [`docs/INTERACTION-PLAYBOOK.md`](docs/INTERACTION-PLAYBOOK.md) 随意闲聊说辞库，彻底去除 AI 套话；`repost_post` 经 `score_technical_quality` 严格限流（`<=4/天`）；内置 `tech_casual` 预设、同端口 `Origin` 与 `X-Frame-Options: DENY` 防护。安全策略源自 [`2026-11-14` 封号复盘](docs/reports/POSTMORTEM-SUSPENSION-2026-11-14.md) 与 [`docs/orchestration-profile-safe.json`](docs/orchestration-profile-safe.json)。
+   - **安全与人设守卫**：按 `ghost -> light_engage -> content_build -> growth` 动态管控配额（前期主动串门策略支持单波多访主页 + 1–2 赞配 1 条随口关心留言，优先低回复活人帖）；内置 **`15分钟 / 1小时 / 24小时` 三层滚动限速闸门**（关注 `<=10/15m · <=24/h`、独立发帖 `>=30分钟` 间隔、回复 `<=6/15m`、点赞 `<=14/15m · <=36/h`，详见 [`docs/RATE-LIMIT-ORCHESTRATION.md`](docs/RATE-LIMIT-ORCHESTRATION.md)）；内置 `analyze_post` 推文处境拆解与 [`docs/INTERACTION-PLAYBOOK.md`](docs/INTERACTION-PLAYBOOK.md) 随意闲聊说辞库，彻底去除 AI 套话；`repost_post` 经 `score_technical_quality` 严格限流（`<=4/天`）；内置 `tech_casual` 预设、同端口 `Origin` 与 `X-Frame-Options: DENY` 防护。安全策略源自 [`2026-11-14` 封号复盘](docs/reports/POSTMORTEM-SUSPENSION-2026-11-14.md) 与 [`docs/orchestration-profile-safe.json`](docs/orchestration-profile-safe.json)。
 
 <details>
 <summary>展开查看完整 65 工具清单与目录结构</summary>

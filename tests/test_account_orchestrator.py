@@ -2046,6 +2046,119 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_rolling_rate_limit_windows_and_standalone_post_spacing(self) -> None:
+        from datetime import datetime, timezone
+        from account_orchestrator import (
+            X_RATE_LIMIT_REFERENCE,
+            evaluate_rolling_windows,
+            slice_wave_for_rate_limits,
+        )
+
+        base_ep = datetime(2026, 11, 23, 12, 0, 0, tzinfo=timezone.utc).timestamp()
+        # Seed 10 follows within the past 8 minutes (hitting safe 15m cap of 10, safely below X's 15/900s wall).
+        ledger = {
+            "account_binding": "example_creator",
+            "actions": {
+                f"f_{i}": _action(
+                    f"f_{i}",
+                    "follow_profile",
+                    completed_at=datetime.fromtimestamp(base_ep - 480 + i * 30, tz=timezone.utc).isoformat(),
+                    payload={"handle": f"peer_{i}", "profile_url": f"https://x.com/peer_{i}"},
+                    result={"handle": f"peer_{i}", "profile_url": f"https://x.com/peer_{i}", "state": "following", "verified": True, "changed": True},
+                )
+                for i in range(X_RATE_LIMIT_REFERENCE["follow_profile"]["safe_per_15m"])
+            },
+        }
+        rw = evaluate_rolling_windows(ledger, now_epoch=base_ep)
+        self.assertEqual(rw["rolling_remaining"]["follow_profile"], 0)
+        self.assertIsNotNone(rw["next_reset_epoch"]["follow_profile"])
+        self.assertGreater(rw["next_reset_epoch"]["follow_profile"], base_ep)
+
+        # Health report surfaces rolling_windows and advises wait_rolling_window instead of blind retry.
+        health = evaluate_account_health(
+            ledger,
+            account_snapshot={"username": "example_creator", "posts_count": 80, "has_avatar": True, "bio": "Builder"},
+            now_epoch=base_ep,
+        )
+        self.assertEqual(health["rolling_windows"]["rolling_remaining"]["follow_profile"], 0)
+        wait_recs = [r for r in health["recommended_actions"] if r.get("action") == "wait_rolling_window"]
+        self.assertEqual(len(wait_recs), 1)
+        self.assertEqual(wait_recs[0]["target_action"], "follow_profile")
+
+        # Two consecutive standalone queued posts must be spaced >= 1800s apart, and immediate slice allows only 1 standalone post + remaining likes.
+        plan = build_daily_orchestration_plan(
+            ledger,
+            goals={"publish_post": 2, "like_post": 3, "follow_profile": 10},
+            content_queue=[
+                {"item_id": "p1", "kind": "original_post", "status": "queued", "text": "Standalone post one"},
+                {"item_id": "p2", "kind": "original_post", "status": "queued", "text": "Standalone post two"},
+            ],
+            timeline_posts=[{"url": "https://x.com/alice/status/901", "author": "alice", "text": "Shipping MCP today"}],
+            follow_candidates=[{"handle": "cold_extra", "bio": "builder"}],
+            account_snapshot={"username": "example_creator", "posts_count": 80, "has_avatar": True, "bio": "Builder"},
+            now_epoch=base_ep,
+            seed=5,
+        )
+        pub_ops = [op for op in plan["operations"] if op["action"] == "publish_post"]
+        self.assertEqual(len(pub_ops), 2)
+        self.assertGreaterEqual(pub_ops[1]["delay_before_seconds"], 1800)
+
+        sliced = slice_wave_for_rate_limits(plan["operations"], rw, wave_limit=10)
+        sliced_actions = [op["action"] for op in sliced["operations"]]
+        self.assertNotIn("follow_profile", sliced_actions)
+        self.assertEqual(sliced_actions.count("publish_post"), 1)
+        self.assertIn("like_post", sliced_actions)
+        self.assertEqual(sliced["skipped_by_rate_limit"].get("follow_profile"), 1)
+
+        # Autopilot run_wave refuses cleanly with ROLLING_RATE_LIMIT_PACING when rolling window is full for all eligible ops.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = XStarter(
+                mode="browser",
+                environ={"X_STARTER_MODE": "browser", "X_STARTER_ENABLE_BROWSER": "1", "X_STARTER_STATE_DIR": tmpdir},
+            )
+            try:
+                prep = app.call_tool("x_autopilot", {"action": "prepare", "days": 7})
+                # Default prepare without explicit follow goal uses safer 40/day & wave<=10.
+                self.assertEqual(prep["data"]["daily_goals"]["follow_profile"], 40)
+                self.assertLessEqual(prep["data"]["max_per_wave"], 10)
+                app.call_tool(
+                    "x_autopilot",
+                    {"action": "activate", "window_id": prep["data"]["window_id"], "confirmation": prep["data"]["confirmation_phrase"]},
+                )
+                with app._bridge()._lock:
+                    st = app._bridge()._read()
+                    now_ts = time.time()
+                    for i in range(10):
+                        st["actions"][f"rl_{i}"] = _action(
+                            f"rl_{i}",
+                            "follow_profile",
+                            completed_at=datetime.fromtimestamp(now_ts - 60 - i * 10, tz=timezone.utc).isoformat(),
+                            payload={"handle": f"done_{i}", "profile_url": f"https://x.com/done_{i}"},
+                            result={"handle": f"done_{i}", "profile_url": f"https://x.com/done_{i}", "state": "following", "verified": True, "changed": True},
+                        )
+                    app._bridge()._write(st)
+
+                mock_browser = MagicMock()
+                mock_browser.browser_family = "chromium"
+                with patch.object(app, "_browser_for", return_value=mock_browser):
+                    res = app.call_tool(
+                        "x_autopilot",
+                        {
+                            "action": "run_wave",
+                            "force": True,
+                            "timeline_posts": [],
+                            "follow_candidates": [{"handle": "fresh_target", "bio": "builder"}],
+                            "account_snapshot": {"username": "example_creator", "posts_count": 80, "has_avatar": True, "bio": "Builder"},
+                        },
+                    )
+                self.assertTrue(res["ok"])
+                self.assertFalse(res["data"]["ran"])
+                self.assertEqual(res["data"]["reason"], "ROLLING_RATE_LIMIT_PACING")
+                self.assertGreaterEqual(res["data"]["skipped_by_rate_limit"].get("follow_profile", 0), 1)
+                self.assertFalse(mock_browser.execute_x_action.called)
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()

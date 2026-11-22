@@ -4467,9 +4467,9 @@ class XStarter:
                 inferred_hours = pm_cur.get("inferred_active_hours")
                 inferred_topics = list((pm_cur.get("content_pillars") or {}).keys())
                 daily_goals_arg = arguments.get("daily_goals")
-                follow_goal = int((daily_goals_arg or {}).get("follow_profile", 200))
-                default_wave = 12 if follow_goal >= 100 else 9
-                default_interval = 12 if follow_goal >= 100 else 18
+                follow_goal = int((daily_goals_arg or {}).get("follow_profile", 40))
+                default_wave = 10 if follow_goal >= 100 else 8
+                default_interval = 16 if follow_goal >= 100 else 22
                 res = store.prepare_window(
                     days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),
                     active_hours=arguments.get("active_hours") or inferred_hours or [9, 23],
@@ -4804,22 +4804,23 @@ class XStarter:
                         self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
                     store.stop_window(reason=f"circuit_breaker:{plan.get('reason')}")
                     raise StarterError("ACCOUNT_COOLDOWN", f"Autopilot halted ({plan.get('reason')}).", details=plan)
-                ops: list[dict[str, Any]] = []
-                reposts_in_wave = 0
-                for cand_op in list(plan.get("operations") or []):
-                    if cand_op.get("action") == "repost_post":
-                        if reposts_in_wave >= 1:
-                            continue
-                        reposts_in_wave += 1
-                    ops.append(cand_op)
-                    if len(ops) >= wave_limit:
-                        break
+                raw_ops = list(plan.get("operations") or [])
+                wave_slice = account_orchestrator.slice_wave_for_rate_limits(
+                    raw_ops,
+                    (plan.get("health") or {}).get("rolling_windows"),
+                    wave_limit=wave_limit,
+                    max_reposts_per_wave=1,
+                )
+                ops = list(wave_slice["operations"])
                 if not ops:
                     if opened_browser:
                         self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
+                    rate_limited_all = bool(raw_ops and wave_slice.get("skipped_by_rate_limit"))
                     return {
                         "ran": False,
-                        "reason": "NO_ELIGIBLE_OPERATIONS",
+                        "reason": "ROLLING_RATE_LIMIT_PACING" if rate_limited_all else "NO_ELIGIBLE_OPERATIONS",
+                        "skipped_by_rate_limit": wave_slice.get("skipped_by_rate_limit") or {},
+                        "next_retry_epoch": wave_slice.get("next_retry_epoch"),
                         "stage": plan.get("stage"),
                         "interaction_strategy": interaction_strategy,
                         "strategy_requested": strategy_requested,

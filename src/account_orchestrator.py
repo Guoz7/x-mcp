@@ -1252,6 +1252,188 @@ def _count_today_publishes(ledger: dict[str, Any], now_epoch: float) -> int:
     return count
 
 
+X_RATE_LIMIT_REFERENCE: dict[str, dict[str, Any]] = {
+    "follow_profile": {
+        "endpoint": "friendships/create (Web) / POST /2/users/:id/following (API v2)",
+        "web_limit_per_900s": 15,
+        "api_v2_limit_per_900s": 50,
+        "platform_daily_max_standard": 400,
+        "platform_daily_max_premium": 1000,
+        "observed_risk_note": "Observed web 900s cap=15 (HTTP 429) plus separate cumulative allowance code 161 (HTTP 403) around ~215 follows on newer accounts.",
+        "safe_per_15m": 10,
+        "safe_per_1h": 24,
+        "recommended_per_day": 40,
+    },
+    "publish_post": {
+        "endpoint": "CreateTweet (Web) / POST /2/tweets (API v2)",
+        "web_limit_per_day_unverified": 50,
+        "api_v2_limit_per_900s": 100,
+        "api_v2_app_per_24h": 10000,
+        "observed_risk_note": "Rolling 30-min velocity friction triggers above bursts; space standalone original posts >= 30 min (threads chain sequentially).",
+        "safe_per_15m": 2,
+        "safe_per_1h": 3,
+        "min_standalone_gap_seconds": 1800,
+        "recommended_per_day": 5,
+    },
+    "reply_post": {
+        "endpoint": "CreateTweet in_reply_to (Web) / POST /2/tweets (API v2)",
+        "web_limit_per_day_unverified": 200,
+        "api_v2_limit_per_900s": 100,
+        "observed_risk_note": "Shares tweet creation velocity limits and duplicate-text spam detectors; keep gaps randomized 75-155s.",
+        "safe_per_15m": 6,
+        "safe_per_1h": 18,
+        "recommended_per_day": 45,
+    },
+    "like_post": {
+        "endpoint": "FavoriteTweet (Web) / POST /2/users/:id/likes (API v2)",
+        "header_window_limit": 500,
+        "soft_daily_max": 500,
+        "observed_risk_note": "Scarecrow code 283 blocks rapid hourly bursts (> ~50-100/hr) or low-standing accounts long before header quota hits 0.",
+        "safe_per_15m": 14,
+        "safe_per_1h": 36,
+        "recommended_per_day": 60,
+    },
+    "repost_post": {
+        "endpoint": "CreateRetweet (Web)",
+        "observed_risk_note": "Postmortem 2026-11-14: rapid automated reposts (7s median) escalated directly to code 141 account suspension even under HTTP 200.",
+        "safe_per_15m": 1,
+        "safe_per_1h": 2,
+        "recommended_per_day": 4,
+    },
+}
+
+_ROLLING_ACTION_TYPES = ("follow_profile", "publish_post", "reply_post", "like_post", "repost_post")
+
+
+def evaluate_rolling_windows(
+    ledger: dict[str, Any] | None,
+    *,
+    now_epoch: float | None = None,
+) -> dict[str, Any]:
+    """Compute rolling 15-minute (900s) and 1-hour (3600s) X write velocity usage and remaining safe headroom."""
+    now = float(now_epoch) if now_epoch is not None else time.time()
+    cutoff_15m = now - 900.0
+    cutoff_1h = now - 3600.0
+
+    ts_by_type: dict[str, list[float]] = {k: [] for k in _ROLLING_ACTION_TYPES}
+    actions = (ledger or {}).get("actions")
+    if isinstance(actions, dict):
+        for act in actions.values():
+            if not isinstance(act, dict):
+                continue
+            atype = str(act.get("type") or "")
+            if atype not in ts_by_type:
+                continue
+            status = str(act.get("status") or "")
+            # Count completed, active claimed, and uncertain attempts (X saw the write), while excluding rejected local/skipped failures.
+            if status not in {"completed", "claimed", "uncertain"}:
+                continue
+            ep = _parse_epoch(act.get("completed_at") or act.get("claimed_at") or act.get("created_at"))
+            if ep is None or ep > now + 5.0:
+                continue
+            if ep >= cutoff_1h:
+                ts_by_type[atype].append(ep)
+
+    used_15m: dict[str, int] = {}
+    used_1h: dict[str, int] = {}
+    safe_15m: dict[str, int] = {}
+    safe_1h: dict[str, int] = {}
+    rem_15m: dict[str, int] = {}
+    rem_1h: dict[str, int] = {}
+    rolling_rem: dict[str, int] = {}
+    next_reset: dict[str, float | None] = {}
+
+    for k in _ROLLING_ACTION_TYPES:
+        stamps = sorted(ts_by_type[k])
+        stamps_15m = [t for t in stamps if t >= cutoff_15m]
+        c15 = int(X_RATE_LIMIT_REFERENCE[k]["safe_per_15m"])
+        c60 = int(X_RATE_LIMIT_REFERENCE[k]["safe_per_1h"])
+        u15 = len(stamps_15m)
+        u60 = len(stamps)
+        r15 = max(0, c15 - u15)
+        r60 = max(0, c60 - u60)
+
+        used_15m[k] = u15
+        used_1h[k] = u60
+        safe_15m[k] = c15
+        safe_1h[k] = c60
+        rem_15m[k] = r15
+        rem_1h[k] = r60
+        rolling_rem[k] = min(r15, r60)
+
+        resets: list[float] = []
+        if r15 == 0 and stamps_15m:
+            resets.append(stamps_15m[-c15] + 900.0)
+        if r60 == 0 and stamps:
+            resets.append(stamps[-c60] + 3600.0)
+        next_reset[k] = round(max(resets), 2) if resets else None
+
+    return {
+        "now_epoch": now,
+        "used_15m": used_15m,
+        "used_1h": used_1h,
+        "safe_15m_caps": safe_15m,
+        "safe_1h_caps": safe_1h,
+        "remaining_15m": rem_15m,
+        "remaining_1h": rem_1h,
+        "rolling_remaining": rolling_rem,
+        "next_reset_epoch": next_reset,
+        "rate_limit_reference": X_RATE_LIMIT_REFERENCE,
+    }
+
+
+def slice_wave_for_rate_limits(
+    operations: list[dict[str, Any]],
+    rolling_windows: dict[str, Any] | None,
+    *,
+    wave_limit: int = 12,
+    max_reposts_per_wave: int = 1,
+) -> dict[str, Any]:
+    """Slice an immediate micro-wave respecting X 15m/1h rolling rate limits cleanly."""
+    rem = dict((rolling_windows or {}).get("rolling_remaining") or {
+        k: int(X_RATE_LIMIT_REFERENCE[k]["safe_per_15m"])
+        for k in _ROLLING_ACTION_TYPES
+    })
+    next_resets = dict((rolling_windows or {}).get("next_reset_epoch") or {})
+    selected: list[dict[str, Any]] = []
+    skipped: dict[str, int] = {}
+    reposts_used = 0
+    standalone_posts_used = 0
+
+    for op in operations:
+        if len(selected) >= wave_limit:
+            break
+        action = str(op.get("action") or "")
+        if action == "repost_post" and reposts_used >= max_reposts_per_wave:
+            skipped[action] = skipped.get(action, 0) + 1
+            continue
+        # Only admit <= 1 standalone original post per immediate micro-wave so posts stay >= 30m apart.
+        if action == "publish_post" and not op.get("thread_id") and standalone_posts_used >= 1:
+            skipped[action] = skipped.get(action, 0) + 1
+            continue
+        if action in rem and int(rem[action]) <= 0:
+            skipped[action] = skipped.get(action, 0) + 1
+            continue
+        if action in rem:
+            rem[action] = int(rem[action]) - 1
+        if action == "repost_post":
+            reposts_used += 1
+        if action == "publish_post" and not op.get("thread_id"):
+            standalone_posts_used += 1
+        selected.append(op)
+
+    blocked_resets = [
+        float(next_resets[k])
+        for k in skipped
+        if next_resets.get(k) is not None
+    ]
+    return {
+        "operations": selected,
+        "skipped_by_rate_limit": skipped,
+        "next_retry_epoch": min(blocked_resets) if blocked_resets else None,
+    }
+
+
 def evaluate_account_health(
     ledger: dict[str, Any],
     *,
@@ -1426,6 +1608,24 @@ def evaluate_account_health(
                 "min_gap_seconds": prof["actions"]["repost_post"]["min_gap_seconds"],
             })
 
+    rolling = evaluate_rolling_windows(ledger, now_epoch=now)
+    exhausted_windows = {
+        k: rolling["next_reset_epoch"][k]
+        for k in _ROLLING_ACTION_TYPES
+        if rolling["rolling_remaining"].get(k, 1) == 0 and rolling["next_reset_epoch"].get(k) is not None
+    }
+    if breaker["allow_write"] and exhausted_windows:
+        for k, reset_ep in sorted(exhausted_windows.items()):
+            wait_sec = max(1, int(round(float(reset_ep) - now)))
+            recommended_actions.append({
+                "action": "wait_rolling_window",
+                "target_action": k,
+                "priority": "high",
+                "wait_seconds": wait_sec,
+                "next_reset_epoch": reset_ep,
+                "reason": f"Rolling 15m/1h velocity cap reached for {k}; wait {wait_sec}s to stay below X rate limits.",
+            })
+
     return {
         "account_status": breaker["status"],
         "allow_write": breaker["allow_write"],
@@ -1455,6 +1655,7 @@ def evaluate_account_health(
             "safe_caps": safe_caps,
             "remaining_safe": remaining_safe,
         },
+        "rolling_windows": rolling,
         "content_queue": {
             "queued": len(queued_items),
             "due": len(due_items),
@@ -2649,12 +2850,13 @@ def build_daily_orchestration_plan(
         }
         updated_actions["follow_profile"] = follow_cfg
         if follow_goal >= 100:
-            follow_cfg["min_gap_seconds"] = min(int(follow_cfg.get("min_gap_seconds", 90)), 32)
-            follow_cfg["max_gap_seconds"] = min(int(follow_cfg.get("max_gap_seconds", 240)), 68)
+            # Smoother human cadence (44-78s) paired with rolling 10/900s + 24/1h gates avoids X's 15/900s follow cliff.
+            follow_cfg["min_gap_seconds"] = min(int(follow_cfg.get("min_gap_seconds", 90)), 44)
+            follow_cfg["max_gap_seconds"] = min(int(follow_cfg.get("max_gap_seconds", 240)), 78)
             updated_actions["like_post"] = {
                 **prof["actions"]["like_post"],
-                "min_gap_seconds": min(int(prof["actions"]["like_post"].get("min_gap_seconds", 60)), 20),
-                "max_gap_seconds": min(int(prof["actions"]["like_post"].get("max_gap_seconds", 180)), 50),
+                "min_gap_seconds": min(int(prof["actions"]["like_post"].get("min_gap_seconds", 60)), 22),
+                "max_gap_seconds": min(int(prof["actions"]["like_post"].get("max_gap_seconds", 180)), 52),
             }
             updated_actions["reply_post"] = {
                 **prof["actions"]["reply_post"],
@@ -3109,6 +3311,7 @@ def build_daily_orchestration_plan(
 
     operations: list[dict[str, Any]] = []
     total_delay = 0
+    seen_standalone_publish = False
     for idx, op in enumerate(ordered):
         cfg = prof["actions"][op["action"]]
         min_gap = int(cfg.get("min_gap_seconds", 60))
@@ -3123,6 +3326,13 @@ def build_daily_orchestration_plan(
             else:
                 extra_pause = rng.randint(15, 45) if rng.random() < 0.25 else 0
             delay = base_delay + extra_pause
+            # Space consecutive standalone original posts at least 30m apart to avoid velocity spam filters.
+            if op["action"] == "publish_post" and not op.get("thread_id"):
+                if seen_standalone_publish:
+                    min_pub_gap = int(X_RATE_LIMIT_REFERENCE["publish_post"]["min_standalone_gap_seconds"])
+                    delay = max(delay, min_pub_gap)
+        if op["action"] == "publish_post" and not op.get("thread_id"):
+            seen_standalone_publish = True
         total_delay += delay
         operations.append({
             "step_index": idx + 1,
@@ -3134,6 +3344,7 @@ def build_daily_orchestration_plan(
         kind: sum(1 for op in operations if op["action"] == kind)
         for kind in ("publish_post", "like_post", "follow_profile", "repost_post", "reply_post")
     }
+    wave_preview = slice_wave_for_rate_limits(operations, health.get("rolling_windows"), wave_limit=12)
     return {
         "status": "planned_not_executed",
         "blocked": False,
@@ -3143,9 +3354,15 @@ def build_daily_orchestration_plan(
         "strategy_reason": strategy_reason,
         "plan_id": "daily_" + secrets.token_hex(6),
         "health": health,
+        "rolling_windows": health.get("rolling_windows"),
         "counts": counts,
         "bundled_count": len(bundled_ops),
         "operation_count": len(operations),
         "operations": operations,
+        "wave_safe_preview": {
+            "count": len(wave_preview["operations"]),
+            "skipped_by_rate_limit": wave_preview["skipped_by_rate_limit"],
+            "next_retry_epoch": wave_preview["next_retry_epoch"],
+        },
         "estimated_duration_seconds": total_delay + len(operations) * 10,
     }

@@ -105,11 +105,11 @@ class AutopilotStore:
         ttl = max(60, min(604800, int(expires_in_seconds)))
 
         goals = daily_goals or {
-            "publish_post": 1,
-            "like_post": 120,
-            "follow_profile": 200,
-            "repost_post": 4,
-            "reply_post": 45,
+            "publish_post": 2,
+            "like_post": 60,
+            "follow_profile": 40,
+            "repost_post": 2,
+            "reply_post": 25,
         }
         window_id = "ap_" + secrets.token_hex(6)
         phrase = "AUTOPILOT " + secrets.token_hex(3).upper()
