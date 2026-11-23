@@ -1555,11 +1555,12 @@ class XStarter:
                     "type": "object",
                     "properties": {
                         "goals": {"type": "object"},
-                        "timeline_posts": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
-                        "follow_candidates": {"type": "array", "maxItems": 200, "items": {"type": "object"}},
+                        "timeline_posts": {"type": "array", "maxItems": 500, "items": {"type": "object"}},
+                        "follow_candidates": {"type": "array", "maxItems": 500, "items": {"type": "object"}},
                         "account_snapshot": {"type": "object"},
                         "persona_topics": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 40}},
                         "exclude_keywords": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 40}},
+                        "auto_reply": {"type": "boolean", "default": False},
                         "interaction_strategy": {"type": "string", "enum": ["auto_fastest", "reciprocal_first", "niche_sniper_bundle", "thread_reply_magnet", "reply_then_follow", "balanced"]},
                         "seed": {"type": "integer", "minimum": 0, "maximum": 1000000000},
                     },
@@ -4467,9 +4468,12 @@ class XStarter:
                 inferred_hours = pm_cur.get("inferred_active_hours")
                 inferred_topics = list((pm_cur.get("content_pillars") or {}).keys())
                 daily_goals_arg = arguments.get("daily_goals")
+                reply_goal = int((daily_goals_arg or {}).get("reply_post", 240))
                 follow_goal = int((daily_goals_arg or {}).get("follow_profile", 40))
-                default_wave = 10 if follow_goal >= 100 else 8
-                default_interval = 16 if follow_goal >= 100 else 22
+                explicit_high_reply = bool(isinstance(daily_goals_arg, dict) and int(daily_goals_arg.get("reply_post", 0)) >= 250)
+                explicit_high_follow = bool(isinstance(daily_goals_arg, dict) and int(daily_goals_arg.get("follow_profile", 0)) >= 100)
+                default_wave = 12 if (explicit_high_reply or explicit_high_follow) else 10
+                default_interval = 15 if (reply_goal >= 150 or follow_goal >= 100) else 22
                 res = store.prepare_window(
                     days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),
                     active_hours=arguments.get("active_hours") or inferred_hours or [9, 23],
@@ -4595,11 +4599,12 @@ class XStarter:
                             ledger = self._bridge().read_ledger_snapshot()
                     except (StarterError, ExecutorError, browser_read.ReadError):
                         pass
+                reply_goal_win = int((window.get("daily_goals") or {}).get("reply_post", 0))
                 if timeline_posts is None and follow_candidates is None:
                     seen_h, seen_u = account_orchestrator._seen_ledger_targets(ledger)
                     popped = self._target_pool().pop_batch(
                         max_candidates=max(4, wave_limit * 2),
-                        max_posts=max(6, wave_limit * 3),
+                        max_posts=max(10, wave_limit * 4) if reply_goal_win >= 150 else max(6, wave_limit * 3),
                         exclude_handles=seen_h,
                         exclude_urls=seen_u,
                     )
@@ -4643,9 +4648,10 @@ class XStarter:
                                 persona_topics = inferred["persona_topics"]
                                 exclude_keywords = exclude_keywords or inferred["exclude_keywords"]
                                 search_query = inferred["search_query"]
+                        search_limit = 35 if reply_goal_win >= 150 else 25
                         try:
                             timeline_posts = browser_read.read_search_posts(
-                                browser, str(search_query), limit=25, sort="top", base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                browser, str(search_query), limit=search_limit, sort="top", base_url=self.environ.get("X_STARTER_READ_BASE_URL")
                             ).get("posts") or []
                         except (browser_read.ReadError, ExecutorError) as search_exc:
                             if getattr(browser, "timed_out", False) or "TIMEOUT" in str(getattr(search_exc, "code", "")):
@@ -4654,14 +4660,24 @@ class XStarter:
                             timeline_posts = browser_read.read_timeline(
                                 browser, limit=25, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
                             ).get("posts") or []
-                        if not any(
-                            str(p.get("author") or "").strip().lstrip("@").casefold() != own_username.casefold()
-                            for p in (timeline_posts or [])
-                        ):
+                        non_self_search = [
+                            p for p in (timeline_posts or [])
+                            if str(p.get("author") or "").strip().lstrip("@").casefold() != own_username.casefold()
+                        ]
+                        need_tl_fill = (not non_self_search) or (reply_goal_win >= 150 and len(non_self_search) < max(8, wave_limit))
+                        if need_tl_fill:
                             try:
-                                timeline_posts = browser_read.read_timeline(
-                                    browser, limit=15, base_url=self.environ.get("X_STARTER_READ_BASE_URL")
+                                extra_tl = browser_read.read_timeline(
+                                    browser,
+                                    limit=25 if reply_goal_win >= 150 else 15,
+                                    base_url=self.environ.get("X_STARTER_READ_BASE_URL"),
                                 ).get("posts") or []
+                                seen_tl_urls = {str(p.get("url") or "").casefold() for p in (timeline_posts or [])}
+                                for ep in extra_tl:
+                                    eu = str(ep.get("url") or "").casefold()
+                                    if eu and eu not in seen_tl_urls:
+                                        seen_tl_urls.add(eu)
+                                        timeline_posts.append(ep)
                             except (StarterError, ExecutorError, browser_read.ReadError):
                                 pass
                         # Always sync notifications and inbound follow-backs cleanly.
@@ -4726,7 +4742,7 @@ class XStarter:
                         timeline_posts = timeline_posts if timeline_posts is not None else []
                         existing_urls = {str(p.get("url") or "").casefold() for p in timeline_posts}
                         snap_posts = int((snapshot or {}).get("posts_count") or 0)
-                        max_visits = 5 if snap_posts < 50 else 4
+                        max_visits = 6 if reply_goal_win >= 150 else (5 if snap_posts < 50 else 4)
                         ranked_for_visit = sorted(
                             follow_candidates,
                             key=lambda c: account_orchestrator.score_follow_candidate(c, strategy=interaction_strategy),

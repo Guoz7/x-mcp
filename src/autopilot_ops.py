@@ -106,10 +106,10 @@ class AutopilotStore:
 
         goals = daily_goals or {
             "publish_post": 2,
-            "like_post": 60,
+            "like_post": 150,
             "follow_profile": 40,
             "repost_post": 2,
-            "reply_post": 25,
+            "reply_post": 240,
         }
         window_id = "ap_" + secrets.token_hex(6)
         phrase = "AUTOPILOT " + secrets.token_hex(3).upper()

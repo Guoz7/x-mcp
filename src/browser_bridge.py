@@ -1171,8 +1171,8 @@ class BrowserBridge:
         if not isinstance(plan, dict) or plan.get("status") != "planned_not_executed":
             raise BridgeError("INVALID_BATCH", "Prepare requires a daily orchestration planner result.")
         operations = plan.get("operations")
-        if not isinstance(operations, list) or not 1 <= len(operations) <= 150:
-            raise BridgeError("INVALID_BATCH", "The daily batch must contain from 1 to 150 operations.")
+        if not isinstance(operations, list) or not 1 <= len(operations) <= 800:
+            raise BridgeError("INVALID_BATCH", "The daily batch must contain from 1 to 800 operations.")
         allowed = {"publish_post", "like_post", "repost_post", "follow_profile", "unfollow_profile", "reply_post"}
         counts = {kind: 0 for kind in allowed}
         for op in operations:

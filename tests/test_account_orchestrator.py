@@ -2159,6 +2159,168 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
             finally:
                 app.close()
 
+    def test_high_volume_proactive_reply_orchestration_200_to_400(self) -> None:
+        from account_orchestrator import (
+            X_RATE_LIMIT_REFERENCE,
+            check_reply_naturalness,
+            draft_friendly_reply,
+            evaluate_rolling_windows,
+            slice_wave_for_rate_limits,
+        )
+        from browser_bridge import BrowserBridge
+
+        ledger = {"account_binding": "example_creator", "actions": {}}
+        # 1. Warmup stages MUST keep blocking 200-400 reply bursts (<=5 / <=12).
+        sample_posts = [
+            {"url": f"https://x.com/wpeer_{i}/status/{100 + i}", "author": f"wpeer_{i}", "text": f"Debugging MCP edge timeout case #{i}"}
+            for i in range(30)
+        ]
+        light_plan = build_daily_orchestration_plan(
+            ledger,
+            goals={"publish_post": 0, "like_post": 30, "follow_profile": 10, "repost_post": 0, "reply_post": 400},
+            timeline_posts=sample_posts,
+            account_snapshot={"posts_count": 4, "followers_count": 15, "following_count": 30},
+            auto_reply=True,
+            seed=7,
+        )
+        self.assertEqual(light_plan["stage"], "light_engage")
+        self.assertLessEqual(light_plan["counts"]["reply_post"], 5)
+
+        content_plan = build_daily_orchestration_plan(
+            ledger,
+            goals={"publish_post": 0, "like_post": 60, "follow_profile": 20, "repost_post": 0, "reply_post": 400},
+            timeline_posts=sample_posts,
+            account_snapshot={"posts_count": 16, "followers_count": 60, "following_count": 70},
+            auto_reply=True,
+            seed=7,
+        )
+        self.assertEqual(content_plan["stage"], "content_build")
+        self.assertLessEqual(content_plan["counts"]["reply_post"], 12)
+
+        # 2. Established growth account plans 300+ unique, natural non-AI proactive replies (plus preserves too_short/unknown failsafe).
+        big_posts = []
+        for i in range(340):
+            kind = i % 6
+            if kind == 0:
+                txt = f"最近写 MCP 并发脚本时第 {i} 次遇到边界超时，半夜查日志真的头大"
+            elif kind == 1:
+                txt = f"debugging Playwright lock timeout case {i} tonight — silent skips eat the whole evening"
+            elif kind == 2:
+                txt = f"凌晨一点还在调部署脚本，好累啊先泡杯咖啡歇口气 #{i}"
+            elif kind == 3:
+                txt = f"ugh 1am and my local test keeps flaking on worker #{i}, brain is fried"
+            elif kind == 4:
+                txt = f"午后喝杯冰美式摸会儿鱼，刷到活人随手打个招呼 #{i}"
+            else:
+                txt = f"taking a quiet coffee break scrolling the feed today, nice seeing real folks #{i}"
+            big_posts.append({
+                "url": f"https://x.com/neighbor_{i}/status/{50000 + i}",
+                "author": f"neighbor_{i}",
+                "text": txt,
+                "author_bio": "Builder & indie dev",
+            })
+        big_posts.append({"url": "https://x.com/short_guy/status/999001", "author": "short_guy", "text": "咋了"})
+        big_posts.append({"url": "https://x.com/bakery_guy/status/999002", "author": "bakery_guy", "text": "刚才路过一家面包店门前排队人好多啊"})
+
+        growth_plan = build_daily_orchestration_plan(
+            ledger,
+            goals={"publish_post": 0, "like_post": 150, "follow_profile": 40, "repost_post": 2, "reply_post": 400},
+            timeline_posts=big_posts,
+            follow_candidates=[{"handle": f"neighbor_{i}", "bio": "dev"} for i in range(60)],
+            account_snapshot={"posts_count": 120, "followers_count": 400, "following_count": 420},
+            persona_topics=["mcp", "playwright"],
+            auto_reply=True,
+            interaction_strategy="reciprocal_first",
+            seed=42,
+        )
+        self.assertFalse(growth_plan["blocked"])
+        self.assertGreaterEqual(growth_plan["counts"]["reply_post"], 300)
+        reply_ops = [op for op in growth_plan["operations"] if op["action"] == "reply_post"]
+        reply_texts = [op["text"] for op in reply_ops]
+        self.assertEqual(len(reply_texts), len(set(reply_texts)), "Expected zero duplicate reply texts across 300+ replies")
+        for txt in reply_texts:
+            self.assertEqual(check_reply_naturalness(txt), [], f"AI cliche or naturalness warning in: {txt}")
+        replied_authors = {op["author"] for op in reply_ops}
+        self.assertNotIn("short_guy", replied_authors)
+        self.assertNotIn("bakery_guy", replied_authors)
+        for op in reply_ops:
+            if op["step_index"] > 1:
+                self.assertGreaterEqual(op["delay_before_seconds"], 55)
+
+        # 3. Single-language stress test: generate 250 unique replies for pure ZH tech_discussion with zero repeats.
+        import random
+        from datetime import datetime, timezone
+
+        seen_single: list[str] = []
+        rng = random.Random(99)
+        for i in range(250):
+            r_txt = draft_friendly_reply(
+                {"text": f"今天又被并发状态机和 Playwright 超时折腾了一次 #{i}"},
+                recent_replies=seen_single,
+                rng=rng,
+            )
+            self.assertIsNotNone(r_txt, f"Ran out of varied ZH tech replies at #{i}")
+            assert r_txt is not None
+            self.assertEqual(check_reply_naturalness(r_txt), [])
+            seen_single.append(r_txt)
+        self.assertEqual(len(seen_single), len(set(seen_single)))
+
+        # 4. Daily batch bridge accepts up to 800 operations cleanly & rolling 15m (10) / 1h (32) throttles bursts.
+        self.assertEqual(X_RATE_LIMIT_REFERENCE["reply_post"]["safe_per_15m"], 10)
+        self.assertEqual(X_RATE_LIMIT_REFERENCE["reply_post"]["safe_per_1h"], 32)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bridge = BrowserBridge(Path(tmpdir))
+            batch_res = bridge.prepare_daily_batch(growth_plan, session_id="s1")
+            self.assertGreaterEqual(batch_res["operation_count"], 300)
+
+        now_ep = 1795000000.0
+        heavy_ledger = {
+            "actions": {
+                f"rep_{i}": _action(
+                    f"rep_{i}",
+                    "reply_post",
+                    completed_at=datetime.fromtimestamp(now_ep - 120 - i * 20, tz=timezone.utc).isoformat(),
+                    payload={"url": f"https://x.com/u{i}/status/{i}", "text": f"reply #{i}"},
+                )
+                for i in range(10)
+            }
+        }
+        rw = evaluate_rolling_windows(heavy_ledger, now_epoch=now_ep)
+        self.assertEqual(rw["used_15m"]["reply_post"], 10)
+        self.assertEqual(rw["rolling_remaining"]["reply_post"], 0)
+        self.assertIsNotNone(rw["next_reset_epoch"]["reply_post"])
+        throttled = slice_wave_for_rate_limits(reply_ops[:5], rw, wave_limit=10)
+        self.assertEqual(len(throttled["operations"]), 0)
+        self.assertEqual(throttled["skipped_by_rate_limit"]["reply_post"], 5)
+
+        # 5. XStarter autopilot prepare defaults to 240 replies/day (in 200-400 range) while respecting <=10 wave when goals omitted.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app = XStarter(
+                mode="browser",
+                environ={"X_STARTER_MODE": "browser", "X_STARTER_ENABLE_BROWSER": "1", "X_STARTER_STATE_DIR": tmpdir},
+            )
+            try:
+                default_prep = app.call_tool("x_autopilot", {"action": "prepare", "days": 7})
+                self.assertTrue(default_prep["ok"])
+                self.assertEqual(default_prep["data"]["daily_goals"]["reply_post"], 240)
+                self.assertEqual(default_prep["data"]["daily_goals"]["follow_profile"], 40)
+                self.assertLessEqual(default_prep["data"]["max_per_wave"], 10)
+                self.assertEqual(default_prep["data"]["min_wave_interval_minutes"], 15)
+
+                high_prep = app.call_tool(
+                    "x_autopilot",
+                    {
+                        "action": "prepare",
+                        "days": 7,
+                        "daily_goals": {"publish_post": 1, "like_post": 150, "follow_profile": 40, "repost_post": 2, "reply_post": 360},
+                    },
+                )
+                self.assertTrue(high_prep["ok"])
+                self.assertEqual(high_prep["data"]["daily_goals"]["reply_post"], 360)
+                self.assertEqual(high_prep["data"]["max_per_wave"], 12)
+            finally:
+                app.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -140,7 +140,7 @@ def check_reply_naturalness(
     return warnings
 
 
-def _recent_reply_texts(ledger: dict[str, Any] | None, *, max_items: int = 40) -> list[str]:
+def _recent_reply_texts(ledger: dict[str, Any] | None, *, max_items: int = 400) -> list[str]:
     if not isinstance(ledger, dict):
         return []
     out: list[tuple[float, str]] = []
@@ -205,27 +205,87 @@ _TECH_ANCHORS = (
 )
 
 
-def _is_duplicate_reply(candidate: str, recent_replies: list[str] | set[str] | None) -> bool:
+_WS_COLLAPSE_RE = re.compile(r"\s+")
+_REPLY_TOKEN_RE = re.compile(r"[a-z0-9_]+|[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]{2,}")
+
+
+class _ReplyDeduper:
+    """Fast incremental exact, prefix, and token-Jaccard duplicate detector across 400+ daily replies."""
+
+    def __init__(self, recent_replies: list[str] | set[str] | None = None, *, prefix_window: int = 80) -> None:
+        self.prefix_window = max(15, int(prefix_window))
+        self.exact_norms: set[str] = set()
+        self.recent_prefixes: list[str] = []
+        self.token_sets: list[frozenset[str]] = []
+        self._token_index: dict[str, list[int]] = {}
+        for item in (recent_replies or []):
+            self.add(str(item or ""))
+
+    def _norm(self, text: str) -> str:
+        return _WS_COLLAPSE_RE.sub(" ", text.strip().casefold())
+
+    def add(self, text: str) -> None:
+        norm = self._norm(text)
+        if not norm or norm in self.exact_norms:
+            return
+        self.exact_norms.add(norm)
+        self.recent_prefixes.append(norm[:14])
+        tokens = frozenset(_REPLY_TOKEN_RE.findall(norm))
+        if len(tokens) >= 4:
+            idx = len(self.token_sets)
+            self.token_sets.append(tokens)
+            for tok in tokens:
+                self._token_index.setdefault(tok, []).append(idx)
+
+    def is_duplicate(self, candidate: str) -> bool:
+        norm = self._norm(candidate)
+        if not norm:
+            return True
+        if norm in self.exact_norms:
+            return True
+        cand_prefix = norm[:14]
+        if len(cand_prefix) >= 10:
+            for pnorm in self.recent_prefixes[-self.prefix_window:]:
+                if pnorm.startswith(cand_prefix):
+                    return True
+        cand_tokens = frozenset(_REPLY_TOKEN_RE.findall(norm))
+        if len(cand_tokens) >= 4:
+            overlap_counts: dict[int, int] = {}
+            for tok in cand_tokens:
+                for idx in self._token_index.get(tok, ()):
+                    overlap_counts[idx] = overlap_counts.get(idx, 0) + 1
+            cand_len = len(cand_tokens)
+            for idx, shared in overlap_counts.items():
+                ptokens = self.token_sets[idx]
+                if (shared / max(cand_len, len(ptokens))) >= 0.72:
+                    return True
+        return False
+
+
+def _is_duplicate_reply(candidate: str, recent_replies: list[str] | set[str] | _ReplyDeduper | None) -> bool:
     if not recent_replies:
         return False
-    norm = re.sub(r"\s+", " ", candidate.strip().casefold())
+    if isinstance(recent_replies, _ReplyDeduper):
+        return recent_replies.is_duplicate(candidate)
+    norm = _WS_COLLAPSE_RE.sub(" ", candidate.strip().casefold())
     if not norm:
         return True
     cand_prefix = norm[:14]
     recent_list = [str(x or "").strip() for x in recent_replies]
-    for prev in recent_list[:15]:
-        pnorm = re.sub(r"\s+", " ", prev.casefold())
-        if pnorm and len(cand_prefix) >= 10 and pnorm.startswith(cand_prefix):
-            return True
-    cand_tokens = set(re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]{2,}", norm))
+    if len(cand_prefix) >= 10:
+        for prev in recent_list[-80:]:
+            pnorm = _WS_COLLAPSE_RE.sub(" ", prev.casefold())
+            if pnorm and pnorm.startswith(cand_prefix):
+                return True
+    cand_tokens = frozenset(_REPLY_TOKEN_RE.findall(norm))
     for prev in recent_list:
-        pnorm = re.sub(r"\s+", " ", prev.casefold())
+        pnorm = _WS_COLLAPSE_RE.sub(" ", prev.casefold())
         if not pnorm:
             continue
         if norm == pnorm:
             return True
         if len(cand_tokens) >= 4:
-            ptokens = set(re.findall(r"[a-z0-9_]+|[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]{2,}", pnorm))
+            ptokens = frozenset(_REPLY_TOKEN_RE.findall(pnorm))
             if ptokens and (len(cand_tokens & ptokens) / max(len(cand_tokens), len(ptokens))) >= 0.72:
                 return True
     return False
@@ -335,7 +395,7 @@ _LANG_LEARN_RE = re.compile(
 )
 _VENT_RANT_RE = re.compile(
     r"(?:加班|破防|好累|累死|疲|睡不着|失眠|凌晨|半夜|头秃|崩溃|无语|难顶|卡死|报错|封号|限流|写吐了|麻了|烦死|"
-    r"burnout|exhausted|overtime|debug hell|rate limit|can't sleep|staring at|ruin my)",
+    r"burnout|exhausted|overtime|debug hell|rate limit|can't sleep|staring at|ruin my|flak(?:y|ing)|brain is fried|1am|2am|3am|midnight|tired|\bugh\b)",
     re.IGNORECASE,
 )
 _SOCIAL_CHAT_RE = re.compile(
@@ -987,11 +1047,467 @@ def get_casual_interaction_templates() -> dict[str, Any]:
     }
 
 
+_VARIED_REPLY_POOLS: dict[tuple[str, str], tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]] = {
+    ("zh", "tech_discussion"): (
+        (
+            "写脚本最怕遇到，",
+            "小工具开发真是，",
+            "刚摸鱼刷到这段，",
+            "同为夜里盯日志，",
+            "看你调这部分时，",
+            "实操起来常发现，",
+            "讲白了真动手后，",
+            "自己折腾这玩意，",
+            "串门逛到你主页，",
+            "哈哈刚停下手头活，",
+            "跑通测试那一刻，",
+            "改代码老碰上这，",
+            "平时写自动化时，",
+            "真被这细节磨过，",
+            "顺手点赞搭句话，",
+            "看得出自己敲过，",
+            "摸索这类工具时，",
+            "熬过初期调试后，",
+            "太有同感了老哥，",
+            "盯了一天黑框后，",
+            "越往底层越觉得，",
+            "做个人项目最懂，",
+            "刚顺完本地逻辑，",
+            "刷时间线看到这，",
+        ),
+        (
+            "开心流程十分钟写完，剩余两天都在堵奇葩超时",
+            "最消耗人的不是当场红字，是悄悄吞错让你误判",
+            "外围保护越简朴老实，夜里睡得才越踏实安心",
+            "步子放稳少抢几秒，比猛冲五分钟吃限流香太多",
+            "盯死半小时理不清时，去倒杯温水回来一眼认出",
+            "接口文档写得天花乱坠，实际全看凌晨实机脾气",
+            "能按预期安安静静跑完一宿，比啥花哨界面都强",
+            "页面结构微微动一下，还是加一层复核最能救命",
+            "出错说明写成直白大白话，三天后再查能少掉头发",
+            "本地假数据全绿别飘，上线跑几轮才是真正考验",
+            "每次以为终于收工，角落总有个边界条件冒出来",
+            "看似多余的那几行检查，出事全靠它们帮忙兜底",
+            "比起推翻整套重写，在痛点旁边加道护栏更管用",
+            "一步步看清实际页面状态，比盲猜几秒靠谱十倍",
+            "把日志打得清爽干练些，排查起来血压都没那么高",
+            "越是不起眼的小开关，卡起人来往往最让人头疼",
+            "独自磨顺整条链路确实累，跑起来那下真挺解压",
+            "别贪快一顿猛操作，稳扎稳打反而最少返工重来",
+            "真正稳定省心的工具，往往长得最平平无奇朴素",
+            "看似顺滑的表象底下，十有八九藏着重试死结",
+            "别被五分钟原型骗了，边界保护才占九成精力",
+            "少堆几个花哨参数，夜里报警短信都能少一半",
+            "挑对安全速度慢跑，比硬飙高并发少掉一半坑",
+            "把状态变化记清楚些，真出岔子三秒定位源头",
+        ),
+        (
+            "，先留个赞，改完喝口茶歇歇～",
+            "，顺手串个门，别盯屏幕太久呀",
+            "，辛苦啦，弄完早点去休息哈哈",
+            "，赞一个，有空时间线继续瞎聊",
+            "，哈哈多注意护眼，祝今天顺利！",
+            "，混个脸熟，愿接下来一路绿灯",
+            "，点杯冰美式歇口气再接着搞～",
+            "，顺滑收工记得早点合盖睡觉哦",
+            "，路过留爪，后面有新发现继续唠",
+            "，别太拼啦，稳稳推进最有底气",
+            "，歇会儿啃点零食再接着写",
+            "，先去倒杯温水放松下眼睛",
+            "，哈哈同路调码人加油顶住",
+            "，晚点弄顺记得早点关电脑",
+            "，赞完继续逛时间线找活人",
+            "，希望这周测试全部一遍过",
+            "，抽空出来摸会儿鱼喘口气",
+            "，稳住心态明天一切好说～",
+        ),
+    ),
+    ("en", "tech_discussion"): (
+        (
+            "funny tho ",
+            "lately, ",
+            "real talk ",
+            "honestly ",
+            "dev mood: ",
+            "wild part ",
+            "odd bug: ",
+            "pro tip: ",
+            "2am note: ",
+            "by the way ",
+            "side note ",
+            "tiny tip: ",
+            "code life ",
+            "2am code: ",
+            "fresh eye ",
+            "localhost ",
+            "peak dev: ",
+            "hot take: ",
+            "tea break ",
+            "my tools: ",
+            "weekend: ",
+            "ugh haha, ",
+            "true tho, ",
+            "one catch ",
+        ),
+        (
+            "clean prototypes fly fast till real latency peeks in",
+            "silent skips cost way more sleep than loud tracebacks",
+            "simple state checks beat clever black boxes at 2am",
+            "steady human pacing keeps runs healthy way longer",
+            "walking away for water spots the typo in seconds",
+            "live endpoints always invent one case mocks missed",
+            "plain error strings save hours of groggy debugging",
+            "UI layout shifts love breaking brittle blind delays",
+            "small targeted fixes age better than big rewrites",
+            "rechecking DOM state right after clicks kills ghosts",
+            "overnight runs expose every sneaky lock assumption",
+            "one tiny edge timeout drags down the whole pipeline",
+            "boring reliable glue handles messy feeds best",
+            "trimming pointless polling cuts half the weird bugs",
+            "catching partial writes early prevents rough mornings",
+            "watching your script touch a real tab humbles fast",
+            "simple step bounds turn scary rollouts into calm naps",
+            "keeping wrappers minimal leaves less to babysit",
+            "calm explicit retries beat silent fallback guesses",
+            "short cool timeouts save whole batches from stalling",
+            "clean logs turn midnight panics into quick edits",
+            "testing live browser clicks beats ten fake unit runs",
+            "steady rhythm keeps live runs healthy past week one",
+            "tiny glue bugs always wait till Friday night to wave",
+        ),
+        (
+            ", hope it behaves cleanly!",
+            ", go grab some water now",
+            " lol, hang in there today",
+            ", wishing you smooth runs",
+            ", dropping a quick like!",
+            ", rest your eyes soon too",
+            ", good luck shipping this",
+            ", see you around the feed",
+            ", take a breather after",
+            " haha, smooth sailing ahead",
+            ", grab a warm coffee soon",
+            " lol, may tests stay green",
+            ", sending good debug luck!",
+            ", shut the lid early tonight",
+            ", cheering from the timeline",
+            ", take five and stretch a bit",
+            ", calm vibes rest of week",
+            " haha, hope this wraps fast",
+        ),
+    ),
+    ("zh", "vent_rant"): (
+        (
+            "唉真不容易，",
+            "抱拳了老兄，",
+            "刷到这条懂了，",
+            "忙一半卡壳，",
+            "隔屏都觉得累，",
+            "熬这么晚真拼，",
+            "顺手赞你打气，",
+            "破事越急越乱，",
+            "能吐槽挺好，",
+            "电脑前久了嘛，",
+            "哈哈太真实了，",
+            "碰上这事头大，",
+            "连轴转确实熬，",
+            "先喘口气吧，",
+            "辛苦打工人，",
+            "刚歇脚看见你，",
+        ),
+        (
+            "盯着屏幕死磕半小时不如合盖去溜达两分钟",
+            "脑子发木的时候强行改往往越改越乱套",
+            "好多莫名其妙的毛病睡一觉明早一眼看透",
+            "千万别把所有烦躁和火气都往自己身上揽",
+            "平时拼得太紧偶尔掉个链子也再正常不过",
+            "去倒杯温水或者吃点小零食换换脑子好得快",
+            "剩下的烂摊子留给清醒的自己明早再来收",
+            "今天能撑到现在已经很了不起真别苛责",
+            "手头杂事哪天也做不完但好心情得先保住",
+            "越着急收尾越容易被小卡点绊住脚歇会儿",
+            "找个朋友吐槽两句把闷气倒出来轻松多啦",
+            "眼睛酸了就赶紧闭目养神十来分钟最实在",
+        ),
+        (
+            "，今晚早点歇着别内耗啦",
+            "，休息好再战别委屈自己～",
+            "，喝口水缓缓祝明天顺意",
+            "，睡个整觉明天肯定顺得多",
+            "，实在困了赶紧躺平去吧",
+            "，缓口气慢慢来都会好的",
+            "，串门留句暖话陪你透口气～",
+            "，照顾好身体比赶这一会儿重要",
+        ),
+    ),
+    ("en", "vent_rant"): (
+        (
+            "ugh sorry ",
+            "man oof, ",
+            "rough day ",
+            "breathe, ",
+            "oof mood, ",
+            "hang in, ",
+            "stopping, ",
+            "brutal, ",
+            "steep day ",
+            "send tea, ",
+            "zero fun, ",
+            "wild day, ",
+            "seriously ",
+            "tough run ",
+            "honest: ",
+            "oof lol, ",
+        ),
+        (
+            "closing the laptop beats fighting tired mistakes at night",
+            "staring angry at a screen never fixed a weird glitch faster",
+            "stepping outside for ten minutes resets half the headache",
+            "fresh morning eyes spot in two minutes what midnight hides",
+            "nobody owes clean perfection when things keep shifting fast",
+            "venting it out once takes half the sting right away",
+            "drinking real water and eating dinner solves way more",
+            "leaving half-broken clutter till tomorrow is underrated",
+            "pacing yourself saves energy for stuff that actually matters",
+            "weird days hit everyone once in a while so go easy tonight",
+            "taking five minutes away from notifications clears your head",
+            "getting decent sleep tonight outperforms grinding till 2am",
+        ),
+        (
+            ", hope tonight treats you gently",
+            ", get some proper rest soon!",
+            ", tomorrow starts way cleaner",
+            ", rooting for an easy morning",
+            ", dropping a warm like here",
+            ", treat yourself after this",
+            ", take care of your sleep too",
+            ", hope things calm down quick",
+        ),
+    ),
+    ("zh", "social_chatter"): (
+        (
+            "刚抬头刷推，",
+            "午后倒水歇脚，",
+            "写累出来逛，",
+            "公屏全广告啊，",
+            "串门打个招呼，",
+            "摸会儿鱼冒泡，",
+            "看你这挺生活，",
+            "忙完上来透风，",
+            "懒得看黑框了，",
+            "同款冲浪路过，",
+            "哈哈凑个热闹，",
+            "溜达逛进主页，",
+            "顺手刷到这条，",
+            "平时爱逛真人，",
+            "抽空闲聊两句，",
+            "茶水间摸鱼中，",
+        ),
+        (
+            "看到真活人随便发点日常莫名觉得轻松好多",
+            "先点个赞混个脸熟后面时间线碰上继续聊呀",
+            "忙里偷闲上来扯两句瞎话才像正常的社交圈",
+            "希望你今天不管忙工作还是休息都顺顺心心",
+            "泡杯喜欢的饮料稍微发会呆放空真的超级舒服",
+            "能遇上说话接地气不端着的朋友真的挺难得的",
+            "先别总记挂待办清单里那堆没完没了的小事",
+            "偶尔放慢节奏在主页溜达一圈反而觉得挺解压",
+            "感觉时间线上还是得多留点这样有烟火气的话",
+            "大伙各自忙活之余能顺口搭句话还怪温暖的",
+            "屏幕看多了出来换换眼睛顺手交个网友真不赖",
+            "难得碰上同频闲聊的人多半天心情都会变好呢",
+        ),
+        (
+            "，祝今天开心顺意～",
+            "，后面常来你主页串门哈哈",
+            "，别太累记得按时吃饭喝水",
+            "，先赞为敬有空多唠嗑～",
+            "，祝好心情延续一整天呀",
+            "，回头有好玩的事继续聊！",
+            "，慢慢享受这会儿摸鱼时光吧",
+            "，逛下一家去啦祝一切顺利",
+        ),
+    ),
+    ("en", "social_chatter"): (
+        (
+            "hey lol, ",
+            "tea stop, ",
+            "scrollin, ",
+            "chill day ",
+            "casual hi ",
+            "take five ",
+            "nice one, ",
+            "hey feed, ",
+            "fresh air ",
+            "good vibe ",
+            "lazy feed ",
+            "hi again, ",
+            "real ppl, ",
+            "off code, ",
+            "weekend, ",
+            "slow day, ",
+        ),
+        (
+            "actually chatting with genuine humans beats promo feeds",
+            "stepping away from a dark terminal makes scrolling nice",
+            "enjoying slow random timeline conversations today for once",
+            "dropping a friendly like while waiting for tea to cool down",
+            "normal everyday posts make the whole feed feel alive again",
+            "catching a quick breather before diving back into chores",
+            "funny how five casual replies brighten an average workday",
+            "love running into real voices not pushing hype threads",
+            "hope your inbox stays quiet and your drinks stay cold",
+            "taking time to hang out without an agenda feels great",
+            "slow afternoons scrolling chill timelines hit the spot",
+            "wishing more feeds stayed this relaxed and down to earth",
+        ),
+        (
+            ", hope your day runs smooth!",
+            ", catch you around on here",
+            " haha, enjoy the slow pace",
+            ", good vibes to you today",
+            ", always fun crossing paths",
+            ", take care and stay rested",
+            ", see you next coffee break",
+            ", wishing you a calm week!",
+        ),
+    ),
+    ("zh", "notif_follow"): (
+        ("谢回关呀，", "看到关注啦，", "欢迎串门呀，", "接住回关咯，", "哈喽新朋友，", "刚看通知啦，", "真巧碰上了，", "很高兴认识，"),
+        ("平时写写小工具累了就爱上来找真人瞎扯两句", "大多时候坐在电脑前捣鼓代码顺手逛逛时间线", "看你日常发的东西挺有生活气息我也爱随便聊聊", "能碰到不整虚头巴脑的同好真开心先混个脸熟呀", "我这边平常也就吐吐槽分享点边角杂记没啥包袱"),
+        ("，后面常来互相点赞串门～", "，祝今天顺心天天开心哈哈", "，有空继续在时间线唠嗑呀！", "，先赞为敬以后多照应～"),
+    ),
+    ("en", "notif_follow"): (
+        ("thanks for the add, ", "appreciate connecting! ", "hey nice follow, ", "glad to cross paths, ", "cool to see you, ", "welcome aboard lol "),
+        ("mostly coding daily and hopping on here whenever i need air", "love trading casual timeline chatter instead of stiff promo talk", "saw your recent notes and dropped by to say a quick hello", "always down for laid-back conversations and small wins"),
+        (", catch you around!", " — hope your week goes great", ", see you on the feed soon!", " lol, stay cool out there"),
+    ),
+    ("zh", "milestone"): (
+        ("恭喜达成呀，", "太赞了哈哈，", "看着真开心，", "真不错呀老兄，", "替你高兴呢，", "一路坚持下来，", "这节点太稳了，", "小庆祝一下，"),
+        ("认真按自己节奏写内容还是最能聚起同频活人朋友", "不急不躁坚持输出居然不知不觉攒下这么多同好了", "在满屏吵闹的时间线里遇到真实交朋友的博主挺难得", "大家隔着屏幕能经常顺口聊两句真的比看空数字舒服"),
+        ("，继续按喜欢的方式冲呀～", "，祝下一个小目标更快实现！", "，点个赞一起开心开心哈哈", "，后续常串门捧场哦～"),
+    ),
+    ("en", "milestone"): (
+        ("huge congrats here! ", "awesome milestone, ", "love seeing this win, ", "cheers to that! ", "really neat progress, ", "way to stick with it, "),
+        ("steady real voice always finds genuinely fun people over time", "nice seeing consistent everyday posting build a real circle", "actual conversations beat empty vanity metrics every single week", "cool watching small genuine steps compound quietly on here"),
+        (", keep enjoying the ride!", " — wishing many more ahead", ", well deserved break tonight", " lol, cheering from the feed"),
+    ),
+    ("zh", "creative"): (
+        ("写画得真有味道，", "好喜欢这感觉，", "坚持创作超厉害，", "顺手驻足点赞，", "路过被氛围留住，", "慢工出细活呀，", "很有自己节奏，", "看得挺放松的，"),
+        ("天天对着枯燥电脑框之后刷到这种温柔日常超治愈", "愿意按自己步调一点点磨出完整作品真的特别难得", "每次在时间线遇到认真搞创作的朋友都会停下来多看两眼", "不追热点安静把故事和画面写好本身就很有力量啦"),
+        ("，别累着注意喝水休息呀～", "，慢慢更新会一直留赞捧场！", "，祝创作灵感满满心情好～", "，有新作再来看哈哈"),
+    ),
+    ("en", "creative"): (
+        ("really love the mood here, ", "super nice seeing real art, ", "awesome creative flow, ", "stopped scrolling for this: ", "genuine craft always shines, "),
+        ("making your own quiet work steadily beats noisy feed trends", "cool contrast stepping out of terminal windows into fresh visuals", "keeping a calm personal rhythm produces way better stories", "nice seeing people still pour heart into things they enjoy"),
+        (", keep going at your pace!", " — hope inspiration flows easy", ", dropping a warm like here", ", take breaks between pieces!"),
+    ),
+    ("zh", "language_learning"): (
+        ("太有同感啦，", "确实是这样，", "学语言真得靠泡，", "深有体会哈哈，", "说得太实在了，", "同款练语感方式，"),
+        ("死背软件卡片过两天全还给书本了还是直接逛推看真人吐槽记得牢", "每天在时间线多看多顺口接两句比干啃厚字典管用十倍不止", "其实语感全靠在轻松闲聊里一点点撞出来根本不用背得苦大仇深", "碰上有趣的小段子顺手回上一两句反而记一辈子单词"),
+        ("，咱们多在时间线瞎聊练语感～", "，祝越聊越顺手不卡壳！", "，先赞一个每天进步一点点哈哈", "，继续轻松泡着学准没错"),
+    ),
+    ("en", "language_learning"): (
+        ("totally true lol, ", "honestly same here, ", "so real about languages: ", "biggest cheat code is "),
+        ("reading messy daily slang on feeds sticks way harder than textbooks", "casual tiny replies build intuition ten times faster than flashcard drills", "picking up how real people joke beats memorizing stiff grammar charts", "five minutes chatting on timelines teaches phrases apps never mention"),
+        (", keep chatting daily!", " — progress sneaks up fast", ", dropping a like for fluency", ", way more fun that way too"),
+    ),
+    ("ja", "tech_discussion"): (
+        ("コード書くと本当、", "夜中のデバッグって、", "開発あるあるですが、", "息抜きがてら拝見、", "個人開発やってると、", "タイムライン見てて、"),
+        ("普通に動く道筋はすぐできても例外の穴埋めが地味に時間溶けますよね", "ローカルで完璧に見えても実環境で一晩回すと急に別の顔出しますよね", "急がずゆっくり間隔あけて回す方が結局あとで一番楽なんですよね", "複雑に凝るより後からすぐ追える素直な作りにしておくと助かりますよね", "画面側のちょっとした変化に振り回されるの分かりみ深すぎます", "いったんパソコン閉じて飲み物とりに立つと意外にあっさり気づけますよね"),
+        ("…お疲れさまです！無理せず休みつつ", "笑 今日もマイペースでいきましょ〜", "、応援してますね！休憩挟んでください", "、ひとまずいいね置いていきます〜"),
+    ),
+    ("ja", "vent_rant"): (
+        ("ほんとお疲れさまです、", "いや分かりますそれ、", "夜遅くまで大変ですね、", "ふらっと見かけて一言、", "無理しすぎないで、", "いったん深呼吸して、"),
+        ("煮詰まった画面をずっと睨むより温かい飲み物飲んで離れるのが一番ですね", "不思議なバグほど一晩ぐっすり寝た朝にあっさり見えたりしますよね", "今日はもう十分頑張ったと思うので自分を責めすぎず休んでください", "ペース乱されそうな日こそ早めに切り上げて体力温存するのが正解です"),
+        ("、今夜はゆっくり寝てくださいね！", "〜明日いい方向に向かいますように", "、陰ながら応援してますね", "！無理なくマイペースでいきましょ"),
+    ),
+    ("ja", "social_chatter"): (
+        ("タイムラインから失礼、", "ちょっと休憩中に発見、", "ふらっとお邪魔します、", "ゆるい空気いいですね、", "通りすがりにひとこと、", "お茶飲みつつ拝見して、"),
+        ("画面見続けて固まった頭がふわっと軽くなる投稿で和みました", "こうして普通の日常をつぶやいてる方がタイムライン楽しくて好きです", "忙しい合間でも少し力を抜いて雑談できる雰囲気いいですよね〜", "たまには肩の力を抜いてぼーっとTL眺める時間大事にしたいです"),
+        ("！今日もマイペースにいきましょ〜", "、またふらっと遊びにきますね笑", "、素敵な一日になりますように！", "、ひとまずいいねで挨拶していきます〜"),
+    ),
+    ("ja", "milestone"): (
+        ("達成おめでとうございます！", "わあすごい節目ですね、", "こっそりお祝いです、", "素敵な積み重ねですね、", "拝見して嬉しくなり、", "マイペースな発信で、"),
+        ("コツコツ自分のペースで書き続けてここまで届くの本当にかっこいいです", "楽しい雰囲気に自然な繋がりがどんどん集まっていくの見ているだけで元気出ます", "数字以上にこうして気軽に言葉交わせる仲間が増えていくの嬉しいですよね"),
+        ("、これからもゆるく応援してます！", "〜次の目標も楽しみにしてますね", "！無理せず楽しく続けてください"),
+    ),
+    ("ja", "creative"): (
+        ("素敵な世界観ですね、", "創作おつかれさまです、", "見ててほっとします、", "丁寧な表現すてきです、", "タイムラインで出会えて、"),
+        ("流行に振り回されず自分のリズムで作品育ててる姿勢がとても心地いいです", "パソコン作業の合間にこういう温かい投稿に触れると気持ちがふわっと軽くなります", "ゆっくり自分のペースで積み重なっていく作品ってやっぱり強い魅力がありますね"),
+        ("、休憩も挟みつつ頑張ってください〜", "！次の更新もゆるく楽しみにしてます", "、ささやかながらいいね置いていきます"),
+    ),
+    ("ko", "tech_discussion"): (
+        ("진짜 공감합니다, ", "개발하다 보면 항상 ", "잠깐 쉬면서 보는데 ", "개인 프로젝트할 때 ", "밤늦게 디버깅할 땐 ", "슬쩍 인사 남기면 "),
+        ("행복 경로는 금방 붙는데 예외랑 타이밍 잡다가 하루가 순식간에 지나가죠", "로컬에선 말짱하던 게 실제 환경에 올려서 밤새 돌리면 꼭 엉뚱한 데가 튀죠", "급하게 들이받기보다 천천히 간격 두고 돌리는 게 결국 훨씬 안전하더라고요", "일단 물 한 잔 마시고 잠깐 바람 쐬고 오면 안 보이던 게 금방 잡히곤 해요"),
+        ("ㅎㅎ 오늘도 고생 많으십니다!", "ㅋㅋ 쉬엄쉬엄 챙기면서 하세요~", " 파이팅입니다, 좋아요 누르고 가요!", " 잠깐 눈 좀 쉬어가세요!"),
+    ),
+    ("ko", "social_chatter"): (
+        ("타임라인 보다가 반가워 ", "잠깐 커피 마시면서 ", "지나가다 슬쩍 들러 ", "일상 글 너무 좋네요 ", "편한 분위기 반가워서 "),
+        ("종일 까만 화면만 보다가 이렇게 사람 냄새 나는 글 보면 기분이 확 풀리네요", "바쁜 와중에도 잠시 숨 고르며 가볍게 수다 떠는 시간이 참 소중한 듯해요", "가끔은 할 일 목록 잊고 타임라인 천천히 구경하는 여유도 필요하죠"),
+        ("ㅎㅎ 오늘도 기분 좋은 하루 보내세요!", "~ 자주 놀러 올게요!", " 좋아요 꾹 누르고 갑니다~"),
+    ),
+}
+
+
+def _iter_varied_natural_candidates(
+    ctx: dict[str, Any],
+    rng: random.Random,
+    *,
+    max_yield: int = 500,
+) -> list[str]:
+    """Generate hundreds of non-AI, grammatically fluent contextual combinations via diagonal pairing."""
+    import math
+
+    lang = str(ctx.get("lang") or "en")
+    intent = str(ctx.get("intent") or "unknown")
+    if intent in {"too_short", "unknown"}:
+        return []
+    key = (lang, intent)
+    if key not in _VARIED_REPLY_POOLS:
+        fallback_intent = "social_chatter" if intent in {"creative", "language_learning", "milestone", "notif_follow"} else intent
+        key = (lang, fallback_intent) if (lang, fallback_intent) in _VARIED_REPLY_POOLS else ("en", "social_chatter")
+    raw_openers, raw_middles, raw_closers = _VARIED_REPLY_POOLS[key]
+
+    openers = list(raw_openers)
+    zh_h = str(ctx.get("zh_hook") or "").strip()
+    en_h = str(ctx.get("en_hook") or "").strip()
+    if intent == "tech_discussion":
+        if lang == "zh" and zh_h:
+            openers = [f"看你聊到{zh_h}，", f"最近也搞{zh_h}，"] + openers
+        elif lang == "en" and en_h:
+            openers = [f"using {en_h}, ", f"with {en_h}, "] + openers
+
+    middles = list(raw_middles)
+    closers = list(raw_closers)
+    rng.shuffle(openers)
+    rng.shuffle(middles)
+    rng.shuffle(closers)
+
+    n_o, n_m, n_c = len(openers), len(middles), len(closers)
+    step_o = next((s for s in (7, 5, 3, 2, 1) if math.gcd(s, n_o) == 1), 1)
+    out: list[str] = []
+    # Sweep ALL (middle, closer) pairs across distinct coprime opener rotations first so neither
+    # (opener, middle) nor (middle, closer) repeats until n_m * n_c (~432+) unique combos are drawn.
+    for round_k in range(max(n_o, n_c)):
+        c_offset = round_k % n_c
+        o_shift = (round_k * step_o + (round_k // n_c)) % n_o
+        for m_idx in range(n_m):
+            c_idx = (m_idx + c_offset) % n_c
+            o_idx = (m_idx + o_shift) % n_o
+            candidate = f"{openers[o_idx]}{middles[m_idx]}{closers[c_idx]}".strip()
+            if len(candidate) <= 280:
+                out.append(candidate)
+                if len(out) >= max_yield:
+                    return out
+    return out
+
+
 def draft_friendly_reply(
     post: dict[str, Any],
     *,
     persona_memory: dict[str, Any] | None = None,
-    recent_replies: list[str] | set[str] | None = None,
+    recent_replies: list[str] | set[str] | _ReplyDeduper | None = None,
     rng: random.Random | None = None,
 ) -> str | None:
     """Draft a varied, casual-first, caring non-AI reply matched strictly to cleaned post intent."""
@@ -1024,6 +1540,13 @@ def draft_friendly_reply(
         ordered_pool = list(pool)
         r.shuffle(ordered_pool)
     for candidate in ordered_pool:
+        if (
+            len(candidate) <= 280
+            and not check_reply_naturalness(candidate, extra_banned=extra_banned)
+            and not _is_duplicate_reply(candidate, recent_replies)
+        ):
+            return candidate
+    for candidate in _iter_varied_natural_candidates(ctx, r):
         if (
             len(candidate) <= 280
             and not check_reply_naturalness(candidate, extra_banned=extra_banned)
@@ -1278,11 +1801,12 @@ X_RATE_LIMIT_REFERENCE: dict[str, dict[str, Any]] = {
     "reply_post": {
         "endpoint": "CreateTweet in_reply_to (Web) / POST /2/tweets (API v2)",
         "web_limit_per_day_unverified": 200,
+        "web_limit_per_day_verified": 400,
         "api_v2_limit_per_900s": 100,
-        "observed_risk_note": "Shares tweet creation velocity limits and duplicate-text spam detectors; keep gaps randomized 75-155s.",
-        "safe_per_15m": 6,
-        "safe_per_1h": 18,
-        "recommended_per_day": 45,
+        "observed_risk_note": "Shares tweet creation velocity (~200/day unverified, up to ~400/day Verified) and duplicate-text spam detectors; space 55-108s in high-reply mode (75-155s default).",
+        "safe_per_15m": 10,
+        "safe_per_1h": 32,
+        "recommended_per_day": 240,
     },
     "like_post": {
         "endpoint": "FavoriteTweet (Web) / POST /2/users/:id/likes (API v2)",
@@ -2836,8 +3360,8 @@ def build_daily_orchestration_plan(
         strategy_reason = str(decision["reason"])
     now = float(now_epoch) if now_epoch is not None else time.time()
     prof = profile or load_safe_profile()
-    # Allow explicit growth-stage follow goal up to 200/day, high-signal likes up to 150/day,
-    # and insightful contextual replies up to 50/day while keeping reposts rare and curated.
+    # Allow explicit growth-stage follow goal up to 200/day, high-signal likes up to 250/day,
+    # and proactive contextual replies up to 400/day while keeping reposts rare and curated.
     follow_goal = int(goals.get("follow_profile", 0)) if goals else 0
     reply_goal = int(goals.get("reply_post", 0)) if goals else 0
     like_goal = int(goals.get("like_post", 0)) if goals else 0
@@ -2872,17 +3396,18 @@ def build_daily_orchestration_plan(
     if like_goal > int(updated_actions["like_post"].get("per_day", 60)):
         updated_actions["like_post"] = {
             **updated_actions["like_post"],
-            "per_day": min(150, like_goal),
+            "per_day": min(250, like_goal),
             "min_gap_seconds": min(int(updated_actions["like_post"].get("min_gap_seconds", 60)), 18),
             "max_gap_seconds": min(int(updated_actions["like_post"].get("max_gap_seconds", 180)), 48),
         }
         prof_changed = True
     if reply_goal > int(updated_actions["reply_post"].get("per_day", 25)):
+        high_reply = reply_goal >= 150
         updated_actions["reply_post"] = {
             **updated_actions["reply_post"],
-            "per_day": min(50, reply_goal),
-            "min_gap_seconds": max(75, min(90, int(updated_actions["reply_post"].get("min_gap_seconds", 75)))),
-            "max_gap_seconds": max(135, min(155, int(updated_actions["reply_post"].get("max_gap_seconds", 145)))),
+            "per_day": min(400, reply_goal),
+            "min_gap_seconds": 55 if high_reply else max(75, min(90, int(updated_actions["reply_post"].get("min_gap_seconds", 75)))),
+            "max_gap_seconds": 108 if high_reply else max(135, min(155, int(updated_actions["reply_post"].get("max_gap_seconds", 145)))),
         }
         prof_changed = True
     if prof_changed:
@@ -2909,18 +3434,18 @@ def build_daily_orchestration_plan(
 
     requested = goals or {
         "publish_post": 1,
-        "like_post": 120,
+        "like_post": 150,
         "follow_profile": 5,
         "repost_post": 2,
-        "reply_post": 45,
+        "reply_post": 240,
     }
     stage = str(health["warmup"].get("stage") or "growth")
     stage_caps = dict(health["warmup"].get("stage_caps") or {})
     if stage == "growth":
         if like_goal > int(stage_caps.get("like_post", 60)):
-            stage_caps["like_post"] = min(150, like_goal)
+            stage_caps["like_post"] = min(250, like_goal)
         if reply_goal > int(stage_caps.get("reply_post", 25)):
-            stage_caps["reply_post"] = min(50, reply_goal)
+            stage_caps["reply_post"] = min(400, reply_goal)
     remaining = health["today"]["remaining_safe"]
     capped = {
         kind: max(0, min(int(requested.get(kind, 0)), int(remaining.get(kind, 0)), int(stage_caps.get(kind, 0))))
@@ -3049,11 +3574,13 @@ def build_daily_orchestration_plan(
         })
     clean_posts.sort(key=lambda item: item["relevance_score"], reverse=True)
 
-    recent_replies = _recent_reply_texts(ledger)
+    recent_replies = _recent_reply_texts(ledger, max_items=400)
+    reply_deduper = _ReplyDeduper(recent_replies)
     follow_heavy = capped.get("follow_profile", 0) >= 50
+    reply_heavy = capped.get("reply_post", 0) >= 150
     auto_reply_cap = (
         min(capped["reply_post"], len(buckets["reply_post"]) + 4)
-        if (follow_heavy and strategy == "balanced")
+        if (follow_heavy and not reply_heavy and strategy == "balanced")
         else capped["reply_post"]
     )
     replied_urls = {op["url"] for op in buckets["reply_post"]}
@@ -3085,7 +3612,7 @@ def build_daily_orchestration_plan(
             drafted = draft_friendly_reply(
                 post_ctx_payload,
                 persona_memory=persona_memory,
-                recent_replies=recent_replies,
+                recent_replies=reply_deduper,
                 rng=rng,
             )
             if drafted:
@@ -3135,6 +3662,7 @@ def build_daily_orchestration_plan(
 
         if drafted:
             recent_replies.append(drafted)
+            reply_deduper.add(drafted)
             replied_urls.add(post["url"])
             replied_authors.add(author_key)
             reply_op: dict[str, Any] = {
@@ -3245,7 +3773,7 @@ def build_daily_orchestration_plan(
     if cur_group:
         outbound_groups.append(cur_group)
 
-    follow_first_wave = follow_heavy and strategy in {"reciprocal_first", "balanced"}
+    follow_first_wave = follow_heavy and (not reply_heavy) and strategy in {"reciprocal_first", "balanced"}
     if not follow_first_wave:
         for grp in outbound_groups:
             ordered.extend(grp)
@@ -3255,11 +3783,12 @@ def build_daily_orchestration_plan(
 
     engagement_rich = (like_goal >= 80 or reply_goal >= 30 or strategy in {"thread_reply_magnet", "niche_sniper_bundle"})
     ops_since_repost = 6
-    order_cycle = (
-        ["reply_post", "like_post", "publish_post", "repost_post", "follow_profile"]
-        if strategy == "thread_reply_magnet"
-        else ["like_post", "reply_post", "follow_profile", "repost_post", "publish_post"]
-    )
+    if reply_heavy:
+        order_cycle = ["reply_post", "reply_post", "like_post", "reply_post", "follow_profile", "publish_post", "repost_post"]
+    elif strategy == "thread_reply_magnet":
+        order_cycle = ["reply_post", "like_post", "publish_post", "repost_post", "follow_profile"]
+    else:
+        order_cycle = ["like_post", "reply_post", "follow_profile", "repost_post", "publish_post"]
     while any(buckets.values()) or outbound_groups:
         if follow_first_wave and (buckets["follow_profile"] or outbound_groups):
             if buckets["follow_profile"]:
@@ -3300,7 +3829,9 @@ def build_daily_orchestration_plan(
                 ordered.append(buckets["repost_post"].pop(0))
                 ops_since_repost = 0
                 continue
-            if kind in {"like_post", "follow_profile"} and len(buckets[kind]) >= 2 and rng.random() < 0.35:
+            if (not reply_heavy) and kind in {"like_post", "follow_profile"} and len(buckets[kind]) >= 2 and rng.random() < 0.35:
+                burst = 2
+            elif reply_heavy and kind == "like_post" and len(buckets[kind]) >= 2 and rng.random() < 0.25:
                 burst = 2
             else:
                 burst = 1

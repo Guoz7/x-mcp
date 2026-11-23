@@ -490,11 +490,12 @@
           <h2 class="card-title">人工覆盖与托管授权（常规无需手填）</h2>
           <span class="sub-note">Agent 已读档自动配置；仅在覆盖参数时使用</span>
         </div>
-        <div class="g-4" style="margin-bottom:8px;">
+        <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:8px;">
           <div><label>活跃时段</label><input id="apHours" value="9,23"></div>
-          <div><label>单波上限</label><input id="apMaxWave" type="number" min="1" max="15" value="8"></div>
-          <div><label>间隔 (分)</label><input id="apInterval" type="number" min="10" max="720" value="22"></div>
-          <div><label>日关注目标</label><input id="apGoalFollow" type="number" min="1" max="200" value="40"></div>
+          <div><label>单波上限</label><input id="apMaxWave" type="number" min="1" max="15" value="10"></div>
+          <div><label>间隔 (分)</label><input id="apInterval" type="number" min="10" max="720" value="15"></div>
+          <div><label>日关注目标</label><input id="apGoalFollow" type="number" min="0" max="200" value="40"></div>
+          <div><label>日回复目标</label><input id="apGoalReply" type="number" min="0" max="400" value="240"></div>
         </div>
         <div class="g-4" style="margin-bottom:10px;">
           <div>
@@ -680,7 +681,13 @@ async function refreshHealth() {
   const labels = { follow_profile: '关注', like_post: '点赞', reply_post: '回复', repost_post: '转发', publish_post: '原创' };
   document.getElementById('bars').innerHTML = Object.keys(labels).map(k => {
     const used = Number(achieved[k] || 0);
-    const cap = Math.max(1, Number(k === 'follow_profile' ? Math.max(caps[k] || 0, 200) : (caps[k] || 1)));
+    let cap = Number(caps[k] || 1);
+    if (k === 'follow_profile') {
+      cap = wu.stage === 'growth' ? Math.max(cap, 200) : cap;
+    } else if (k === 'reply_post' && wu.stage === 'growth') {
+      cap = Math.max(cap, Number(window._apReplyGoal || 240));
+    }
+    cap = Math.max(1, cap);
     const pct = Math.min(100, Math.round((used / cap) * 100));
     return `
       <div style="margin-bottom:6px;">
@@ -896,6 +903,7 @@ async function refreshAutopilot() {
   document.getElementById('btnApStop').disabled = !enabled;
 
   const pending = Array.isArray(ap.pending_prepared) ? ap.pending_prepared : [];
+  window._apReplyGoal = Number(ap.active_window?.daily_goals?.reply_post ?? pending[pending.length - 1]?.daily_goals?.reply_post ?? 240);
   const reviewBar = document.getElementById('reviewBar');
   const btnApprove = document.getElementById('btnApprovePrepared');
   if (pending.length > 0) {
@@ -905,7 +913,7 @@ async function refreshAutopilot() {
     const pStrat = STRAT_LABELS[serverPendingPrepared.interaction_strategy] || serverPendingPrepared.interaction_strategy || '互关快起号';
     document.getElementById('reviewMeta').innerHTML = `
       <span class="chip warn">待主人确认</span>
-      <span>Agent 已准备好 <strong>${serverPendingPrepared.days} 天方案（${esc(pStrat)}）</strong>（点赞 ${serverPendingPrepared.daily_goals?.like_post ?? 120}/天 · 回复 ${serverPendingPrepared.daily_goals?.reply_post ?? 45}/天 · 关注 ${serverPendingPrepared.daily_goals?.follow_profile ?? 200}/天 · 精选转发≤${serverPendingPrepared.daily_goals?.repost_post ?? 4}/天 · 时段 ${(serverPendingPrepared.active_hours || []).join('-')}点），点击右侧按钮即可批准生效。</span>
+      <span>Agent 已准备好 <strong>${serverPendingPrepared.days} 天方案（${esc(pStrat)}）</strong>（点赞 ${serverPendingPrepared.daily_goals?.like_post ?? 150}/天 · 回复 ${serverPendingPrepared.daily_goals?.reply_post ?? 240}/天 · 关注 ${serverPendingPrepared.daily_goals?.follow_profile ?? 40}/天 · 精选转发≤${serverPendingPrepared.daily_goals?.repost_post ?? 2}/天 · 时段 ${(serverPendingPrepared.active_hours || []).join('-')}点），点击右侧按钮即可批准生效。</span>
     `;
   } else {
     serverPendingPrepared = null;
@@ -924,7 +932,7 @@ async function refreshAutopilot() {
     const stratLabel = STRAT_LABELS[currentStrategy] || currentStrategy || '互关快起号';
     document.getElementById('opsWaveCfg').textContent = `${stratLabel} · ${nextTxt}`;
     document.getElementById('polHours').textContent = `${(w.active_hours || []).join(':00–')}:00 (${d.timezone || '本地'})`;
-    document.getElementById('polGoals').textContent = `关注 ${w.daily_goals?.follow_profile ?? 200} · 点赞 ${w.daily_goals?.like_post ?? 120} · 回复 ${w.daily_goals?.reply_post ?? 45} · 精选转发≤${w.daily_goals?.repost_post ?? 4}/天 · ${stratLabel}`;
+    document.getElementById('polGoals').textContent = `关注 ${w.daily_goals?.follow_profile ?? 40} · 点赞 ${w.daily_goals?.like_post ?? 150} · 回复 ${w.daily_goals?.reply_post ?? 240} · 精选转发≤${w.daily_goals?.repost_post ?? 2}/天 · ${stratLabel}`;
     const topics = (w.persona_topics || []).join(', ') || w.search_query || '跨语言轮换 (ZH/EN/JA/KO)';
     document.getElementById('polTopics').textContent = topics;
   } else {
@@ -1253,14 +1261,16 @@ async function prepareAutopilot() {
   const excludes = document.getElementById('excludeKeywords').value.split(/[,，]/).map(s => s.trim()).filter(Boolean);
   const query = document.getElementById('searchQuery').value.trim();
   const hrs = document.getElementById('apHours').value.split(/[,，]/).map(n => parseInt(n.trim(), 10)).filter(n => !Number.isNaN(n));
-  const followGoal = Math.min(200, Math.max(1, Number(document.getElementById('apGoalFollow').value || 200)));
+  const followGoal = Math.min(200, Math.max(0, Number(document.getElementById('apGoalFollow').value || 40)));
+  const replyGoal = Math.min(400, Math.max(0, Number(document.getElementById('apGoalReply').value || 240)));
+  const likeGoal = replyGoal >= 150 ? 150 : 120;
   const res = await callTool('x_autopilot', {
     action: 'prepare',
     days: 7,
     active_hours: hrs.length === 2 ? hrs : [9, 23],
-    max_per_wave: Number(document.getElementById('apMaxWave').value || 12),
-    min_wave_interval_minutes: Number(document.getElementById('apInterval').value || 12),
-    daily_goals: { publish_post: 1, like_post: 120, follow_profile: followGoal, repost_post: 4, reply_post: 45 },
+    max_per_wave: Number(document.getElementById('apMaxWave').value || (replyGoal >= 250 ? 12 : 10)),
+    min_wave_interval_minutes: Number(document.getElementById('apInterval').value || 15),
+    daily_goals: { publish_post: 1, like_post: likeGoal, follow_profile: followGoal, repost_post: 2, reply_post: replyGoal },
     interaction_strategy: document.getElementById('apStrategy').value,
     persona_topics: topics,
     exclude_keywords: excludes,
