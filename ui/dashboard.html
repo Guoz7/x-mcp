@@ -1240,7 +1240,8 @@ async function approvePendingWindow() {
     confirmation: serverPendingPrepared.confirmation_phrase,
   });
   if (!res.ok) return showToast('apToast', false, res.error?.message || '批准失败');
-  showToast('apToast', true, '已批准 Agent 编排窗口并生效。');
+  await callTool('x_autopilot', { action: 'scheduler_start' });
+  showToast('apToast', true, '已批准 Agent 编排窗口并自动启动后台定时调度。');
   refreshAll();
 }
 
@@ -1291,7 +1292,8 @@ async function activateAutopilot() {
   if (!res.ok) return showToast('apToast', false, res.error?.message || '启用失败');
   document.getElementById('apConfirmInput').disabled = true;
   document.getElementById('btnApActivate').disabled = true;
-  showToast('apToast', true, '7 天托管窗口已启用。');
+  await callTool('x_autopilot', { action: 'scheduler_start' });
+  showToast('apToast', true, '7 天托管窗口已启用并启动后台定时调度。');
   refreshAll();
 }
 

@@ -267,6 +267,7 @@ class XStarter:
         self.environ = dict(os.environ if environ is None else environ)
         self.mode = (mode or self.environ.get("X_STARTER_MODE", "mock")).strip().lower()
         self._scheduler: autopilot_ops.AutopilotScheduler | None = None
+        self._http_serving: bool = False
         if self.mode not in {"mock", "live", "browser"}:
             raise StarterError(
                 "INVALID_MODE",
@@ -4491,6 +4492,9 @@ class XStarter:
                 window_id = _required_string(arguments, "window_id", max_length=40)
                 confirmation = _required_string(arguments, "confirmation", max_length=40)
                 res = store.activate_window(window_id, confirmation)
+                if self.mode == "browser" and self._http_serving:
+                    _, sched_status = self._ensure_scheduler_started()
+                    res = {**res, "scheduler": sched_status}
                 trace.append(_event("auth_boundary", "autopilot_window_activated", window_id=window_id, external_call=False))
                 return res
             if action == "stop":
@@ -4832,9 +4836,15 @@ class XStarter:
                     if opened_browser:
                         self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
                     rate_limited_all = bool(raw_ops and wave_slice.get("skipped_by_rate_limit"))
+                    if read_error and read_error.startswith("BROWSER_OWNER_EXCLUSIVE"):
+                        skip_reason = "BROWSER_OWNER_EXCLUSIVE"
+                    elif rate_limited_all:
+                        skip_reason = "ROLLING_RATE_LIMIT_PACING"
+                    else:
+                        skip_reason = "NO_ELIGIBLE_OPERATIONS"
                     return {
                         "ran": False,
-                        "reason": "ROLLING_RATE_LIMIT_PACING" if rate_limited_all else "NO_ELIGIBLE_OPERATIONS",
+                        "reason": skip_reason,
                         "skipped_by_rate_limit": wave_slice.get("skipped_by_rate_limit") or {},
                         "next_retry_epoch": wave_slice.get("next_retry_epoch"),
                         "stage": plan.get("stage"),
@@ -7025,6 +7035,7 @@ def make_http_handler(
 
 
 def run_http(app: XStarter, host: str, port: int) -> int:
+    app._http_serving = True
     if app.mode == "browser":
         try:
             if app._autopilot_store().status().get("enabled"):
