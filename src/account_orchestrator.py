@@ -2756,7 +2756,7 @@ def _seen_ledger_targets(ledger: dict[str, Any]) -> tuple[set[str], set[str]]:
         if action.get("status") not in {"completed", "pending", "claimed"}:
             continue
         payload = action.get("payload") or {}
-        if action.get("type") == "follow_profile":
+        if action.get("type") in {"follow_profile", "unfollow_profile"}:
             handle = str(payload.get("handle") or "").strip().lstrip("@").casefold()
             if handle:
                 handles.add(handle)
@@ -2766,6 +2766,28 @@ def _seen_ledger_targets(ledger: dict[str, Any]) -> tuple[set[str], set[str]]:
             if match:
                 urls.add(f"https://x.com/{match.group(1).casefold()}/status/{match.group(2)}")
     return handles, urls
+
+
+def _unfollowed_blocked_handles(ledger: dict[str, Any]) -> set[str]:
+    """Return handles that were unfollowed for non-reciprocity so future waves ignore/block them."""
+    blocked: set[str] = set()
+    mutual_map = ledger.get("mutual_followers") if isinstance(ledger.get("mutual_followers"), dict) else {}
+    known_mutuals = {str(k).strip().lstrip("@").casefold() for k in mutual_map.keys() if str(k).strip()}
+    for action in _sorted_actions(ledger):
+        if action.get("status") != "completed":
+            continue
+        atype = action.get("type")
+        payload = action.get("payload") or {}
+        result = action.get("result") or {}
+        handle = str(result.get("handle") or payload.get("handle") or "").strip().lstrip("@").casefold()
+        if not handle:
+            continue
+        if atype == "unfollow_profile" and result.get("state") == "unfollowed":
+            if handle not in known_mutuals:
+                blocked.add(handle)
+        elif atype == "follow_profile" and result.get("mutual_verified") is True:
+            blocked.discard(handle)
+    return blocked
 
 
 def _recent_author_engagements(
@@ -3453,6 +3475,7 @@ def build_daily_orchestration_plan(
     }
 
     seen_handles, seen_urls = _seen_ledger_targets(ledger)
+    blocked_handles = _unfollowed_blocked_handles(ledger)
     recent_authors = _recent_author_engagements(ledger, window_hours=18.0, now_epoch=now)
     rng = random.Random(seed) if seed is not None else random.SystemRandom()
 
@@ -3559,6 +3582,8 @@ def build_daily_orchestration_plan(
             continue
         local_seen_urls.add(canonical)
         author = str(post.get("author") or match.group(1)).lstrip("@")
+        if author.casefold() in blocked_handles:
+            continue
         fresh_bonus = 0 if (author.casefold() in recent_authors and str(post.get("source") or "") != "notification") else 8
         drop_by_bonus = 6 if (bool(post.get("visited_profile")) and stage in {"ghost", "light_engage", "content_build"}) else 0
         clean_posts.append({

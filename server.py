@@ -4375,7 +4375,7 @@ class XStarter:
                         "action": "unfollow_profile",
                         "handle": row["handle"],
                         "profile_url": row["profile_url"],
-                        "delay_before_seconds": 0 if idx == 0 else 90,
+                        "delay_before_seconds": 0 if idx == 0 else 45,
                     }
                     for idx, row in enumerate(cands)
                 ]
@@ -4743,6 +4743,8 @@ class XStarter:
                             browser = self._browser_for(arguments)
                             opened_browser = True
                         seen_ledger_handles, _ = account_orchestrator._seen_ledger_targets(ledger)
+                        blocked_handles = account_orchestrator._unfollowed_blocked_handles(ledger)
+                        skip_visit_handles = seen_ledger_handles | blocked_handles
                         timeline_posts = timeline_posts if timeline_posts is not None else []
                         existing_urls = {str(p.get("url") or "").casefold() for p in timeline_posts}
                         snap_posts = int((snapshot or {}).get("posts_count") or 0)
@@ -4759,7 +4761,7 @@ class XStarter:
                             if cand.get("visited_profile"):
                                 continue
                             h = str(cand.get("handle") or cand.get("username") or "").strip().lstrip("@")
-                            if not h or h.casefold() in seen_ledger_handles:
+                            if not h or h.casefold() in skip_visit_handles:
                                 continue
                             try:
                                 profile_res = browser_read.read_user_posts(
@@ -4918,14 +4920,19 @@ class XStarter:
                 })
                 auto_cleanup_res = None
                 if bool(arguments.get("auto_cleanup", True)) and not str(exe.get("stop_reason") or "").startswith("REFUSAL_CIRCUIT_BREAKER"):
-                    stale_cands = account_orchestrator.find_unfollow_candidates(ledger, min_age_days=3)
+                    snap_f = int((snapshot or {}).get("followers_count") or 0)
+                    snap_ing = int((snapshot or {}).get("following_count") or 0)
+                    tight_ratio = snap_f > 0 and snap_ing > int(snap_f * 2.0)
+                    clean_age = 2 if tight_ratio else 3
+                    clean_max = 4 if tight_ratio else 2
+                    stale_cands = account_orchestrator.find_unfollow_candidates(ledger, min_age_days=clean_age)
                     if stale_cands:
                         try:
                             auto_cleanup_res = self._x_autopilot(
                                 {
                                     "action": "run_cleanup",
-                                    "min_age_days": 3,
-                                    "max_count": 2,
+                                    "min_age_days": clean_age,
+                                    "max_count": clean_max,
                                     "respect_pacing": bool(arguments.get("respect_pacing", True)),
                                     "_mcp_session_id": session_id,
                                 },
