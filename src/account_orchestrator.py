@@ -3023,8 +3023,12 @@ def find_unfollow_candidates(
         if not handle:
             continue
         key = handle.casefold()
-        if atype == "unfollow_profile" and result.get("state") == "unfollowed":
-            unfollowed.add(key)
+        if atype == "unfollow_profile":
+            if result.get("state") == "unfollowed":
+                unfollowed.add(key)
+            elif result.get("mutual_verified") is True:
+                known_mutuals.add(key)
+                follows.pop(key, None)
         elif atype == "follow_profile" and result.get("verified") is True and result.get("state") == "following":
             unfollowed.discard(key)
             if result.get("mutual_verified") is True or key in known_mutuals:
