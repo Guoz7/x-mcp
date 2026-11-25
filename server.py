@@ -4520,6 +4520,13 @@ class XStarter:
                 ledger = self._bridge().read_ledger_snapshot()
                 breaker = account_orchestrator.evaluate_circuit_breaker(ledger)
                 if not breaker["allow_write"]:
+                    if breaker.get("reason") == "UNCERTAIN_STREAK_COOLDOWN":
+                        return {
+                            "ran": False,
+                            "reason": "UNCERTAIN_STREAK_COOLDOWN",
+                            "cooldown_until_epoch": breaker.get("cooldown_until_epoch"),
+                            "autopilot": status,
+                        }
                     store.stop_window(reason=f"circuit_breaker:{breaker['reason']}")
                     raise StarterError(
                         "ACCOUNT_COOLDOWN",
@@ -4824,6 +4831,13 @@ class XStarter:
                 if plan.get("blocked"):
                     if opened_browser:
                         self.close_browser_session(arguments.get("_mcp_session_id") or "stdio")
+                    if plan.get("reason") == "UNCERTAIN_STREAK_COOLDOWN":
+                        return {
+                            "ran": False,
+                            "reason": "UNCERTAIN_STREAK_COOLDOWN",
+                            "cooldown_until_epoch": plan.get("cooldown_until_epoch"),
+                            "autopilot": status,
+                        }
                     store.stop_window(reason=f"circuit_breaker:{plan.get('reason')}")
                     raise StarterError("ACCOUNT_COOLDOWN", f"Autopilot halted ({plan.get('reason')}).", details=plan)
                 raw_ops = list(plan.get("operations") or [])

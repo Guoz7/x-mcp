@@ -16,7 +16,7 @@
     "refusal_codes": ["283", "161", "141", "37"],
     "stop_on_uncertain_streak": 2,
     "cooldown_hours_after_refusal": 24,
-    "cooldown_hours_after_uncertain_streak": 4,
+    "cooldown_hours_after_uncertain_streak": 0.5,
     "do_not_switch_action_kind": true
   },
 

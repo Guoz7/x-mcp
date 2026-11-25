@@ -52,7 +52,7 @@ DEFAULT_CIRCUIT_BREAKER: dict[str, Any] = {
     "refusal_codes": ["283", "161", "141", "37"],
     "stop_on_uncertain_streak": 2,
     "cooldown_hours_after_refusal": 24,
-    "cooldown_hours_after_uncertain_streak": 4,
+    "cooldown_hours_after_uncertain_streak": 0.5,
     "do_not_switch_action_kind": True,
 }
 
@@ -1642,7 +1642,7 @@ def evaluate_circuit_breaker(
     prof = profile or load_safe_profile()
     cb = prof["circuit_breaker"]
     refusal_cooldown_sec = float(cb.get("cooldown_hours_after_refusal", 24)) * 3600.0
-    uncertain_cooldown_sec = float(cb.get("cooldown_hours_after_uncertain_streak", 4)) * 3600.0
+    uncertain_cooldown_sec = float(cb.get("cooldown_hours_after_uncertain_streak", 0.5)) * 3600.0
     security_cooldown_sec = float(cb.get("cooldown_hours_after_security", 2)) * 3600.0
     uncertain_limit = int(cb.get("stop_on_uncertain_streak", 2))
 
