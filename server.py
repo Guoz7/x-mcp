@@ -1625,7 +1625,7 @@ class XStarter:
                         "max_count": {"type": "integer", "minimum": 1, "maximum": 25, "default": 5},
                         "active_hours": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 24}},
                         "max_per_wave": {"type": "integer", "minimum": 1, "maximum": 15, "default": 4},
-                        "min_wave_interval_minutes": {"type": "integer", "minimum": 10, "maximum": 720, "default": 90},
+                        "min_wave_interval_minutes": {"type": "integer", "minimum": 5, "maximum": 720, "default": 90},
                         "daily_goals": {"type": "object"},
                         "persona_topics": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 40}},
                         "exclude_keywords": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 40}},
@@ -4375,7 +4375,7 @@ class XStarter:
                         "action": "unfollow_profile",
                         "handle": row["handle"],
                         "profile_url": row["profile_url"],
-                        "delay_before_seconds": 0 if idx == 0 else 45,
+                        "delay_before_seconds": 0 if idx == 0 else 28,
                     }
                     for idx, row in enumerate(cands)
                 ]
@@ -4471,15 +4471,15 @@ class XStarter:
                 daily_goals_arg = arguments.get("daily_goals")
                 reply_goal = int((daily_goals_arg or {}).get("reply_post", 240))
                 follow_goal = int((daily_goals_arg or {}).get("follow_profile", 40))
-                explicit_high_reply = bool(isinstance(daily_goals_arg, dict) and int(daily_goals_arg.get("reply_post", 0)) >= 250)
-                explicit_high_follow = bool(isinstance(daily_goals_arg, dict) and int(daily_goals_arg.get("follow_profile", 0)) >= 100)
-                default_wave = 12 if (explicit_high_reply or explicit_high_follow) else 10
-                default_interval = 15 if (reply_goal >= 150 or follow_goal >= 100) else 22
+                explicit_high_reply = bool(isinstance(daily_goals_arg, dict) and int(daily_goals_arg.get("reply_post", 0)) >= 200)
+                explicit_high_follow = bool(isinstance(daily_goals_arg, dict) and int(daily_goals_arg.get("follow_profile", 0)) >= 80)
+                default_wave = 14 if (explicit_high_reply or explicit_high_follow) else 10
+                default_interval = 12 if (explicit_high_reply or explicit_high_follow) else (15 if reply_goal >= 150 else 22)
                 res = store.prepare_window(
                     days=_bounded_int(arguments, "days", default=7, minimum=1, maximum=30),
                     active_hours=arguments.get("active_hours") or inferred_hours or [9, 23],
                     max_per_wave=_bounded_int(arguments, "max_per_wave", default=default_wave, minimum=1, maximum=15),
-                    min_wave_interval_minutes=_bounded_int(arguments, "min_wave_interval_minutes", default=default_interval, minimum=10, maximum=720),
+                    min_wave_interval_minutes=_bounded_int(arguments, "min_wave_interval_minutes", default=default_interval, minimum=5, maximum=720),
                     daily_goals=daily_goals_arg,
                     persona_topics=arguments.get("persona_topics") or inferred_topics or None,
                     exclude_keywords=arguments.get("exclude_keywords"),
@@ -4610,12 +4610,14 @@ class XStarter:
                             ledger = self._bridge().read_ledger_snapshot()
                     except (StarterError, ExecutorError, browser_read.ReadError):
                         pass
+                wave_started_epoch = time.time()
                 reply_goal_win = int((window.get("daily_goals") or {}).get("reply_post", 0))
+                follow_goal_win = int((window.get("daily_goals") or {}).get("follow_profile", 0))
                 if timeline_posts is None and follow_candidates is None:
                     seen_h, seen_u = account_orchestrator._seen_ledger_targets(ledger)
                     popped = self._target_pool().pop_batch(
-                        max_candidates=max(4, wave_limit * 2),
-                        max_posts=max(10, wave_limit * 4) if reply_goal_win >= 150 else max(6, wave_limit * 3),
+                        max_candidates=max(12, wave_limit * 3) if (reply_goal_win >= 150 or follow_goal_win >= 80) else max(4, wave_limit * 2),
+                        max_posts=max(24, wave_limit * 6) if reply_goal_win >= 150 else max(6, wave_limit * 3),
                         exclude_handles=seen_h,
                         exclude_urls=seen_u,
                     )
@@ -4931,14 +4933,14 @@ class XStarter:
                     "known_inbound_before": known_inbound_before,
                     "known_inbound_after": known_inbound_after,
                     "stop_reason": exe["stop_reason"],
-                })
+                }, wave_started_epoch=wave_started_epoch)
                 auto_cleanup_res = None
                 if bool(arguments.get("auto_cleanup", True)) and not str(exe.get("stop_reason") or "").startswith("REFUSAL_CIRCUIT_BREAKER"):
                     snap_f = int((snapshot or {}).get("followers_count") or 0)
                     snap_ing = int((snapshot or {}).get("following_count") or 0)
                     tight_ratio = snap_f > 0 and snap_ing > int(snap_f * 2.0)
                     clean_age = 2 if tight_ratio else 3
-                    clean_max = 4 if tight_ratio else 2
+                    clean_max = 3 if tight_ratio else 2
                     stale_cands = account_orchestrator.find_unfollow_candidates(ledger, min_age_days=clean_age)
                     if stale_cands:
                         try:

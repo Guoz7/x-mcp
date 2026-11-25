@@ -2317,7 +2317,8 @@ class DailyOrchestratorMcpTests(unittest.TestCase):
                 )
                 self.assertTrue(high_prep["ok"])
                 self.assertEqual(high_prep["data"]["daily_goals"]["reply_post"], 360)
-                self.assertEqual(high_prep["data"]["max_per_wave"], 12)
+                self.assertEqual(high_prep["data"]["max_per_wave"], 14)
+                self.assertEqual(high_prep["data"]["min_wave_interval_minutes"], 12)
             finally:
                 app.close()
 

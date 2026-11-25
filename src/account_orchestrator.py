@@ -399,8 +399,10 @@ _VENT_RANT_RE = re.compile(
     re.IGNORECASE,
 )
 _SOCIAL_CHAT_RE = re.compile(
-    r"(?:出摊|活人|交朋友|聊天|唠嗑|摸鱼|周末|冰美式|咖啡|早安|晚安|午安|逛逛|相互フォロー|フォロバ|よろしく|仲良く|"
-    r"おはよう|おやすみ|週末|まったり|good morning|weekend|coffee|\bgm\b|\bgn\b)",
+    r"(?:出摊|活人|交朋友|交个朋友|交友|互关|互follow|互粉|蓝v|多交流|欢迎留言|新朋友|你好|取关|平时关注|随便聊聊|"
+    r"聊天|唠嗑|摸鱼|周末|冰美式|咖啡|早安|晚安|午安|逛逛|日常记录|相互フォロー|フォロバ|よろしく|仲良く|"
+    r"おはよう|おやすみ|週末|まったり|good morning|weekend|coffee|followback|follow back|mutuals?|"
+    r"say hi|new friends?|make friends?|drop by|glad to connect|nice to meet|just sharing|keep going|\bgm\b|\bgn\b)",
     re.IGNORECASE,
 )
 _STRICT_BODY_TECH_TOKENS = (
@@ -3265,6 +3267,8 @@ def _bundle_author_interactions(
     buckets: dict[str, list[dict[str, Any]]],
     *,
     interaction_strategy: str,
+    max_likes_per_bundle: int = 2,
+    reply_first_outbound: bool = False,
 ) -> list[dict[str, Any]]:
     """Pair same-author like + contextual reply (+ reciprocal follow) into human-paced bundles."""
     likes_by_author: dict[str, list[dict[str, Any]]] = {}
@@ -3318,19 +3322,34 @@ def _bundle_author_interactions(
             seq.append(fol)
             used_follows.add(id(fol))
         # Early-stage drop-by ("串门"): warm up with 1-2 likes on recent posts before leaving 1 caring reply.
-        for like in author_like_pool[:2]:
-            like["interaction_role"] = role
-            like["visited_before_engage"] = bool(like.get("visited_before_engage") or is_notif)
-            seq.append(like)
-            used_likes.add(id(like))
-        rep["interaction_role"] = role
-        seq.append(rep)
-        used_replies.add(id(rep))
-        if not is_notif and interaction_strategy != "reply_then_follow" and fol is not None and id(fol) not in used_follows:
-            fol["interaction_role"] = role
-            fol["visited_before_engage"] = bool(fol.get("visited_before_engage") or rep.get("visited_before_engage"))
-            seq.append(fol)
-            used_follows.add(id(fol))
+        if reply_first_outbound and not is_notif:
+            rep["interaction_role"] = role
+            seq.append(rep)
+            used_replies.add(id(rep))
+            for like in author_like_pool[:max_likes_per_bundle]:
+                like["interaction_role"] = role
+                like["visited_before_engage"] = bool(like.get("visited_before_engage") or is_notif)
+                seq.append(like)
+                used_likes.add(id(like))
+            if interaction_strategy != "reply_then_follow" and fol is not None and id(fol) not in used_follows:
+                fol["interaction_role"] = role
+                fol["visited_before_engage"] = bool(fol.get("visited_before_engage") or rep.get("visited_before_engage"))
+                seq.append(fol)
+                used_follows.add(id(fol))
+        else:
+            for like in author_like_pool[:max_likes_per_bundle]:
+                like["interaction_role"] = role
+                like["visited_before_engage"] = bool(like.get("visited_before_engage") or is_notif)
+                seq.append(like)
+                used_likes.add(id(like))
+            rep["interaction_role"] = role
+            seq.append(rep)
+            used_replies.add(id(rep))
+            if not is_notif and interaction_strategy != "reply_then_follow" and fol is not None and id(fol) not in used_follows:
+                fol["interaction_role"] = role
+                fol["visited_before_engage"] = bool(fol.get("visited_before_engage") or rep.get("visited_before_engage"))
+                seq.append(fol)
+                used_follows.add(id(fol))
 
         priority = 0 if is_notif else (1 if rep.get("visited_before_engage") else 2)
         bundled_groups.append((priority, seq))
@@ -3399,19 +3418,19 @@ def build_daily_orchestration_plan(
             "per_day": min(200, follow_goal),
         }
         updated_actions["follow_profile"] = follow_cfg
-        if follow_goal >= 100:
-            # Smoother human cadence (44-78s) paired with rolling 10/900s + 24/1h gates avoids X's 15/900s follow cliff.
-            follow_cfg["min_gap_seconds"] = min(int(follow_cfg.get("min_gap_seconds", 90)), 44)
-            follow_cfg["max_gap_seconds"] = min(int(follow_cfg.get("max_gap_seconds", 240)), 78)
+        if follow_goal >= 80:
+            # Smoother human cadence (28-52s) paired with rolling 10/900s + 24/1h gates avoids X's 15/900s follow cliff.
+            follow_cfg["min_gap_seconds"] = min(int(follow_cfg.get("min_gap_seconds", 90)), 28)
+            follow_cfg["max_gap_seconds"] = min(int(follow_cfg.get("max_gap_seconds", 240)), 52)
             updated_actions["like_post"] = {
                 **prof["actions"]["like_post"],
-                "min_gap_seconds": min(int(prof["actions"]["like_post"].get("min_gap_seconds", 60)), 22),
-                "max_gap_seconds": min(int(prof["actions"]["like_post"].get("max_gap_seconds", 180)), 52),
+                "min_gap_seconds": min(int(prof["actions"]["like_post"].get("min_gap_seconds", 60)), 14),
+                "max_gap_seconds": min(int(prof["actions"]["like_post"].get("max_gap_seconds", 180)), 34),
             }
             updated_actions["reply_post"] = {
                 **prof["actions"]["reply_post"],
-                "min_gap_seconds": max(75, int(prof["actions"]["reply_post"].get("min_gap_seconds", 75))),
-                "max_gap_seconds": max(135, min(160, int(prof["actions"]["reply_post"].get("max_gap_seconds", 145)))),
+                "min_gap_seconds": max(55 if reply_goal >= 150 else 75, int(prof["actions"]["reply_post"].get("min_gap_seconds", 75))),
+                "max_gap_seconds": 90 if reply_goal >= 150 else max(135, min(160, int(prof["actions"]["reply_post"].get("max_gap_seconds", 145)))),
             }
             updated_actions["repost_post"] = {
                 **prof["actions"]["repost_post"],
@@ -3423,8 +3442,8 @@ def build_daily_orchestration_plan(
         updated_actions["like_post"] = {
             **updated_actions["like_post"],
             "per_day": min(250, like_goal),
-            "min_gap_seconds": min(int(updated_actions["like_post"].get("min_gap_seconds", 60)), 18),
-            "max_gap_seconds": min(int(updated_actions["like_post"].get("max_gap_seconds", 180)), 48),
+            "min_gap_seconds": min(int(updated_actions["like_post"].get("min_gap_seconds", 60)), 12),
+            "max_gap_seconds": min(int(updated_actions["like_post"].get("max_gap_seconds", 180)), 30),
         }
         prof_changed = True
     if reply_goal > int(updated_actions["reply_post"].get("per_day", 25)):
@@ -3433,7 +3452,7 @@ def build_daily_orchestration_plan(
             **updated_actions["reply_post"],
             "per_day": min(400, reply_goal),
             "min_gap_seconds": 55 if high_reply else max(75, min(90, int(updated_actions["reply_post"].get("min_gap_seconds", 75)))),
-            "max_gap_seconds": 108 if high_reply else max(135, min(155, int(updated_actions["reply_post"].get("max_gap_seconds", 145)))),
+            "max_gap_seconds": 90 if high_reply else max(135, min(155, int(updated_actions["reply_post"].get("max_gap_seconds", 145)))),
         }
         prof_changed = True
     if prof_changed:
@@ -3774,7 +3793,12 @@ def build_daily_orchestration_plan(
         for _ in range(min(lead_posts, len(buckets["publish_post"]))):
             ordered.append(buckets["publish_post"].pop(0))
 
-    bundled_ops = _bundle_author_interactions(buckets, interaction_strategy=strategy)
+    bundled_ops = _bundle_author_interactions(
+        buckets,
+        interaction_strategy=strategy,
+        max_likes_per_bundle=1 if (reply_heavy or follow_heavy) else 2,
+        reply_first_outbound=reply_heavy,
+    )
     inbound_bundled = [
         op for op in bundled_ops
         if str(op.get("interaction_role") or "").startswith("inbound_")
@@ -3804,8 +3828,11 @@ def build_daily_orchestration_plan(
 
     follow_first_wave = follow_heavy and (not reply_heavy) and strategy in {"reciprocal_first", "balanced"}
     if not follow_first_wave:
+        interleave_follows = reply_heavy and follow_goal >= 80
         for grp in outbound_groups:
             ordered.extend(grp)
+            if interleave_follows and buckets["follow_profile"] and not any(op["action"] == "follow_profile" for op in grp):
+                ordered.append(buckets["follow_profile"].pop(0))
         outbound_groups = []
 
     buckets["repost_post"].sort(key=lambda item: int(item.get("quality_score") or 0), reverse=True)
@@ -3813,7 +3840,11 @@ def build_daily_orchestration_plan(
     engagement_rich = (like_goal >= 80 or reply_goal >= 30 or strategy in {"thread_reply_magnet", "niche_sniper_bundle"})
     ops_since_repost = 6
     if reply_heavy:
-        order_cycle = ["reply_post", "reply_post", "like_post", "reply_post", "follow_profile", "publish_post", "repost_post"]
+        order_cycle = (
+            ["reply_post", "follow_profile", "reply_post", "like_post", "reply_post", "publish_post", "repost_post"]
+            if follow_goal >= 80
+            else ["reply_post", "reply_post", "like_post", "reply_post", "follow_profile", "publish_post", "repost_post"]
+        )
     elif strategy == "thread_reply_magnet":
         order_cycle = ["reply_post", "like_post", "publish_post", "repost_post", "follow_profile"]
     else:
@@ -3859,8 +3890,6 @@ def build_daily_orchestration_plan(
                 ops_since_repost = 0
                 continue
             if (not reply_heavy) and kind in {"like_post", "follow_profile"} and len(buckets[kind]) >= 2 and rng.random() < 0.35:
-                burst = 2
-            elif reply_heavy and kind == "like_post" and len(buckets[kind]) >= 2 and rng.random() < 0.25:
                 burst = 2
             else:
                 burst = 1

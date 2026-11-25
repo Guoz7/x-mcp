@@ -94,8 +94,8 @@ class AutopilotStore:
             raise AutopilotError("INVALID_ARGUMENT", "active_hours must satisfy 0 <= start < end <= 24.")
         if not 1 <= int(max_per_wave) <= 15:
             raise AutopilotError("INVALID_ARGUMENT", "max_per_wave must be between 1 and 15.")
-        if not 10 <= int(min_wave_interval_minutes) <= 720:
-            raise AutopilotError("INVALID_ARGUMENT", "min_wave_interval_minutes must be between 10 and 720.")
+        if not 5 <= int(min_wave_interval_minutes) <= 720:
+            raise AutopilotError("INVALID_ARGUMENT", "min_wave_interval_minutes must be between 5 and 720.")
         strategy = str(interaction_strategy or "reciprocal_first").strip()
         if strategy not in ALLOWED_STRATEGIES:
             raise AutopilotError(
@@ -228,22 +228,30 @@ class AutopilotStore:
             self._write(data)
             return {"previous_strategy": prev, "interaction_strategy": strategy, "active_window": dict(active)}
 
-    def record_wave(self, summary: dict[str, Any], *, now_epoch: float | None = None) -> None:
+    def record_wave(
+        self,
+        summary: dict[str, Any],
+        *,
+        now_epoch: float | None = None,
+        wave_started_epoch: float | None = None,
+    ) -> None:
         import random
 
         now = float(now_epoch) if now_epoch is not None else time.time()
+        anchor = float(wave_started_epoch) if wave_started_epoch is not None else now
         rng = random.SystemRandom()
         with self.lock:
             data = self._read()
             active = data.get("active_window")
             if isinstance(active, dict):
                 active["last_wave_epoch"] = now
-                base_sec = max(600, int(active.get("min_wave_interval_minutes", 90)) * 60)
-                # Human-like irregular spacing: normal jitter (0.65x..1.55x) with occasional longer break (1.6x..2.4x).
-                mult = rng.uniform(1.6, 2.4) if rng.random() < 0.20 else rng.uniform(0.65, 1.55)
-                active["next_wave_epoch"] = now + base_sec * mult
+                base_sec = max(300, int(active.get("min_wave_interval_minutes", 90)) * 60)
+                # Anchor cadence to wave_started_epoch with compact jitter (0.80x..1.25x) and >= 2m post-wave breather
+                # so long wave execution doesn't double-stack into 35-55m idle gaps.
+                mult = rng.uniform(0.80, 1.25)
+                active["next_wave_epoch"] = max(now + 120.0, anchor + base_sec * mult)
                 base_max = max(1, int(active.get("max_per_wave", 4)))
-                low = max(1, base_max - 2)
+                low = max(1, base_max - 1)
                 high = min(15, base_max + 2)
                 active["next_wave_limit"] = rng.randint(low, high)
             log = list(data.get("waves_log") or [])
