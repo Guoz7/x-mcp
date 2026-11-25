@@ -3799,7 +3799,7 @@ class XStarter:
                         "browser_family": getattr(browser, "browser_family", "chromium"),
                         "host": "x.com",
                         "mode": self.mode,
-                        "page_kind": "x_home" if kind == "publish_post" else ("x_profile" if kind == "follow_profile" else "x_status"),
+                        "page_kind": "x_home" if kind == "publish_post" else ("x_profile" if kind in {"follow_profile", "unfollow_profile"} else "x_status"),
                     },
                     locator_strategy=raw.get("locator_strategy", "dom"),
                     session_id=session_id,

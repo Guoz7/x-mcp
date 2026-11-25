@@ -1242,7 +1242,7 @@ class Browser:
         self._validate_x_grant(self.X_TYPE_ACTIONS)
         box.click(timeout=5000)
         box.fill(text)
-        self._consume_x_grant("typing")
+        self._consume_x_grant(self.X_TYPE_ACTIONS)
 
         btn = self.page.locator('[data-testid="tweetButton"]').first
         try:
@@ -1254,7 +1254,7 @@ class Browser:
 
         self._validate_x_grant(frozenset({"publish_post"}))
         btn.click(timeout=5000)
-        self._consume_x_grant("click")
+        self._consume_x_grant(frozenset({"publish_post"}))
         self.page.wait_for_timeout(1500)
 
         profile_url = f"https://x.com/{expected_username}"
@@ -1901,7 +1901,7 @@ class Browser:
         confirm = self.page.locator('[data-testid="confirmationSheetConfirm"]').first
         confirm.wait_for(state="visible", timeout=5000)
         confirm.click(timeout=5000)
-        self._consume_x_grant("click")
+        self._consume_x_grant(frozenset({"unfollow_profile"}))
 
         verify_deadline = time.monotonic() + 8.0
         after = state()
